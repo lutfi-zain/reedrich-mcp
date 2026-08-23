@@ -15,6 +15,7 @@ import {
   isValidWhatsApp,
   hashApiKey,
 } from '../src/utils/token';
+import { currentIsoTimestamp } from '../src/utils/date';
 
 const TEST_JWT_SECRET = 'super-secure-test-jwt-secret-1234567890';
 
@@ -237,7 +238,7 @@ describe('Eve Finance MCP Server — Complete Test Suite', () => {
     assert.equal(regData.name, 'Budi Setiawan');
     assert.equal(regData.email, 'budi@example.com');
     assert.equal(regData.whatsappNumber, '+6281234567890');
-    assert.ok(regData.apiKey.startsWith('fp_live_'));
+    assert.ok(regData.apiKey.startsWith('rd_live_'));
     assert.ok(regData.token);
     assert.equal(regData.expiresIn, 900); // 15 minutes
 
@@ -268,32 +269,37 @@ describe('Eve Finance MCP Server — Complete Test Suite', () => {
     const { db } = createTestDB();
     const publicServer = createMCPServer(db, null, TEST_JWT_SECRET);
 
-    // 1. Register user
-    const regRes = await callTool(publicServer, 'register_user', {
-      firstName: 'Siti',
-      lastName: 'Aminah',
-      email: 'siti@example.com',
-      whatsappNumber: '+6281987654321',
+    // 1. Seed a user directly in SQLite with a hashed API key
+    const rawApiKey = 'rd_live_testapikey1234567890abcdef';
+    const keyHash = await hashApiKey(rawApiKey);
+    const testUserId = 'usr_test_user_uuid_1';
+    await db.insert(schema.users).values({
+      userId: testUserId,
+      userFirstName: 'Citra',
+      userLastName: 'Lestari',
+      userEmail: 'citra@example.com',
+      userWhatsappNumber: '+6281987654321',
+      userApiKeyHash: keyHash,
+      userCreatedAt: currentIsoTimestamp(),
     });
-    const { apiKey, userId } = JSON.parse(regRes.content[0].text);
 
-    // 2. Login with invalid API Key -> fails
-    await assert.rejects(async () => {
-      await callTool(publicServer, 'login_user', { apiKey: 'fp_live_invalidkey12345' });
-    }, /invalid api key/i);
-
-    // 3. Login with valid API Key -> returns fresh 15-minute token
-    const loginRes = await callTool(publicServer, 'login_user', { apiKey });
+    // 2. Login with correct API key
+    const loginRes = await callTool(publicServer, 'login_user', { apiKey: rawApiKey });
     const loginData = JSON.parse(loginRes.content[0].text);
-
-    assert.equal(loginData.userId, userId);
-    assert.equal(loginData.name, 'Siti Aminah');
-    assert.equal(loginData.email, 'siti@example.com');
+    assert.equal(loginData.userId, testUserId);
+    assert.equal(loginData.name, 'Citra Lestari');
+    assert.equal(loginData.email, 'citra@example.com');
     assert.ok(loginData.token);
     assert.equal(loginData.expiresIn, 900);
 
+    // 3. Login with invalid API key -> Rejection
+    await assert.rejects(async () => {
+      await callTool(publicServer, 'login_user', { apiKey: 'rd_live_invalidkey12345' });
+    }, /invalid api key/i);
+
+    // 4. Verify token
     const verified = await verifyUserToken(loginData.token, TEST_JWT_SECRET);
-    assert.equal(verified?.userId, userId);
+    assert.equal(verified?.userId, testUserId);
   });
 
   it('4. Robust Number, NaN, and UUID Validations', async () => {
@@ -532,7 +538,7 @@ describe('Eve Finance MCP Server — Complete Test Suite', () => {
     const resourcesList = await listResources(authServer);
     assert.equal(resourcesList.resources.length, 4);
 
-    const schemaRes = await readResource(authServer, 'finance://db/schema');
+    const schemaRes = await readResource(authServer, 'reedrich://db/schema');
     const schemaJson = JSON.parse(schemaRes.contents[0].text);
     assert.ok(schemaJson.tables.users.includes('user_id (PK UUID)'));
     assert.ok(schemaJson.tables.wallets.includes('wallet_id (PK UUID)'));
@@ -708,9 +714,9 @@ describe('Eve Finance MCP Server — Complete Test Suite', () => {
     const regData = JSON.parse((await regRes.json()).result.content[0].text);
     const apiKey = regData.apiKey;
     const userId = regData.userId;
-    assert.ok(apiKey.startsWith('fp_live_'));
+    assert.ok(apiKey.startsWith('rd_live_'));
 
-    // 2. HTTP call using Bearer API Key (Authorization: Bearer fp_live_...) -> Zero Expiration
+    // 2. HTTP call using Bearer API Key (Authorization: Bearer rd_live_...) -> Zero Expiration
     const bearerKeyRes = await app.request('/mcp', {
       method: 'POST',
       headers: {
@@ -738,7 +744,7 @@ describe('Eve Finance MCP Server — Complete Test Suite', () => {
     assert.equal(bearerWallet.walletName, 'Bearer Key Wallet');
     assert.equal(bearerWallet.walletUserId, userId);
 
-    // 3. HTTP call using X-API-Key header (X-API-Key: fp_live_...)
+    // 3. HTTP call using X-API-Key header (X-API-Key: rd_live_...)
     const xApiKeyRes = await app.request('/mcp', {
       method: 'POST',
       headers: {
@@ -785,7 +791,7 @@ describe('Eve Finance MCP Server — Complete Test Suite', () => {
         action: 'create',
         name: 'Should Fail',
         balance: 1000000,
-        apiKey: 'fp_live_invalidkey1234567890abcdef',
+        apiKey: 'rd_live_invalidkey1234567890abcdef',
       });
     }, /Unauthorized/i);
 
@@ -797,6 +803,46 @@ describe('Eve Finance MCP Server — Complete Test Suite', () => {
         balance: 1000000,
       });
     }, /Unauthorized/i);
+
+    // 7. Backward Compatibility: User with legacy fp_live_ key can still authenticate
+    const legacyKey = 'fp_live_legacykey9876543210fedcba';
+    const legacyHash = await hashApiKey(legacyKey);
+    const legacyUserId = 'usr_legacy_user_123';
+    await db.insert(schema.users).values({
+      userId: legacyUserId,
+      userFirstName: 'Legacy',
+      userLastName: 'User',
+      userEmail: 'legacy@example.com',
+      userWhatsappNumber: '+628111222333',
+      userApiKeyHash: legacyHash,
+      userCreatedAt: currentIsoTimestamp(),
+    });
+
+    const legacyAuthRes = await app.request('/mcp', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json, text/event-stream',
+        'Authorization': `Bearer ${legacyKey}`,
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 7,
+        method: 'tools/call',
+        params: {
+          name: 'manage_wallet',
+          arguments: {
+            action: 'create',
+            name: 'Legacy Wallet',
+            balance: 500000,
+          },
+        },
+      }),
+    }, env);
+
+    assert.equal(legacyAuthRes.status, 200);
+    const legacyWallet = JSON.parse((await legacyAuthRes.json()).result.content[0].text);
+    assert.equal(legacyWallet.walletUserId, legacyUserId);
   });
 
   it('11. Submit Feedback to GitHub Issues with Auto Submitter Details', async () => {
@@ -808,7 +854,7 @@ describe('Eve Finance MCP Server — Complete Test Suite', () => {
       capturedRequest = { url, ...init, body: JSON.parse(init?.body || '{}') };
       return new Response(
         JSON.stringify({
-          html_url: 'https://github.com/lutfi-zain/finnplan-mcp/issues/42',
+          html_url: 'https://github.com/lutfi-zain/reedrich-mcp/issues/42',
           number: 42,
           state: 'open',
           title: capturedRequest.body.title,
@@ -829,7 +875,7 @@ describe('Eve Finance MCP Server — Complete Test Suite', () => {
 
     const authServer = createMCPServer(db, userId, TEST_JWT_SECRET, {
       githubToken: 'ghp_mock_token_12345',
-      githubRepo: 'lutfi-zain/finnplan-mcp',
+      githubRepo: 'lutfi-zain/reedrich-mcp',
       fetchFn: mockFetch as any,
     });
 
@@ -841,13 +887,13 @@ describe('Eve Finance MCP Server — Complete Test Suite', () => {
 
     const authFeedback = JSON.parse(authFeedbackRes.content[0].text);
     assert.equal(authFeedback.success, true);
-    assert.equal(authFeedback.issueUrl, 'https://github.com/lutfi-zain/finnplan-mcp/issues/42');
+    assert.equal(authFeedback.issueUrl, 'https://github.com/lutfi-zain/reedrich-mcp/issues/42');
     assert.equal(authFeedback.issueNumber, 42);
     assert.equal(authFeedback.submitter.name, 'Budi Santoso');
     assert.equal(authFeedback.submitter.email, 'budi.santoso@example.com');
     assert.equal(authFeedback.submitter.userId, userId);
 
-    assert.equal(capturedRequest.url, 'https://api.github.com/repos/lutfi-zain/finnplan-mcp/issues');
+    assert.equal(capturedRequest.url, 'https://api.github.com/repos/lutfi-zain/reedrich-mcp/issues');
     assert.equal(capturedRequest.headers.Authorization, 'Bearer ghp_mock_token_12345');
     assert.ok(capturedRequest.body.title.includes('[FEATURE REQUEST] Tolong tambahkan export CSV'));
     assert.ok(capturedRequest.body.body.includes('Budi Santoso'));
@@ -857,7 +903,7 @@ describe('Eve Finance MCP Server — Complete Test Suite', () => {
     // 2. In-Tool Auth Submission (Passing apiKey in arguments)
     const unauthServer = createMCPServer(db, null, TEST_JWT_SECRET, {
       githubToken: 'ghp_mock_token_12345',
-      githubRepo: 'lutfi-zain/finnplan-mcp',
+      githubRepo: 'lutfi-zain/reedrich-mcp',
       fetchFn: mockFetch as any,
     });
 
@@ -1165,8 +1211,8 @@ describe('Eve Finance MCP Server — Complete Test Suite', () => {
       });
     }, /already fully paid/i);
 
-    // 10. Verify Resource: finance://debts/active
-    const debtsResource = await readResource(authServer1, 'finance://debts/active');
+    // 10. Verify Resource: reedrich://debts/active
+    const debtsResource = await readResource(authServer1, 'reedrich://debts/active');
     const debtsPayload = JSON.parse(debtsResource.contents[0].text);
     assert.equal(debtsPayload.activeCount, 2); // Joni (600,000) and Uang Rumah (750,000)
     assert.equal(debtsPayload.totalDebt, 1350000);
@@ -1226,8 +1272,8 @@ describe('Eve Finance MCP Server — Complete Test Suite', () => {
     const dbGet = await getPrompt(publicServer, 'daily_briefing', { date: '2026-08-23' });
     assert.ok(dbGet.messages.length > 0);
     assert.ok(dbGet.messages[0].content.text.includes('2026-08-23'));
-    assert.ok(dbGet.messages[0].content.text.includes('finance://wallets/list'));
-    assert.ok(dbGet.messages[0].content.text.includes('finance://debts/active'));
+    assert.ok(dbGet.messages[0].content.text.includes('reedrich://wallets/list'));
+    assert.ok(dbGet.messages[0].content.text.includes('reedrich://debts/active'));
 
     const fpGetWithArgs = await getPrompt(publicServer, 'financial_planning', {
       goal_description: 'beli laptop',

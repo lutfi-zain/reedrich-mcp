@@ -3,12 +3,12 @@
  * Run via: npm run agent:snippet [claude|opencode|pi|omp|all]
  */
 
-const WORKER_URL = process.env.WORKER_URL || "https://finnplan-mcp.lutfidmz.workers.dev/mcp";
+const WORKER_URL = process.env.WORKER_URL || "https://reedrich-mcp.lutfidmz.workers.dev/mcp";
 
 const target = (process.argv[2] || "all").toLowerCase();
 
 console.log("\n========================================================");
-console.log("  🤖 Eve Finance MCP — Coding Agent Setup Snippets");
+console.log("  🤖 Reedrich MCP — Coding Agent Setup Snippets");
 console.log(`  🌐 Server URL: ${WORKER_URL}`);
 console.log("========================================================\n");
 
@@ -17,17 +17,17 @@ function showClaudeCode() {
   console.log("  1️⃣  CLAUDE CODE (https://code.claude.com/docs/en/agent-sdk/mcp)");
   console.log("--------------------------------------------------------");
   console.log("👉 CLI Command (One-liner):");
-  console.log(`   claude mcp add --transport http eve-finance ${WORKER_URL}\n`);
+  console.log(`   claude mcp add --transport http reedrich ${WORKER_URL}\n`);
   console.log("👉 Or Config File (.claude/mcp.json or .mcp.json):");
   console.log(
     JSON.stringify(
       {
         mcpServers: {
-          "eve-finance": {
+          "reedrich": {
             type: "http",
             url: WORKER_URL,
             headers: {
-              Authorization: "Bearer <YOUR_JWT_TOKEN_OR_API_KEY>",
+              Authorization: "Bearer <YOUR_JWT_TOKEN_OR_rd_live_API_KEY>",
             },
           },
         },
@@ -51,11 +51,11 @@ function showOpenCode() {
       {
         $schema: "https://opencode.ai/config.json",
         mcp: {
-          "eve-finance": {
+          "reedrich": {
             type: "remote",
             url: WORKER_URL,
             headers: {
-              Authorization: "Bearer <YOUR_JWT_TOKEN_OR_API_KEY>",
+              Authorization: "Bearer <YOUR_JWT_TOKEN_OR_rd_live_API_KEY>",
             },
           },
         },
@@ -78,10 +78,10 @@ function showPi() {
     JSON.stringify(
       {
         mcpServers: {
-          "eve-finance": {
+          "reedrich": {
             url: WORKER_URL,
             headers: {
-              Authorization: "Bearer <YOUR_JWT_TOKEN_OR_API_KEY>",
+              Authorization: "Bearer <YOUR_JWT_TOKEN_OR_rd_live_API_KEY>",
             },
           },
         },
@@ -105,10 +105,10 @@ function showOMP() {
       {
         $schema: "https://raw.githubusercontent.com/can1357/oh-my-pi/main/packages/coding-agent/src/config/mcp-schema.json",
         mcpServers: {
-          "eve-finance": {
+          "reedrich": {
             url: WORKER_URL,
             headers: {
-              Authorization: "Bearer <YOUR_JWT_TOKEN_OR_API_KEY>",
+              Authorization: "Bearer <YOUR_JWT_TOKEN_OR_rd_live_API_KEY>",
             },
           },
         },

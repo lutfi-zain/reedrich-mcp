@@ -124,7 +124,7 @@ describe('Integration Test: Full User Journey (Deployed Worker + Remote D1)', ()
     assert.equal(result.name, 'Budi Setiawan');
     assert.equal(result.email, email);
     assert.equal(result.whatsappNumber, '+6281234567890');
-    assert.ok(result.apiKey.startsWith('fp_live_'), 'apiKey should start with fp_live_');
+    assert.ok(result.apiKey.startsWith('rd_live_'), 'apiKey should start with rd_live_');
     assert.ok(result.token, 'token should be present');
     assert.equal(result.expiresIn, 900, 'token should expire in 900 seconds (15 minutes)');
 
@@ -467,18 +467,18 @@ describe('Integration Test: Full User Journey (Deployed Worker + Remote D1)', ()
   // -------------------------------------------------------------------------
   it('Step 21-23: Read MCP Resources', async () => {
     // Step 21: Schema resource (public)
-    const schemaData = await readResource('finance://db/schema', state.userA.token);
+    const schemaData = await readResource('reedrich://db/schema', state.userA.token);
     assert.ok(schemaData.tables.users, 'Schema should include users table');
     assert.ok(schemaData.tables.wallets, 'Schema should include wallets table');
     assert.ok(schemaData.tables.transactions, 'Schema should include transactions table');
 
     // Step 22: Wallets resource
-    const walletsData = await readResource('finance://wallets/list', state.userA.token);
+    const walletsData = await readResource('reedrich://wallets/list', state.userA.token);
     assert.ok(Array.isArray(walletsData), 'Wallets resource should return array');
     assert.equal(walletsData.length, 2, 'Should have 2 wallets');
 
     // Step 23: Active budgets resource
-    const budgetsData = await readResource('finance://budgets/active', state.userA.token);
+    const budgetsData = await readResource('reedrich://budgets/active', state.userA.token);
     assert.ok(Array.isArray(budgetsData), 'Budgets resource should return array');
     assert.ok(budgetsData.length >= 1, 'Should have at least 1 active budget');
 
@@ -603,8 +603,8 @@ describe('Integration Test: Full User Journey (Deployed Worker + Remote D1)', ()
     assert.equal(repayJoni.debtLoanRemainingAmount, 600000);
     assert.equal(repayJoni.debtLoanStatus, 'partially_paid');
 
-    // 5. Read finance://debts/active resource
-    const debtsRes = await readResource('finance://debts/active', state.userA.token);
+    // 5. Read reedrich://debts/active resource
+    const debtsRes = await readResource('reedrich://debts/active', state.userA.token);
     assert.equal(debtsRes.activeCount, 2);
     assert.equal(debtsRes.totalDebt, 600000);
     assert.equal(debtsRes.totalReceivable, 500000);
@@ -721,7 +721,7 @@ describe('Integration Test: Full User Journey (Deployed Worker + Remote D1)', ()
     // 3. Get daily_briefing prompt
     const dbPrompt = await getPrompt('daily_briefing', { date: '2026-08-23' }, state.userA.token);
     assert.ok(dbPrompt.messages.length > 0);
-    assert.ok(dbPrompt.messages[0].content.text.includes('finance://debts/active'));
+    assert.ok(dbPrompt.messages[0].content.text.includes('reedrich://debts/active'));
 
     // 4. Get financial_planning prompt with target goal
     const fpPrompt = await getPrompt('financial_planning', {

@@ -1,12 +1,12 @@
 #!/bin/bash
 set -e
 
-WORKER_URL="${WORKER_URL:-https://finnplan-mcp.lutfidmz.workers.dev}"
-JWT_SECRET="${JWT_SECRET:-finnplan_production_secret_key_8492048591823746}"
+WORKER_URL="${WORKER_URL:-https://reedrich-mcp.lutfidmz.workers.dev}"
+JWT_SECRET="${JWT_SECRET:-reedrich_production_secret_key_8492048591823746}"
 
 echo ""
 echo "╔════════════════════════════════════════════════════════════╗"
-echo "║  Eve Finance MCP — Remote Cloudflare D1 Integration (E2E)  ║"
+echo "║  Reedrich MCP — Remote Cloudflare D1 Integration (E2E)    ║"
 echo "╚════════════════════════════════════════════════════════════╝"
 echo ""
 

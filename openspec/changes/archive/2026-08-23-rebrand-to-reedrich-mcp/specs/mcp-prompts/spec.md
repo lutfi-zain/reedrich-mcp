@@ -1,49 +1,4 @@
-# mcp-prompts Specification
-
-## Purpose
-
-Implements MCP Prompts protocol support (`prompts/list`, `prompts/get`) exposing server-defined workflow templates that guide AI agents through structured multi-step financial tasks such as onboarding, daily briefing, financial goal planning, and debt advisory.
-
-## Requirements
-
-### Requirement: MCP Prompts Capability Registration
-The MCP server SHALL register the `prompts` capability alongside existing `tools` and `resources` capabilities. The server MUST implement handlers for `ListPromptsRequestSchema` and `GetPromptRequestSchema` from `@modelcontextprotocol/sdk/types.js`.
-
-#### Scenario: Server advertises prompts capability
-- **WHEN** an MCP client connects to the server
-- **THEN** the server MUST advertise `prompts: {}` in its capability registration, enabling clients to discover and invoke prompt workflows
-
----
-
-### Requirement: List Available Prompts
-The server SHALL respond to `prompts/list` requests with the complete list of available prompt workflows. Each prompt entry MUST include `name`, `description`, and an optional `arguments` array describing accepted input parameters.
-
-#### Scenario: Client requests list of available prompts
-- **WHEN** an MCP client sends a `prompts/list` request
-- **THEN** the server MUST return an array containing at minimum 4 prompt entries: `onboarding_assistant`, `daily_briefing`, `financial_planning`, and `debt_loan_advisor`
-
----
-
-### Requirement: Onboarding Assistant Prompt
-The server SHALL expose a prompt named `onboarding_assistant` that returns structured messages guiding an AI agent through first-time user setup.
-
-The prompt MUST accept an optional `currency` argument (default: `"IDR"`).
-
-The returned messages MUST instruct the agent to:
-1. Check the user's onboarding status from the auth response.
-2. Offer to seed default categories using `manage_category(action: "seed_defaults")` — only with user confirmation.
-3. Guide creation of at least one primary wallet via `manage_wallet(action: "create")`.
-4. Optionally suggest budget setup via `manage_budget(action: "create")`.
-
-#### Scenario: Get onboarding_assistant prompt with default currency
-- **WHEN** a client sends `prompts/get` with `name: "onboarding_assistant"` and no arguments
-- **THEN** the server MUST return messages containing step-by-step onboarding instructions referencing tool names `manage_category`, `manage_wallet`, and `manage_budget`, with currency defaulting to `"IDR"`
-
-#### Scenario: Get onboarding_assistant prompt with custom currency
-- **WHEN** a client sends `prompts/get` with `name: "onboarding_assistant"` and `arguments: { currency: "USD" }`
-- **THEN** the returned messages MUST reference the specified currency `"USD"` in wallet and budget setup instructions
-
----
+## MODIFIED Requirements
 
 ### Requirement: Daily Briefing Prompt
 The server SHALL expose a prompt named `daily_briefing` that returns structured messages guiding an AI agent through generating a comprehensive daily financial status report.
@@ -103,12 +58,3 @@ The returned messages MUST instruct the agent to:
 #### Scenario: Get debt_loan_advisor prompt
 - **WHEN** a client sends `prompts/get` with `name: "debt_loan_advisor"`
 - **THEN** the server MUST return messages referencing tools `manage_debt_loan` and `financial_summary`, and resource `reedrich://debts/active`, with instructions to prioritize overdue debts
-
----
-
-### Requirement: Unknown Prompt Handling
-The server SHALL return an appropriate error when `prompts/get` is called with an unrecognized prompt name.
-
-#### Scenario: Request unknown prompt name
-- **WHEN** a client sends `prompts/get` with `name: "nonexistent_prompt"`
-- **THEN** the server MUST throw an error indicating the prompt was not found

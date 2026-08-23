@@ -1,6 +1,6 @@
-# Eve Finance Stateless MCP Server (Cloudflare Workers + D1)
+# Reedrich MCP Server (Cloudflare Workers + D1)
 
-Stateless Model Context Protocol (MCP) server for personal finance management deployed on **Cloudflare Workers** with **Cloudflare D1** (SQLite) and **Drizzle ORM**.
+Stateless Model Context Protocol (MCP) server for personal finance & deterministic wealth planning, inspired by **Reed Richards (Mister Fantastic)**—giving AI Agents mathematical superpowers to project, optimize, and solve user finances on **Cloudflare Workers** with **Cloudflare D1** (SQLite) and **Drizzle ORM**.
 
 ---
 
@@ -11,9 +11,9 @@ Stateless Model Context Protocol (MCP) server for personal finance management de
 - **15-Minute Self-Contained JWT**: Cryptographic token verification with **zero database queries** required for auth on finance tool calls.
 - **Multi-Tenant Row-Level Security (RLS)**: Automatically isolates user data via `userId` extracted directly from JWT token payload.
 - **12 MCP Tools**:
-  - `register_user`: Register with `firstName`, `lastName`, `email`, and `whatsappNumber` (with country code `+...`) → returns persistent `apiKey`, 15-minute JWT, and dynamic `onboarding` status.
+  - `register_user`: Register with `firstName`, `lastName`, `email`, and `whatsappNumber` (with country code `+...`) → returns persistent `apiKey` (`rd_live_...`), 15-minute JWT, and dynamic `onboarding` status.
   - `login_user`: Authenticate with `apiKey` → returns fresh 15-minute JWT and dynamic `onboarding` status.
-  - `submit_feedback`: Submit user feedback, bug reports, or feature requests → automatically creates a formatted GitHub Issue with the user's name and email.
+  - `submit_feedback`: Submit user feedback, bug reports, or feature requests → automatically creates a formatted GitHub Issue on `lutfi-zain/reedrich-mcp`.
   - `manage_wallet`: Create, list, update wallets.
   - `manage_category`: Create, list, and bulk-seed standard expense and income categories (`action: "seed_defaults"`).
   - `manage_budget`: Create, list, and compute real-time budget utilization status.
@@ -24,14 +24,14 @@ Stateless Model Context Protocol (MCP) server for personal finance management de
   - `list_transactions`: Dynamic filtering across date ranges, wallets, categories, budgets, and planning status.
   - `financial_summary`: Aggregate net worth, income, expense, savings, admin fees, category breakdowns, total debt, and total receivable.
 - **4 MCP Resources**:
-  - `finance://db/schema`: Database schema and relationship documentation.
-  - `finance://wallets/list`: Live list of authenticated user wallets and balances.
-  - `finance://budgets/active`: Current active budgets with spending utilization percentages.
-  - `finance://debts/active`: Active liabilities and receivables with total remaining balances.
+  - `reedrich://db/schema`: Database schema and relationship documentation.
+  - `reedrich://wallets/list`: Live list of authenticated user wallets and balances.
+  - `reedrich://budgets/active`: Current active budgets with spending utilization percentages.
+  - `reedrich://debts/active`: Active liabilities and receivables with total remaining balances.
 - **4 MCP Prompts (AI Workflow Playbooks)**:
   - `onboarding_assistant`: Step-by-step guidance for setting up initial wallets and standard categories.
   - `daily_briefing`: Comprehensive financial health overview (balances, active budgets, upcoming debt/loan due dates).
-  - `financial_planning`: Goal timeline projection (e.g. "Kapan bisa beli laptop Rp 15jt?") based on net savings and debt obligations.
+  - `financial_planning`: Goal timeline projection (e.g. "Kapan bisa beli laptop Rp 15jt?") with deterministic math based on net savings and debt commitments.
   - `debt_loan_advisor`: Prioritization and repayment strategy for active debts and loan collections.
 
 ---
@@ -55,7 +55,7 @@ Stateless Model Context Protocol (MCP) server for personal finance management de
      "name": "Budi Setiawan",
      "email": "budi@example.com",
      "whatsappNumber": "+6281234567890",
-     "apiKey": "fp_live_8f3d9b2c...",
+     "apiKey": "rd_live_8f3d9b2c...",
      "token": "eyJhbGciOi...",
      "tokenType": "Bearer",
      "expiresIn": 900,
@@ -78,13 +78,13 @@ Stateless Model Context Protocol (MCP) server for personal finance management de
    Populates 10 standard categories: Makanan & Minuman 🍔, Transportasi 🚗, Belanja 🛍️, Tagihan & Utilitas 💡, Hiburan 🎬, Kesehatan 💊, Gaji 💼, Investasi & Bunga 📈, Usaha / Freelance 💻, Pemasukan Lainnya 🎁.
 
 3. **Call Finance Tools**:
-   Set `Authorization: Bearer <token>` in your MCP client headers to execute `manage_wallet`, `record_transaction`, etc.
+   Set `Authorization: Bearer <token>` or `Authorization: Bearer <apiKey>` in your MCP client headers to execute `manage_wallet`, `record_transaction`, etc.
 
 4. **Re-Login when Token Expires (after 15 minutes)**:
    When a token expires, call tool `login_user`:
    ```json
    {
-     "apiKey": "fp_live_8f3d9b2c..."
+     "apiKey": "rd_live_8f3d9b2c..."
    }
    ```
    **Response:** Fresh 15-minute JWT token with live `onboarding` status.
@@ -99,7 +99,7 @@ npm install
 ```
 
 ### 2. Run Tests
-Runs the complete test suite covering all 8 tools, 3 resources, RLS tenant isolation, input validations, and pure MCP lifecycle:
+Runs the complete test suite covering all 12 tools, 4 resources, 4 prompts, RLS tenant isolation, input validations, and pure MCP lifecycle:
 ```bash
 npm test
 ```
@@ -114,11 +114,11 @@ npm run build
 
 ## 🤖 Coding Agents Quick Start (Claude Code, OpenCode, Pi, OMP)
 
-Connect Eve Finance MCP to your AI coding agents in seconds. For comprehensive configuration and example prompts, see the **[Coding Agents Setup Guide](docs/CODING_AGENTS.md)**.
+Connect Reedrich MCP to your AI coding agents in seconds. For comprehensive configuration and example prompts, see the **[Coding Agents Setup Guide](docs/CODING_AGENTS.md)**.
 
 ### 1. Claude Code
 ```bash
-claude mcp add --transport http eve-finance https://finnplan-mcp.lutfidmz.workers.dev/mcp
+claude mcp add --transport http reedrich https://reedrich-mcp.lutfidmz.workers.dev/mcp
 ```
 
 ### 2. OpenCode
@@ -127,9 +127,9 @@ In `opencode.json`:
 {
   "$schema": "https://opencode.ai/config.json",
   "mcp": {
-    "eve-finance": {
+    "reedrich": {
       "type": "remote",
-      "url": "https://finnplan-mcp.lutfidmz.workers.dev/mcp"
+      "url": "https://reedrich-mcp.lutfidmz.workers.dev/mcp"
     }
   }
 }
@@ -143,8 +143,8 @@ pi install npm:pi-mcp-adapter
 # 2. Add to .mcp.json
 {
   "mcpServers": {
-    "eve-finance": {
-      "url": "https://finnplan-mcp.lutfidmz.workers.dev/mcp"
+    "reedrich": {
+      "url": "https://reedrich-mcp.lutfidmz.workers.dev/mcp"
     }
   }
 }
@@ -156,8 +156,8 @@ In `.omp/mcp.json` or `.mcp.json`:
 {
   "$schema": "https://raw.githubusercontent.com/can1357/oh-my-pi/main/packages/coding-agent/src/config/mcp-schema.json",
   "mcpServers": {
-    "eve-finance": {
-      "url": "https://finnplan-mcp.lutfidmz.workers.dev/mcp"
+    "reedrich": {
+      "url": "https://reedrich-mcp.lutfidmz.workers.dev/mcp"
     }
   }
 }
@@ -176,8 +176,8 @@ Apply migrations to your local D1 database:
 
 ```bash
 # 1. Execute database migrations locally
-npx wrangler d1 execute finance_db --local --file=./drizzle/0000_nice_marvel_boy.sql
-npx wrangler d1 execute finance_db --local --file=./drizzle/0001_low_stingray.sql
+npx wrangler d1 execute finance_db --local --file=./drizzle/0002_table_prefixed_schema_and_tz.sql
+npx wrangler d1 execute finance_db --local --file=./drizzle/0003_add_debts_loans.sql
 
 # 2. Start local development server
 npm run dev
@@ -187,12 +187,12 @@ npm run dev
 
 ## 🔌 Connecting with MCP Clients
 
-- **Endpoint**: `http://localhost:8787/mcp` (or your deployed `https://finnplan-mcp.lutfidmz.workers.dev/mcp`)
+- **Endpoint**: `http://localhost:8787/mcp` (or your deployed `https://reedrich-mcp.lutfidmz.workers.dev/mcp`)
 - **Initial Connection**: No headers required to call `register_user` or `login_user`.
 - **Authenticated Calls**:
   ```json
   {
-    "Authorization": "Bearer <YOUR_15_MIN_JWT_TOKEN>"
+    "Authorization": "Bearer <YOUR_15_MIN_JWT_TOKEN_OR_rd_live_API_KEY>"
   }
   ```
 
@@ -201,17 +201,13 @@ npm run dev
 ## 🚢 Production Deployment
 
 ```bash
-# 1. Create remote D1 database (if not created yet)
-npx wrangler d1 create finance_db
-
-# 2. Set your production JWT secret
+# 1. Set your production JWT secret (if not set)
 npx wrangler secret put JWT_SECRET
 
-# 3. Apply migrations to remote D1 database
-npx wrangler d1 execute finance_db --remote --file=./drizzle/0000_nice_marvel_boy.sql
-npx wrangler d1 execute finance_db --remote --file=./drizzle/0001_low_stingray.sql
+# 2. Apply migrations to remote D1 database
+npx wrangler d1 execute finance_db --remote --file=./drizzle/0003_add_debts_loans.sql
 
-# 4. Deploy worker
+# 3. Deploy worker
 npm run deploy
 ```
 

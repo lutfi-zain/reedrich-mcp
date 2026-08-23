@@ -39,14 +39,14 @@ app.onError((err, c) => {
 // Health check & Server info endpoint
 app.get('/', (c) => {
   return c.json({
-    name: 'eve-finance-mcp',
+    name: 'reedrich-mcp',
     status: 'ok',
     auth: 'dual-auth-api-key-and-jwt',
-    description: 'Stateless Pure MCP Server for Eve Finance on Cloudflare Workers (D1)',
+    description: 'Stateless MCP Server for Reedrich — Mathematical Intelligence & Financial Planning on Cloudflare Workers (D1)',
     authMethods: [
-      'Authorization: Bearer <fp_live_apiKey>',
+      'Authorization: Bearer <rd_live_apiKey | fp_live_apiKey>',
       'Authorization: Bearer <jwt_token>',
-      'X-API-Key: <fp_live_apiKey>',
+      'X-API-Key: <rd_live_apiKey | fp_live_apiKey>',
       'In-tool apiKey argument'
     ],
     authTools: {
@@ -62,7 +62,7 @@ app.get('/', (c) => {
 
 app.get('/health', (c) => c.text('OK'));
 
-// Auth helper: Resolves User ID from Bearer API Key (fp_live_...), Bearer JWT, X-API-Key, or query params
+// Auth helper: Resolves User ID from Bearer API Key (rd_live_... / fp_live_...), Bearer JWT, X-API-Key, or query params
 async function extractAuthenticatedUserId(
   c: Context<{ Bindings: Bindings }>,
   db: DrizzleD1Database<typeof schema>
@@ -92,8 +92,8 @@ async function extractAuthenticatedUserId(
 
   if (!candidate) return null;
 
-  // Case A: Persistent API Key (starts with fp_live_ or matches API key pattern)
-  if (candidate.startsWith('fp_live_')) {
+  // Case A: Persistent API Key (starts with rd_live_, fp_live_, or matches API key pattern)
+  if (candidate.startsWith('rd_live_') || candidate.startsWith('fp_live_')) {
     try {
       const keyHash = await hashApiKey(candidate);
       const user = await db.select({ userId: schema.users.userId }).from(schema.users).where(eq(schema.users.userApiKeyHash, keyHash)).get();
@@ -137,7 +137,7 @@ async function handleMcpRequest(c: Context<{ Bindings: Bindings }>) {
   const rawAccept = c.req.header('accept') || '';
   if (c.req.method === 'GET' && !rawAccept.includes('text/event-stream') && !rawAccept.includes('*/*')) {
     return c.json({
-      name: 'eve-finance-mcp',
+      name: 'reedrich-mcp',
       status: 'ok',
       transport: 'streamable-http',
       endpoint: c.req.url,
@@ -156,7 +156,7 @@ async function handleMcpRequest(c: Context<{ Bindings: Bindings }>) {
 
   const mcpServer = createMCPServer(db, userId, secret, {
     githubToken: c.env?.GITHUB_TOKEN,
-    githubRepo: c.env?.GITHUB_REPO || 'lutfi-zain/finnplan-mcp',
+    githubRepo: c.env?.GITHUB_REPO || 'lutfi-zain/reedrich-mcp',
   });
   await mcpServer.connect(transport);
 

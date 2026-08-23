@@ -1,7 +1,7 @@
 {
-  "name": "finnplan-mcp",
+  "name": "reedrich-mcp",
   "version": "1.0.0",
-  "description": "Stateless MCP Server for Eve Finance on Cloudflare Workers (D1)",
+  "description": "Reedrich MCP Server — Mathematical Intelligence & Financial Planning Engine for AI Agents on Cloudflare Workers",
   "main": "src/index.ts",
   "scripts": {
     "dev": "wrangler dev",
@@ -19,17 +19,20 @@
     "db:migrate:local": "wrangler d1 execute finance_db --local --file=./drizzle/0000_nice_marvel_boy.sql",
     "db:migrate:remote": "wrangler d1 execute finance_db --remote --file=./drizzle/0000_nice_marvel_boy.sql",
     "db:seed": "tsx scripts/seed-data.ts",
-    "db:seed:remote": "WORKER_URL=https://finnplan-mcp.lutfidmz.workers.dev tsx scripts/seed-data.ts",
+    "db:seed:remote": "WORKER_URL=https://reedrich-mcp.lutfidmz.workers.dev tsx scripts/seed-data.ts",
     "db:seed:local": "WORKER_URL=http://localhost:8787 tsx scripts/seed-data.ts",
     "agent:snippet": "tsx scripts/agent-snippet.ts",
     "agent:config": "tsx scripts/agent-snippet.ts"
   },
   "keywords": [
     "mcp",
+    "reedrich",
     "cloudflare-workers",
     "d1",
     "drizzle-orm",
-    "finance"
+    "finance",
+    "financial-planning",
+    "mathematics"
   ],
   "author": "",
   "license": "ISC",

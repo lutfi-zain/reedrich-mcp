@@ -1,8 +1,8 @@
 {
   "mcpServers": {
-    "eve-finance": {
+    "reedrich": {
       "type": "http",
-      "url": "https://finnplan-mcp.lutfidmz.workers.dev/mcp"
+      "url": "https://reedrich-mcp.lutfidmz.workers.dev/mcp"
     }
   }
 }

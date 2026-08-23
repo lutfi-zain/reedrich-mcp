@@ -1,5 +1,5 @@
 # ==============================================================================
-# OpenSpec Configuration for finnplan-mcp (Eve Finance Stateless MCP Server)
+# OpenSpec Configuration for reedrich-mcp (Reedrich Stateless MCP Server)
 # ==============================================================================
 # Framework: OpenSpec (Spec-Driven Development / SDD)
 # Schema: spec-driven (proposal -> specs -> design -> tasks -> apply -> archive)
@@ -9,10 +9,11 @@ schema: spec-driven
 
 context: |
   # PROJECT IDENTITY & DOMAIN
-  - Project Name: finnplan-mcp (Eve Finance MCP Server)
-  - Domain: Personal Finance Management System exposed via Model Context Protocol (MCP)
-  - Repository: lutfi-zain/finnplan-mcp
+  - Project Name: reedrich-mcp (Reedrich MCP Server)
+  - Domain: Personal Finance & Deterministic Wealth Planning System exposed via Model Context Protocol (MCP)
+  - Repository: lutfi-zain/reedrich-mcp
   - Role: High-performance, stateless MCP server deployed on Cloudflare Workers edge runtime.
+  - Persona: Inspired by Reed Richards (Mister Fantastic) — hyper-cognitive mathematical financial planning.
 
   # CORE TECHNOLOGY STACK
   - Runtime: Cloudflare Workers (V8 Isolate / workerd runtime)
@@ -29,18 +30,18 @@ context: |
      - Endpoints: /mcp (Streamable HTTP & SSE) and /sse
      - Transport: WebStandardStreamableHTTPServerTransport with enableJsonResponse: true
      - Response Normalization: Empty 202/204 responses return {"jsonrpc": "2.0", "result": {}} with application/json header to prevent client-side EOF JSON parse failures.
-  2. Dual-Layer MCP-Native Authentication:
+  2. Dual-Layer MCP-Native Authentication & Backward Compatibility:
      - Pure MCP Auth: Users register via register_user and authenticate via login_user tools directly over MCP JSON-RPC.
      - Credentials:
-       * Persistent API Key: Starts with prefix fp_live_, hashed using SHA-256 (crypto.subtle.digest) before storage in users.user_api_key_hash.
-       * Self-Contained JWT: 15-minute expiration (DEFAULT_TOKEN_EXPIRY_SECONDS = 900), signed with HMAC-SHA256 (HS256) using Web Crypto API. Claims: sub (userId), name, email, iss ('eve-finance-mcp'), aud ('eve-finance-client'), iat, exp.
+       * Persistent API Key: Starts with prefix rd_live_ (backward compatible with fp_live_), hashed using SHA-256 (crypto.subtle.digest) before storage in users.user_api_key_hash.
+       * Self-Contained JWT: 15-minute expiration (DEFAULT_TOKEN_EXPIRY_SECONDS = 900), signed with HMAC-SHA256 (HS256) using Web Crypto API. Claims: sub (userId), name, email, iss ('reedrich-mcp', accepts 'eve-finance-mcp'), aud ('reedrich-client', accepts 'eve-finance-client'), iat, exp.
      - Auth Header Extraction Order:
-       * Authorization: Bearer <fp_live_apiKey | jwt_token>
+       * Authorization: Bearer <rd_live_apiKey | fp_live_apiKey | jwt_token>
        * X-API-Key / mcp-api-key header
        * Query parameters (?apiKey=... or ?token=...)
        * In-tool argument fallback (apiKey or token parameter in tool call payload)
   3. Multi-Tenant Row-Level Security (RLS):
-     - Every data entity (wallets, categories, budgets, transactions) MUST be strictly scoped to userId extracted from the authenticated session.
+     - Every data entity (wallets, categories, budgets, transactions, debts_loans) MUST be strictly scoped to userId extracted from the authenticated session.
      - Cross-tenant data leakage is strictly forbidden. All SQL queries and Drizzle operations must include eq(table.userId, authenticatedUserId).
   4. Atomic Balance Reconciliation & Financial Invariants:
      - Balance updates must be calculated atomically on transactions creation, transfer, update, or deletion.
@@ -65,22 +66,29 @@ context: |
     * categories: category_id (UUID PK), category_user_id (FK -> users.user_id ON DELETE CASCADE), category_name, category_type (expense/income), category_icon, category_created_at
     * budgets: budget_id (UUID PK), budget_user_id (FK -> users.user_id ON DELETE CASCADE), budget_name, budget_category_id (FK -> categories.category_id ON DELETE SET NULL), budget_amount (REAL), budget_period_start, budget_period_end, budget_created_at
     * transactions: transaction_id (UUID PK), transaction_user_id (FK -> users.user_id ON DELETE CASCADE), transaction_wallet_id (FK -> wallets.wallet_id ON DELETE CASCADE), transaction_target_wallet_id (FK -> wallets.wallet_id ON DELETE SET NULL), transaction_category_id (FK -> categories.category_id ON DELETE SET NULL), transaction_budget_id (FK -> budgets.budget_id ON DELETE SET NULL), transaction_amount (REAL), transaction_admin_fee (REAL), transaction_type (expense/income/transfer), transaction_description, transaction_is_planned (INTEGER 0/1), transaction_date (ISO-8601), transaction_created_at
+    * debts_loans: debt_loan_id (UUID PK), debt_loan_user_id (FK -> users.user_id ON DELETE CASCADE), debt_loan_person_name, debt_loan_type (debt/loan), debt_loan_amount (REAL), debt_loan_remaining_amount (REAL), debt_loan_wallet_id (FK -> wallets.wallet_id ON DELETE SET NULL), debt_loan_due_date, debt_loan_status (unpaid/partially_paid/paid), debt_loan_notes, debt_loan_created_at
   - Key Constraints & Indexes:
     * Primary keys generated via crypto.randomUUID() ($defaultFn(() => crypto.randomUUID())).
     * Foreign keys with cascading deletes on userId and walletId.
     * Indexes on (userId, date), (userId, periodStart, periodEnd), and all foreign key columns for fast edge lookups.
 
-  # MCP TOOLS & RESOURCES REGISTRY
-  - Tools (11 total in src/mcp.ts):
+  # MCP TOOLS, RESOURCES & PROMPTS REGISTRY
+  - Tools (12 total in src/mcp.ts):
     * Auth: register_user, login_user
-    * Feedback: submit_feedback (creates GitHub Issue via REST API)
-    * Entity Management: manage_wallet, manage_category, manage_budget
+    * Feedback: submit_feedback (creates GitHub Issue on lutfi-zain/reedrich-mcp)
+    * Entity Management: manage_wallet, manage_category, manage_budget, manage_debt_loan
     * Financial Transactions: record_transaction, transfer_funds, update_transaction, list_transactions
     * Reporting & Analytics: financial_summary
-  - Resources (3 total):
-    * finance://db/schema: Database schema and table relationships
-    * finance://wallets/list: Live list of authenticated user wallets and balances
-    * finance://budgets/active: Current active budgets with spending utilization percentages
+  - Resources (4 total):
+    * reedrich://db/schema: Database schema and table relationships
+    * reedrich://wallets/list: Live list of authenticated user wallets and balances
+    * reedrich://budgets/active: Current active budgets with spending utilization percentages
+    * reedrich://debts/active: Active debts and loans with calculated totals
+  - Prompts (4 total):
+    * onboarding_assistant: Interactive onboarding guide
+    * daily_briefing: Daily financial status summary
+    * financial_planning: Deterministic math projection for financial goals
+    * debt_loan_advisor: Debt & loan prioritization and repayment playbook
 
   # COMMANDS & SCRIPTS
   - npm test: Run test suite with mock D1 database (tests/mcp.test.ts)

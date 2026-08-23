@@ -4,8 +4,12 @@ import type { JWTPayload } from 'hono/utils/jwt/types';
 export const DEFAULT_TOKEN_EXPIRY_SECONDS = 15 * 60; // 15 minutes (900 seconds)
 export const MAX_TOKEN_EXPIRY_SECONDS = 24 * 60 * 60; // 24 hours
 export const MIN_TOKEN_EXPIRY_SECONDS = 60; // 1 minute
-export const TOKEN_ISSUER = 'eve-finance-mcp';
-export const TOKEN_AUDIENCE = 'eve-finance-client';
+export const TOKEN_ISSUER = 'reedrich-mcp';
+export const TOKEN_AUDIENCE = 'reedrich-client';
+
+// Accepted issuers and audiences for zero-downtime backward compatibility
+export const ACCEPTED_TOKEN_ISSUERS = ['reedrich-mcp', 'eve-finance-mcp'];
+export const ACCEPTED_TOKEN_AUDIENCES = ['reedrich-client', 'eve-finance-client'];
 
 export interface UserTokenPayload extends JWTPayload {
   sub: string;
@@ -50,12 +54,12 @@ export async function hashApiKey(apiKey: string): Promise<string> {
 }
 
 /**
- * Generate a cryptographically secure random API key with 'fp_live_' prefix.
+ * Generate a cryptographically secure random API key with 'rd_live_' prefix.
  */
 export function generateApiKey(): string {
   const bytes = new Uint8Array(16);
   crypto.getRandomValues(bytes);
-  return `fp_live_${Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')}`;
+  return `rd_live_${Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')}`;
 }
 
 /**
@@ -111,7 +115,7 @@ export async function generateUserToken(
 
 /**
  * Cryptographically verify a JWT Bearer token and extract user information.
- * Requires an explicit secret string.
+ * Supports backward compatibility for tokens issued under legacy and new issuers.
  *
  * @param token Raw JWT string
  * @param secret Secret key for HMAC-SHA256 signature
@@ -130,8 +134,8 @@ export async function verifyUserToken(
       !payload ||
       typeof payload.sub !== 'string' ||
       payload.sub.trim() === '' ||
-      payload.iss !== TOKEN_ISSUER ||
-      payload.aud !== TOKEN_AUDIENCE
+      !ACCEPTED_TOKEN_ISSUERS.includes(payload.iss) ||
+      !ACCEPTED_TOKEN_AUDIENCES.includes(payload.aud)
     ) {
       return null;
     }

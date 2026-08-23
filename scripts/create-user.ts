@@ -51,7 +51,7 @@ async function main() {
   const targetEnv = isRemote ? 'remote' : 'local';
 
   console.log(`\n════════════════════════════════════════════════════════════`);
-  console.log(`  Eve Finance MCP — Zero-Friction User Minting (${targetEnv.toUpperCase()} D1)`);
+  console.log(`  Reedrich MCP — Zero-Friction User Minting (${targetEnv.toUpperCase()} D1)`);
   console.log(`════════════════════════════════════════════════════════════\n`);
 
   console.log(`👤 Name:     ${firstName} ${lastName}`);
@@ -77,7 +77,7 @@ async function main() {
   }
 
   const serverUrl = isRemote
-    ? 'https://finnplan-mcp.lutfidmz.workers.dev/mcp'
+    ? 'https://reedrich-mcp.lutfidmz.workers.dev/mcp'
     : 'http://localhost:8787/mcp';
 
   console.log(`────────────────────────────────────────────────────────────`);
@@ -88,7 +88,7 @@ async function main() {
   console.log(JSON.stringify({
     "$schema": "https://raw.githubusercontent.com/can1357/oh-my-pi/main/packages/coding-agent/src/config/mcp-schema.json",
     "mcpServers": {
-      "eve-finance": {
+      "reedrich": {
         "type": "http",
         "url": serverUrl,
         "headers": {
@@ -100,12 +100,12 @@ async function main() {
   console.log();
 
   console.log(`▶ 2. Claude Code CLI:`);
-  console.log(`claude mcp add --transport http --header "Authorization: Bearer ${apiKey}" eve-finance ${serverUrl}\n`);
+  console.log(`claude mcp add --transport http --header "Authorization: Bearer ${apiKey}" reedrich ${serverUrl}\n`);
 
   console.log(`▶ 3. OpenCode [opencode.json]:`);
   console.log(JSON.stringify({
     "mcp": {
-      "eve-finance": {
+      "reedrich": {
         "type": "http",
         "url": serverUrl,
         "headers": {
@@ -119,7 +119,7 @@ async function main() {
   console.log(`▶ 4. Cursor / VS Code [.cursor/mcp.json]:`);
   console.log(JSON.stringify({
     "mcpServers": {
-      "eve-finance": {
+      "reedrich": {
         "url": serverUrl,
         "headers": {
           "Authorization": `Bearer ${apiKey}`

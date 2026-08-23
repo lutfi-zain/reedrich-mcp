@@ -1,15 +1,15 @@
-# Eve Financial Agent Expert - Database Schema & Relationship Documentation
+# Reedrich MCP - Database Schema & Relationship Documentation
 
-This document describes the SQLite database architecture, schema definitions, relationships, and data modeling for the **Eve Financial Agent Expert** app.
+This document describes the Cloudflare D1 (SQLite) database architecture, schema definitions, relationships, and data modeling for the **Reedrich MCP** server.
 
 ---
 
 ## 1. Architecture & Tech Choice
 
-- **Database Engine**: SQLite 3 (via `better-sqlite3` native C++ bindings with WAL mode enabled).
-- **ORM Framework**: Drizzle ORM (`drizzle-orm/better-sqlite3`).
-- **Database Path**: Stored locally at `storage/finance.db`.
-- **Media Storage**: Attachment files (receipts, audio, PDFs, spreadsheets) are stored on disk under `storage/uploads/<type>/YYYY-MM/` and referenced via the `file_path` column in `transactions`.
+- **Database Engine**: Cloudflare D1 (SQLite) with WAL mode.
+- **ORM Framework**: Drizzle ORM (`drizzle-orm/d1`).
+- **Data Isolation**: Multi-tenant Row-Level Security via `user_id` foreign keys on all primary entities (`wallets`, `categories`, `budgets`, `transactions`, `debts_loans`).
+- **Naming Convention**: Table-prefixed column names (`user_...`, `wallet_...`, `category_...`, `budget_...`, `transaction_...`, `debt_loan_...`) with ISO-8601 timestamps.
 
 ---
 

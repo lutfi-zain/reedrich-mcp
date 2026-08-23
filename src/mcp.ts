@@ -115,7 +115,7 @@ async function createGithubIssue(opts: {
     headers: {
       "Accept": "application/vnd.github+json",
       "Authorization": `Bearer ${opts.token}`,
-      "User-Agent": "Eve-Finance-MCP-Server",
+      "User-Agent": "Reedrich-MCP-Server",
       "X-GitHub-Api-Version": "2022-11-28",
       "Content-Type": "application/json"
     },
@@ -128,13 +128,13 @@ async function createGithubIssue(opts: {
 
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`GitHub API error (${response.status}): ${errorText}`);
+    throw new Error(`GitHub API Error (${response.status}): ${errorText}`);
   }
 
   const data = (await response.json()) as any;
   return {
-    issueUrl: data.html_url || `https://github.com/${opts.repo}/issues/${data.number}`,
-    issueNumber: data.number
+    issueUrl: data.html_url || "",
+    issueNumber: data.number || 0
   };
 }
 
@@ -157,8 +157,8 @@ export function createMCPServer(
     const clean = candidate.trim();
     if (clean.length === 0) return null;
 
-    // Case A: Persistent API Key (starts with fp_live_ or raw key)
-    if (clean.startsWith("fp_live_")) {
+    // Case A: Persistent API Key (starts with rd_live_ or fp_live_)
+    if (clean.startsWith("rd_live_") || clean.startsWith("fp_live_")) {
       try {
         const hash = await hashApiKey(clean);
         const user = await db.select({ userId: schema.users.userId }).from(schema.users).where(eq(schema.users.userApiKeyHash, hash)).get();
@@ -187,7 +187,7 @@ export function createMCPServer(
   }
 
   const server = new Server(
-    { name: "eve-finance-mcp", version: "1.0.0" },
+    { name: "reedrich-mcp", version: "1.0.0" },
     { capabilities: { tools: {}, resources: {}, prompts: {} } }
   );
 
@@ -197,25 +197,25 @@ export function createMCPServer(
   server.setRequestHandler(ListResourcesRequestSchema, async () => ({
     resources: [
       {
-        uri: "finance://db/schema",
+        uri: "reedrich://db/schema",
         name: "Database Schema",
         mimeType: "application/json",
-        description: "Returns table structures and relationship definitions for Eve Finance DB."
+        description: "Returns table structures and relationship definitions for Reedrich DB."
       },
       {
-        uri: "finance://wallets/list",
+        uri: "reedrich://wallets/list",
         name: "User Wallets List",
         mimeType: "application/json",
         description: "Returns current list of active wallets and balances for the authenticated user."
       },
       {
-        uri: "finance://budgets/active",
+        uri: "reedrich://budgets/active",
         name: "Active Budgets Utilization",
         mimeType: "application/json",
         description: "Returns currently active budgets and calculated spending utilization."
       },
       {
-        uri: "finance://debts/active",
+        uri: "reedrich://debts/active",
         name: "Active Debts and Loans",
         mimeType: "application/json",
         description: "Returns active/unpaid debts and loans with calculated totals for the authenticated user."
@@ -226,7 +226,7 @@ export function createMCPServer(
   server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
     const { uri } = request.params;
 
-    if (uri === "finance://db/schema") {
+    if (uri === "reedrich://db/schema") {
       const schemaDef = {
         tables: {
           users: [
@@ -288,7 +288,7 @@ export function createMCPServer(
       throw new Error("Unauthorized: Session token is missing or expired. Please set 'Authorization: Bearer <apiKey>' in your MCP client headers or call 'login_user' / 'register_user'.");
     }
 
-    if (uri === "finance://wallets/list") {
+    if (uri === "reedrich://wallets/list") {
       const userWallets = await db.select().from(schema.wallets).where(eq(schema.wallets.walletUserId, effectiveUserId));
       return {
         contents: [
@@ -301,7 +301,7 @@ export function createMCPServer(
       };
     }
 
-    if (uri === "finance://budgets/active") {
+    if (uri === "reedrich://budgets/active") {
       const nowIso = currentIsoTimestamp();
       const activeBudgets = await db.select()
         .from(schema.budgets)
@@ -349,7 +349,7 @@ export function createMCPServer(
       };
     }
 
-    if (uri === "finance://debts/active") {
+    if (uri === "reedrich://debts/active") {
       const activeRecords = await db.select()
         .from(schema.debtsLoans)
         .where(
@@ -448,13 +448,13 @@ export function createMCPServer(
     if (name === "onboarding_assistant") {
       const currency = (args?.currency as string) || "IDR";
       return {
-        description: "Step-by-step guidance for setting up a new user account with wallets and default categories.",
+        description: "Step-by-step guidance for setting up a new user account with wallets and default categories in Reedrich.",
         messages: [
           {
             role: "user",
             content: {
               type: "text",
-              text: `You are the Eve Finance Onboarding Assistant. Guide the user through setting up their financial workspace step by step:
+              text: `You are the Reedrich Onboarding Assistant. Guide the user through setting up their financial workspace step by step:
 
 1. Check Onboarding Status:
    - Review the \`onboarding\` object from the user's login or registration response.
@@ -488,12 +488,12 @@ export function createMCPServer(
             role: "user",
             content: {
               type: "text",
-              text: `You are the Eve Finance Financial Analyst. Generate a comprehensive daily financial status report for the user${targetDate ? ` for date ${targetDate}` : ""}:
+              text: `You are the Reedrich Financial Analyst. Generate a comprehensive daily financial status report for the user${targetDate ? ` for date ${targetDate}` : ""}:
 
 1. Retrieve Financial State:
-   - Read resource \`finance://wallets/list\` to get all account balances and total liquid assets.
-   - Read resource \`finance://budgets/active\` to check current budget utilization and remaining limits.
-   - Read resource \`finance://debts/active\` to check upcoming debt and loan obligations.
+   - Read resource \`reedrich://wallets/list\` to get all account balances and total liquid assets.
+   - Read resource \`reedrich://budgets/active\` to check current budget utilization and remaining limits.
+   - Read resource \`reedrich://debts/active\` to check upcoming debt and loan obligations.
    - Call tool \`financial_summary\` with startDate and endDate${targetDate ? ` around ${targetDate}` : ""} to inspect cash flow (income vs expenses).
 
 2. Analyze & Synthesize:
@@ -522,7 +522,7 @@ export function createMCPServer(
             role: "user",
             content: {
               type: "text",
-              text: `You are the Eve Finance Financial Planning Advisor. Help the user project when they can achieve their financial goal:
+              text: `You are the Reedrich Financial Planning Advisor. Help the user project when they can achieve their financial goal with mathematical precision:
 
 Goal: ${goalDescription || "[Not specified - ask user]"}
 Target Amount: ${targetAmount !== undefined && targetAmount !== null ? targetAmount : "[Not specified - ask user]"}
@@ -532,8 +532,8 @@ ${!hasCompleteArgs ? `NOTE: The user has not provided complete goal details (goa
 Reasoning & Calculation Workflow:
 1. Gather Financial Profile:
    - Call \`financial_summary\` to determine the user's historical monthly income, monthly expenses, and net savings rate (Net Savings = Total Income - Total Expenses).
-   - Read \`finance://wallets/list\` to evaluate available idle savings that can be allocated toward this goal.
-   - Read \`finance://debts/active\` to factor in monthly debt repayment obligations that reduce disposable savings.
+   - Read \`reedrich://wallets/list\` to evaluate available idle savings that can be allocated toward this goal.
+   - Read \`reedrich://debts/active\` to factor in monthly debt repayment obligations that reduce disposable savings.
 
 2. Compute Timeline Projection:
    - Effective Monthly Savings Capacity = Average Net Monthly Savings - Monthly Debt Obligations.
@@ -562,10 +562,10 @@ Reasoning & Calculation Workflow:
             role: "user",
             content: {
               type: "text",
-              text: `You are the Eve Finance Debt & Loan Advisor. Help the user manage and optimize their liabilities and receivables:
+              text: `You are the Reedrich Debt & Loan Advisor. Help the user manage and optimize their liabilities and receivables:
 
 1. Retrieve Active Commitments:
-   - Read resource \`finance://debts/active\` to get aggregate total debt and total receivable.
+   - Read resource \`reedrich://debts/active\` to get aggregate total debt and total receivable.
    - Call tool \`manage_debt_loan\` with \`action: "list"\` to get all individual debt and loan records.
    - Call tool \`financial_summary\` to understand monthly disposable cash flow.
 
@@ -599,7 +599,7 @@ Reasoning & Calculation Workflow:
       // Authentication Tools
       {
         name: "register_user",
-        description: "Register a new user account with first name, last name, email, and WhatsApp number. Returns a persistent API Key (fp_live_...) and 15-minute JWT.",
+        description: "Register a new user account with first name, last name, email, and WhatsApp number. Returns a persistent API Key (rd_live_...) and 15-minute JWT.",
         inputSchema: {
           type: "object",
           properties: {
@@ -613,11 +613,11 @@ Reasoning & Calculation Workflow:
       },
       {
         name: "login_user",
-        description: "Authenticate with your persistent API Key to obtain a fresh 15-minute JWT session token.",
+        description: "Authenticate with your persistent API Key (rd_live_... or legacy fp_live_...) to obtain a fresh 15-minute JWT session token.",
         inputSchema: {
           type: "object",
           properties: {
-            apiKey: { type: "string", description: "Your persistent API Key (e.g. fp_live_...)" }
+            apiKey: { type: "string", description: "Your persistent API Key (e.g. rd_live_...)" }
           },
           required: ["apiKey"]
         }
@@ -639,7 +639,7 @@ Reasoning & Calculation Workflow:
             },
             name: { type: "string", description: "Optional: Submitter's full name (auto-resolved from profile if authenticated)" },
             email: { type: "string", description: "Optional: Submitter's email address (auto-resolved from profile if authenticated)" },
-            apiKey: { type: "string", description: "Optional: Your persistent API Key (fp_live_...) if not set in headers" }
+            apiKey: { type: "string", description: "Optional: Your persistent API Key (rd_live_...) if not set in headers" }
           },
           required: ["title", "feedback"]
         }

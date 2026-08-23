@@ -1,9 +1,9 @@
 {
   "mcpServers": {
-    "eve-finance": {
-      "url": "https://finnplan-mcp.lutfidmz.workers.dev/mcp",
+    "reedrich": {
+      "url": "https://reedrich-mcp.lutfidmz.workers.dev/mcp",
       "headers": {
-        "Authorization": "Bearer <YOUR_JWT_TOKEN_OR_API_KEY>"
+        "Authorization": "Bearer <YOUR_JWT_TOKEN_OR_rd_live_API_KEY>"
       }
     }
   }

@@ -3,11 +3,11 @@ set -e
 
 LOCAL_PORT=8787
 LOCAL_URL="http://localhost:${LOCAL_PORT}"
-DEV_SECRET="finnplan_local_dev_jwt_secret_9948271038571204"
+DEV_SECRET="reedrich_local_dev_jwt_secret_9948271038571204"
 
 echo ""
 echo "╔════════════════════════════════════════════════════════════╗"
-echo "║  Eve Finance MCP — Local D1 Integration Test (E2E)        ║"
+echo "║  Reedrich MCP — Local D1 Integration Test (E2E)           ║"
 echo "╚════════════════════════════════════════════════════════════╝"
 echo ""
 

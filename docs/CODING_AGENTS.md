@@ -1,6 +1,6 @@
-# Connecting Eve Finance MCP to AI Coding Agents
+# Connecting Reedrich MCP to AI Coding Agents
 
-This guide explains how to connect and configure the **Eve Finance MCP Server** with modern terminal and editor AI coding agents:
+This guide explains how to connect and configure the **Reedrich MCP Server** with modern terminal and editor AI coding agents:
 - [1. Claude Code](#1-claude-code)
 - [2. OpenCode](#2-opencode)
 - [3. Pi (pi-mcp-adapter)](#3-pi-pi-mcp-adapter)
@@ -15,7 +15,7 @@ This guide explains how to connect and configure the **Eve Finance MCP Server** 
 
 | Environment | MCP Endpoint URL |
 | :--- | :--- |
-| **Cloudflare Production (Remote)** | `https://finnplan-mcp.lutfidmz.workers.dev/mcp` |
+| **Cloudflare Production (Remote)** | `https://reedrich-mcp.lutfidmz.workers.dev/mcp` |
 | **Local Development** | `http://localhost:8787/mcp` |
 
 ---
@@ -36,10 +36,10 @@ npm run user:create -- --name "Your Name" --email "you@example.com" --phone "+62
 
 ## 🔐 Zero-Friction Authentication Methods
 
-Eve Finance MCP supports 3 flexible authorization methods tailored for AI coding agents:
+Reedrich MCP supports 3 flexible authorization methods tailored for AI coding agents:
 
-1. **Persistent API Key in Headers (Recommended)**: Set `"Authorization": "Bearer fp_live_..."` or `"X-API-Key": "fp_live_..."` in your `mcp.json`. **Never expires**, no re-login needed!
-2. **In-Tool Parameter Fallback**: If connected without headers, the agent can simply pass `apiKey: "fp_live_..."` directly in any tool call argument.
+1. **Persistent API Key in Headers (Recommended)**: Set `"Authorization": "Bearer rd_live_..."` or `"X-API-Key": "rd_live_..."` in your `mcp.json`. **Never expires**, no re-login needed!
+2. **In-Tool Parameter Fallback**: If connected without headers, the agent can simply pass `apiKey: "rd_live_..."` directly in any tool call argument.
 3. **Self-Contained JWT Token**: Set `"Authorization": "Bearer <jwt>"` for ephemeral (15-minute) web client sessions.
 
 ---
@@ -54,10 +54,10 @@ Run in your project root or terminal:
 
 ```bash
 # Add with persistent API Key (Zero Expiration):
-claude mcp add --transport http --header "Authorization: Bearer fp_live_YOUR_API_KEY" eve-finance https://finnplan-mcp.lutfidmz.workers.dev/mcp
+claude mcp add --transport http --header "Authorization: Bearer rd_live_YOUR_API_KEY" reedrich https://reedrich-mcp.lutfidmz.workers.dev/mcp
 
 # OR Add unauthenticated (agent passes apiKey in tool calls):
-claude mcp add --transport http eve-finance https://finnplan-mcp.lutfidmz.workers.dev/mcp
+claude mcp add --transport http reedrich https://reedrich-mcp.lutfidmz.workers.dev/mcp
 ```
 
 ### Option B: Project Config File (`.claude/mcp.json` or `.mcp.json`)
@@ -67,11 +67,11 @@ Create `.claude/mcp.json` in your project root:
 ```json
 {
   "mcpServers": {
-    "eve-finance": {
+    "reedrich": {
       "type": "http",
-      "url": "https://finnplan-mcp.lutfidmz.workers.dev/mcp",
+      "url": "https://reedrich-mcp.lutfidmz.workers.dev/mcp",
       "headers": {
-        "Authorization": "Bearer fp_live_YOUR_API_KEY"
+        "Authorization": "Bearer rd_live_YOUR_API_KEY"
       }
     }
   }
@@ -94,9 +94,9 @@ Create `opencode.json` in your project root:
 {
   "$schema": "https://opencode.ai/config.json",
   "mcp": {
-    "eve-finance": {
+    "reedrich": {
       "type": "remote",
-      "url": "https://finnplan-mcp.lutfidmz.workers.dev/mcp",
+      "url": "https://reedrich-mcp.lutfidmz.workers.dev/mcp",
       "headers": {
         "Authorization": "Bearer YOUR_15_MIN_JWT_OR_API_KEY"
       }
@@ -113,9 +113,9 @@ Run inside OpenCode TUI or terminal:
 opencode mcp add
 ```
 When prompted:
-1. Server Name: `eve-finance`
+1. Server Name: `reedrich`
 2. Server Type: `remote`
-3. Server URL: `https://finnplan-mcp.lutfidmz.workers.dev/mcp`
+3. Server URL: `https://reedrich-mcp.lutfidmz.workers.dev/mcp`
 
 ---
 
@@ -137,8 +137,8 @@ Create `.mcp.json` in your project root (or `~/.config/mcp/mcp.json` for global 
 ```json
 {
   "mcpServers": {
-    "eve-finance": {
-      "url": "https://finnplan-mcp.lutfidmz.workers.dev/mcp",
+    "reedrich": {
+      "url": "https://reedrich-mcp.lutfidmz.workers.dev/mcp",
       "headers": {
         "Authorization": "Bearer YOUR_15_MIN_JWT_OR_API_KEY"
       }
@@ -153,7 +153,7 @@ Inside Pi terminal, run:
 ```bash
 /mcp setup
 ```
-Select `eve-finance` to confirm tools and active connection.
+Select `reedrich` to confirm tools and active connection.
 
 ---
 
@@ -169,8 +169,8 @@ Create `.omp/mcp.json` (or `.mcp.json` in root):
 {
   "$schema": "https://raw.githubusercontent.com/can1357/oh-my-pi/main/packages/coding-agent/src/config/mcp-schema.json",
   "mcpServers": {
-    "eve-finance": {
-      "url": "https://finnplan-mcp.lutfidmz.workers.dev/mcp",
+    "reedrich": {
+      "url": "https://reedrich-mcp.lutfidmz.workers.dev/mcp",
       "headers": {
         "Authorization": "Bearer YOUR_15_MIN_JWT_OR_API_KEY"
       }
@@ -186,8 +186,8 @@ Inside your OMP session:
 /mcp add
 ```
 - Select **Remote HTTP** transport.
-- Enter URL: `https://finnplan-mcp.lutfidmz.workers.dev/mcp`.
-- Enter Name: `eve-finance`.
+- Enter URL: `https://reedrich-mcp.lutfidmz.workers.dev/mcp`.
+- Enter Name: `reedrich`.
 
 ---
 
@@ -197,8 +197,8 @@ Inside your OMP session:
 ```json
 {
   "mcpServers": {
-    "eve-finance": {
-      "url": "https://finnplan-mcp.lutfidmz.workers.dev/mcp",
+    "reedrich": {
+      "url": "https://reedrich-mcp.lutfidmz.workers.dev/mcp",
       "headers": {
         "Authorization": "Bearer YOUR_15_MIN_JWT_OR_API_KEY"
       }
@@ -211,9 +211,9 @@ Inside your OMP session:
 ```json
 {
   "mcpServers": {
-    "eve-finance": {
+    "reedrich": {
       "type": "http",
-      "url": "https://finnplan-mcp.lutfidmz.workers.dev/mcp",
+      "url": "https://reedrich-mcp.lutfidmz.workers.dev/mcp",
       "headers": {
         "Authorization": "Bearer YOUR_15_MIN_JWT_OR_API_KEY"
       }
@@ -231,8 +231,8 @@ In `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or 
 ```json
 {
   "mcpServers": {
-    "eve-finance": {
-      "url": "https://finnplan-mcp.lutfidmz.workers.dev/mcp",
+    "reedrich": {
+      "url": "https://reedrich-mcp.lutfidmz.workers.dev/mcp",
       "headers": {
         "Authorization": "Bearer YOUR_15_MIN_JWT_OR_API_KEY"
       }
@@ -245,17 +245,17 @@ In `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or 
 
 ## 7. How to Authenticate & Example Prompts
 
-Eve Finance MCP is designed with **Pure Native MCP Authentication**. You don't need any web dashboard or REST API to manage accounts.
+Reedrich MCP is designed with **Pure Native MCP Authentication**. You don't need any web dashboard or REST API to manage accounts.
 
 ### Workflow A: Let the Coding Agent Register / Login Directly
 
 If you connect without an `Authorization` header, the agent can call `register_user` or `login_user` directly:
 
 #### 1. Registration Prompt:
-> *"Register me on Eve Finance with name John Doe, email john@example.com, and WhatsApp number +6281234567890. Save the returned API key safely."*
+> *"Register me on Reedrich with name John Doe, email john@example.com, and WhatsApp number +6281234567890. Save the returned API key safely."*
 
 #### 2. Login Prompt:
-> *"Login to Eve Finance using my API key `fp_live_...` and use the resulting token for future queries."*
+> *"Login to Reedrich using my API key `rd_live_...` and use the resulting token for future queries."*
 
 ---
 
