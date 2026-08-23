@@ -8,7 +8,7 @@
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit",
     "build": "wrangler deploy --dry-run",
-    "test": "tsx --test tests/mcp.test.ts",
+    "test": "tsx --test tests/mcp.test.ts tests/api.test.ts tests/oauth.test.ts",
     "test:local": "bash scripts/run-local-integration.sh",
     "test:remote": "bash scripts/run-integration.sh",
     "test:integration": "bash scripts/run-integration.sh",

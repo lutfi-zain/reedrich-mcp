@@ -6,13 +6,14 @@ Stateless Model Context Protocol (MCP) server for personal finance & determinist
 
 ## 🚀 Features
 
-- **Stateless HTTP Transport**: Implements Web Standard Streamable HTTP & SSE (`/mcp` and `/sse`) via `@modelcontextprotocol/sdk`.
-- **Pure MCP-Native Authentication**: Register and login directly using MCP tools (`register_user` & `login_user`) without external REST endpoints.
-- **15-Minute Self-Contained JWT**: Cryptographic token verification with **zero database queries** required for auth on finance tool calls.
-- **Multi-Tenant Row-Level Security (RLS)**: Automatically isolates user data via `userId` extracted directly from JWT token payload.
-- **12 MCP Tools**:
-  - `register_user`: Register with `firstName`, `lastName`, `email`, and `whatsappNumber` (with country code `+...`) → returns persistent `apiKey` (`rd_live_...`), 15-minute JWT, and dynamic `onboarding` status.
-  - `login_user`: Authenticate with `apiKey` → returns fresh 15-minute JWT and dynamic `onboarding` status.
+- **Dual-Protocol Engine**:
+  - **MCP Transport**: Full Model Context Protocol JSON-RPC 2.0 over Streamable HTTP & SSE (`/mcp` and `/sse`) for Claude Code, Cursor, Pi, OMP, OpenCode.
+  - **ChatGPT Actions**: Standard REST API (`/api/v1/*`) with automated OpenAPI 3.0.0 specification (`/openapi.json`) and lightweight OAuth 2.0 authorization server (`/oauth/authorize`, `/oauth/token`) for GPT Store publishing without Developer Mode.
+- **Public Privacy Policy**: Hosted at `/privacy` for instant zero-cost compliance on Cloudflare Workers.
+- **Pure MCP-Native & OAuth Authentication**: Register and login via MCP tools (`register_user` & `login_user`) or through the web OAuth consent UI with unified D1 user identity.
+- **Cryptographic JWT Tokens**: 15-minute ephemeral tokens for MCP tools and 30-day session tokens for ChatGPT Actions with instant signature verification.
+- **Multi-Tenant Row-Level Security (RLS)**: Automatically isolates user data via `userId` extracted directly from JWT token payload or hashed API keys.
+- **12 Core Financial Tools / Endpoints**:
   - `submit_feedback`: Submit user feedback, bug reports, or feature requests → automatically creates a formatted GitHub Issue on `lutfi-zain/reedrich-mcp`.
   - `manage_wallet`: Create, list, update wallets.
   - `manage_category`: Create, list, and bulk-seed standard expense and income categories (`action: "seed_defaults"`).
@@ -210,4 +211,16 @@ npx wrangler d1 execute finance_db --remote --file=./drizzle/0003_add_debts_loan
 # 3. Deploy worker
 npm run deploy
 ```
+
+---
+
+## 🤖 ChatGPT Actions & GPT Store Publishing
+
+Reedrich includes full support for ChatGPT Custom Actions and GPT Store publishing without requiring Developer Mode:
+
+- **OpenAPI 3.0 Schema**: `https://reedrich-mcp.lutfidmz.workers.dev/openapi.json`
+- **OAuth 2.0 Authorize URL**: `https://reedrich-mcp.lutfidmz.workers.dev/oauth/authorize`
+- **OAuth 2.0 Token URL**: `https://reedrich-mcp.lutfidmz.workers.dev/oauth/token`
+- **Privacy Policy**: `https://reedrich-mcp.lutfidmz.workers.dev/privacy`
+- **Setup Guide**: See [docs/CHATGPT_ACTIONS_SETUP.md](docs/CHATGPT_ACTIONS_SETUP.md) for full step-by-step instructions.
 

@@ -8,28 +8,30 @@ If you are extending this project into a standalone MCP server (or integrating w
 
 ## 1. Architecture Overview
 
-- **Protocol**: Model Context Protocol (MCP) over JSON-RPC 2.0 (Streamable HTTP, SSE, or Stdio transport).
+- **Dual-Protocol Engine**:
+  - **MCP Protocol**: Model Context Protocol over JSON-RPC 2.0 (Streamable HTTP & SSE at `/mcp` and `/sse`).
+  - **ChatGPT Actions / REST API**: OpenAPI 3.0.0 specification (`/openapi.json`) and REST endpoints (`/api/v1/*`) with OAuth 2.0 authentication (`/oauth/authorize`, `/oauth/token`).
 - **Backend Database**: Cloudflare D1 (SQLite) with Drizzle ORM and table-prefixed columns (`user_...`, `wallet_...`, `transaction_...`, `category_...`, `budget_...`, `debt_loan_...`).
-- **Authentication**: Stateless 15-minute JWT with dual-issuer backward compatibility, persistent API keys (`rd_live_...`), and SHA-256 server-side hashing.
+- **Authentication**: Stateless JWT tokens, persistent API keys (`rd_live_...`), and OAuth 2.0 code exchange with SHA-256 server-side hashing.
 - **Multi-Tenancy**: Built-in Row-Level Security (RLS) ensuring strict isolation across users.
 
 ```
 ┌─────────────────────────┐               ┌─────────────────────────────────┐
-│       MCP Client        │               │           MCP Server            │
-│ (Claude/OpenCode/Pi/OMP)│  JSON-RPC 2.0 │      (Reedrich MCP Tools)       │
-│                         ├──────────────►│                                 │
-│  - tools/list           │ Streamable    │  - register_user / login_user   │
-│  - tools/call           │ HTTP / SSE    │  - manage_wallet / budget       │
-│  - resources/read       │               │  - manage_debt_loan             │
-│  - prompts/get          │◄──────────────┤  - record_transaction           │
+│       MCP Client        │ JSON-RPC 2.0  │           MCP Server            │
+│ (Claude/OpenCode/Pi/OMP)├──────────────►│      (Streamable HTTP / SSE)    │
 └─────────────────────────┘               └────────────────┬────────────────┘
                                                            │
+┌─────────────────────────┐   REST API                     ▼
+│     ChatGPT Actions     ├──────────────►┌─────────────────────────────────┐
+│  (Public in GPT Store)  │  OpenAPI 3.0  │       Core Service Layer        │
+└─────────────────────────┘               │   (Shared Logic & Validations)  │
+                                          └────────────────┬────────────────┘
+                                                           │
                                                            ▼
-                                               ┌───────────────────────┐
-                                               │ Cloudflare D1: SQLite │
-                                               └───────────────────────┘
+                                              ┌───────────────────────┐
+                                              │ Cloudflare D1: SQLite │
+                                              └───────────────────────┘
 ```
-
 ---
 
 ## 2. MCP Tools Registry

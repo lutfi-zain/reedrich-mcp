@@ -2,7 +2,7 @@ import { sign, verify } from 'hono/jwt';
 import type { JWTPayload } from 'hono/utils/jwt/types';
 
 export const DEFAULT_TOKEN_EXPIRY_SECONDS = 15 * 60; // 15 minutes (900 seconds)
-export const MAX_TOKEN_EXPIRY_SECONDS = 24 * 60 * 60; // 24 hours
+export const MAX_TOKEN_EXPIRY_SECONDS = 30 * 24 * 60 * 60; // 30 days (2,592,000 seconds)
 export const MIN_TOKEN_EXPIRY_SECONDS = 60; // 1 minute
 export const TOKEN_ISSUER = 'reedrich-mcp';
 export const TOKEN_AUDIENCE = 'reedrich-client';

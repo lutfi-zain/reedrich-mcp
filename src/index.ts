@@ -5,12 +5,18 @@ import { eq } from 'drizzle-orm';
 import * as schema from './db/schema';
 import { createMCPServer } from './mcp';
 import { verifyUserToken, hashApiKey } from './utils/token';
+import api from './routes/api';
+import oauth from './routes/oauth';
+import privacy from './routes/privacy';
+import { generateOpenApiSpec } from './routes/openapi';
 
 type Bindings = {
   DB: D1Database;
   JWT_SECRET: string;
   GITHUB_TOKEN?: string;
   GITHUB_REPO?: string;
+  OAUTH_CLIENT_ID?: string;
+  OAUTH_CLIENT_SECRET?: string;
 };
 
 const app = new Hono<{ Bindings: Bindings }>();
@@ -18,7 +24,7 @@ const app = new Hono<{ Bindings: Bindings }>();
 // Global Security & CORS Headers
 app.use('*', async (c, next) => {
   c.header('Access-Control-Allow-Origin', '*');
-  c.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  c.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   c.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-API-Key, mcp-api-key, mcp-session-id, MCP-Protocol-Version');
   c.header('Access-Control-Max-Age', '86400');
   c.header('X-Content-Type-Options', 'nosniff');
@@ -30,93 +36,115 @@ app.use('*', async (c, next) => {
   await next();
 });
 
-// Centralized Unhandled Error Handler (Sanitizes stack trace leaks)
+// Centralized Unhandled Error Handler
 app.onError((err, c) => {
-  console.error('Unhandled Application Error:', err);
+  console.error('[Reedrich Error]', err);
   return c.json({ error: 'Internal Server Error', message: err.message }, 500);
 });
 
 // Health check & Server info endpoint
 app.get('/', (c) => {
+  const origin = new URL(c.req.url).origin;
   return c.json({
     name: 'reedrich-mcp',
     status: 'ok',
-    auth: 'dual-auth-api-key-and-jwt',
-    description: 'Stateless MCP Server for Reedrich — Mathematical Intelligence & Financial Planning on Cloudflare Workers (D1)',
+    version: '1.0.0',
+    description: 'Dual-Protocol Server for Reedrich — Mathematical Intelligence & Financial Planning Engine (MCP & ChatGPT Actions)',
+    protocols: {
+      mcp: {
+        streamableHttp: '/mcp',
+        sse: '/sse',
+        transport: 'JSON-RPC 2.0',
+      },
+      chatgptActions: {
+        restApiBase: '/api/v1',
+        openapiSchema: '/openapi.json',
+        privacyPolicy: '/privacy',
+      },
+      oauth: {
+        authorizeUrl: `${origin}/oauth/authorize`,
+        tokenUrl: `${origin}/oauth/token`,
+      },
+    },
     authMethods: [
       'Authorization: Bearer <rd_live_apiKey | fp_live_apiKey>',
       'Authorization: Bearer <jwt_token>',
       'X-API-Key: <rd_live_apiKey | fp_live_apiKey>',
-      'In-tool apiKey argument'
+      'OAuth 2.0 Authorization Code Flow',
+      'In-tool apiKey argument',
     ],
-    authTools: {
-      register: 'register_user',
-      login: 'login_user'
-    },
-    endpoints: {
-      mcp: '/mcp',
-      sse: '/sse'
-    }
   });
 });
 
 app.get('/health', (c) => c.text('OK'));
 
-// Auth helper: Resolves User ID from Bearer API Key (rd_live_... / fp_live_...), Bearer JWT, X-API-Key, or query params
+// Public OpenAPI 3.0 specification endpoint
+app.get('/openapi.json', (c) => {
+  const origin = new URL(c.req.url).origin;
+  return c.json(generateOpenApiSpec(origin));
+});
+
+// Mount Routes
+app.route('/api/v1', api);
+app.route('/oauth', oauth);
+app.route('/privacy', privacy);
+
+// Auth helper for MCP JSON-RPC requests
 async function extractAuthenticatedUserId(
   c: Context<{ Bindings: Bindings }>,
   db: DrizzleD1Database<typeof schema>
 ): Promise<string | null> {
-  let candidate: string | null = null;
+  const authHeader = c.req.header('Authorization') || c.req.header('authorization');
+  const apiKeyHeader =
+    c.req.header('X-API-Key') ||
+    c.req.header('x-api-key') ||
+    c.req.header('mcp-api-key');
+  const queryApiKey = c.req.query('apiKey') || c.req.query('token');
 
-  // 1. Check Authorization Header (Bearer <key_or_jwt>)
-  const authHeader = c.req.header('Authorization');
-  if (authHeader) {
-    const match = authHeader.match(/^Bearer\s+(.+)$/i);
-    if (match) {
-      candidate = match[1].trim();
-    }
+  let tokenCandidate = '';
+  if (authHeader && (authHeader.startsWith('Bearer ') || authHeader.startsWith('bearer '))) {
+    tokenCandidate = authHeader.slice(7).trim();
+  } else if (apiKeyHeader) {
+    tokenCandidate = apiKeyHeader.trim();
+  } else if (queryApiKey) {
+    tokenCandidate = queryApiKey.trim();
   }
 
-  // 2. Check X-API-Key or mcp-api-key headers
-  if (!candidate) {
-    candidate = c.req.header('X-API-Key') || c.req.header('x-api-key') || c.req.header('mcp-api-key') || null;
-    if (candidate) candidate = candidate.trim();
-  }
+  if (!tokenCandidate) return null;
 
-  // 3. Check Query Parameter (?apiKey=... or ?token=...)
-  if (!candidate) {
-    candidate = c.req.query('apiKey') || c.req.query('token') || null;
-    if (candidate) candidate = candidate.trim();
-  }
-
-  if (!candidate) return null;
-
-  // Case A: Persistent API Key (starts with rd_live_, fp_live_, or matches API key pattern)
-  if (candidate.startsWith('rd_live_') || candidate.startsWith('fp_live_')) {
+  // Case A: Persistent API Key
+  if (tokenCandidate.startsWith('rd_live_') || tokenCandidate.startsWith('fp_live_')) {
     try {
-      const keyHash = await hashApiKey(candidate);
-      const user = await db.select({ userId: schema.users.userId }).from(schema.users).where(eq(schema.users.userApiKeyHash, keyHash)).get();
+      const hash = await hashApiKey(tokenCandidate);
+      const user = await db
+        .select({ userId: schema.users.userId })
+        .from(schema.users)
+        .where(eq(schema.users.userApiKeyHash, hash))
+        .get();
       return user ? user.userId : null;
     } catch {
       return null;
     }
   }
 
-  // Case B: Self-Contained JWT Token
-  const secret = c.env?.JWT_SECRET;
-  if (!secret) {
-    console.error('Configuration Error: JWT_SECRET binding is missing');
-    return null;
+  // Case B: Self-Contained Signed JWT
+  try {
+    const jwtUser = await verifyUserToken(tokenCandidate, c.env.JWT_SECRET);
+    if (jwtUser && jwtUser.userId) {
+      return jwtUser.userId;
+    }
+  } catch {
+    // Continue to fallback
   }
 
-  const user = await verifyUserToken(candidate, secret);
-  if (user) return user.userId;
-
-  // Case C: Fallback check if a raw non-prefixed key was provided
+  // Case C: Fallback Hash
   try {
-    const keyHash = await hashApiKey(candidate);
-    const user = await db.select({ userId: schema.users.userId }).from(schema.users).where(eq(schema.users.userApiKeyHash, keyHash)).get();
+    const hash = await hashApiKey(tokenCandidate);
+    const user = await db
+      .select({ userId: schema.users.userId })
+      .from(schema.users)
+      .where(eq(schema.users.userApiKeyHash, hash))
+      .get();
     return user ? user.userId : null;
   } catch {
     return null;
@@ -133,7 +161,6 @@ async function handleMcpRequest(c: Context<{ Bindings: Bindings }>) {
     return c.json({ error: 'Server Misconfiguration: Database (DB) binding is missing' }, 500);
   }
 
-  // If a browser/tool performs a plain GET without SSE Accept header, return friendly info
   const rawAccept = c.req.header('accept') || '';
   if (c.req.method === 'GET' && !rawAccept.includes('text/event-stream') && !rawAccept.includes('*/*')) {
     return c.json({
@@ -148,7 +175,6 @@ async function handleMcpRequest(c: Context<{ Bindings: Bindings }>) {
   const db = drizzle(c.env.DB, { schema });
   const userId = await extractAuthenticatedUserId(c, db);
 
-  // Use stateless WebStandardStreamableHTTPServerTransport
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: undefined,
     enableJsonResponse: true,
@@ -160,7 +186,6 @@ async function handleMcpRequest(c: Context<{ Bindings: Bindings }>) {
   });
   await mcpServer.connect(transport);
 
-  // Normalize Request headers for maximum compatibility across various MCP clients
   const headers = new Headers(c.req.raw.headers);
   if (c.req.method === 'POST') {
     headers.set('accept', 'application/json, text/event-stream');
@@ -172,13 +197,12 @@ async function handleMcpRequest(c: Context<{ Bindings: Bindings }>) {
     headers.set('accept', 'text/event-stream');
   }
 
-  // Safely parse body once for POST requests
   let parsedBody: unknown = undefined;
   if (c.req.method === 'POST') {
     try {
       parsedBody = await c.req.json();
     } catch {
-      // Empty or non-JSON body - transport will handle error formatting
+      // Empty or non-JSON body
     }
   }
 
@@ -189,8 +213,6 @@ async function handleMcpRequest(c: Context<{ Bindings: Bindings }>) {
 
   const response = await transport.handleRequest(normalizedRequest, { parsedBody });
 
-  // Ensure empty responses (such as 202 Accepted on notifications or DELETE) return valid JSON body
-  // to avoid "JSON Parse error: Unexpected EOF" on clients that call res.json() unconditionally.
   if (response.status === 202 || response.status === 204 || (!response.body && response.status === 200)) {
     const resHeaders = new Headers(response.headers);
     resHeaders.set('content-type', 'application/json');
@@ -203,7 +225,6 @@ async function handleMcpRequest(c: Context<{ Bindings: Bindings }>) {
   return response;
 }
 
-// Mount across all relevant routes and methods
 app.all('/mcp', handleMcpRequest);
 app.all('/sse', handleMcpRequest);
 app.post('/', handleMcpRequest);

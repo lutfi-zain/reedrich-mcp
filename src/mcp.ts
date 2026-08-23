@@ -7,136 +7,45 @@ import {
   ListPromptsRequestSchema,
   GetPromptRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { DrizzleD1Database } from "drizzle-orm/d1";
+import type { DrizzleD1Database } from "drizzle-orm/d1";
+import { sql, eq } from "drizzle-orm";
 import * as schema from "./db/schema";
-import { eq, and, desc, gte, lte, sql } from "drizzle-orm";
 import {
-  generateApiKey,
-  generateUserId,
-  generateUserToken,
-  verifyUserToken,
-  hashApiKey,
-  isValidEmail,
-  isValidWhatsApp,
-  DEFAULT_TOKEN_EXPIRY_SECONDS,
-} from "./utils/token";
-import {
-  isValidIsoDateOrTimestamp,
-  normalizeToIsoTimestamp,
-  currentIsoTimestamp,
-} from "./utils/date";
+  DEFAULT_CATEGORIES,
+  evaluateOnboarding,
+  registerUser,
+  loginUser,
+  resolveUserFromKeyOrToken,
+  listWallets,
+  createWallet,
+  updateWallet,
+  listCategories,
+  createCategory,
+  seedDefaultCategories,
+  listBudgets,
+  createBudget,
+  getBudgetStatus,
+  recordTransaction,
+  updateTransaction,
+  listTransactions,
+  transferFunds,
+  createDebtLoan,
+  listDebtsLoans,
+  repayDebtLoan,
+  updateDebtLoan,
+  getActiveDebtsLoansSummary,
+  getFinancialSummary,
+  submitFeedback,
+  type OnboardingStatus,
+} from "./services";
 
-// Helper validators
-function isValidPositiveNumber(val: any): boolean {
-  return typeof val === "number" && Number.isFinite(val) && val > 0;
-}
-
-function isValidFiniteNumber(val: any): boolean {
-  return typeof val === "number" && Number.isFinite(val);
-}
-
-function isValidUUID(id: any): boolean {
-  return typeof id === "string" && id.trim().length > 0;
-}
-
-export const DEFAULT_CATEGORIES = [
-  // Expense categories
-  { name: "Makanan & Minuman", type: "expense" as const, icon: "🍔" },
-  { name: "Transportasi", type: "expense" as const, icon: "🚗" },
-  { name: "Belanja", type: "expense" as const, icon: "🛍️" },
-  { name: "Tagihan & Utilitas", type: "expense" as const, icon: "💡" },
-  { name: "Hiburan", type: "expense" as const, icon: "🎬" },
-  { name: "Kesehatan", type: "expense" as const, icon: "💊" },
-  // Income categories
-  { name: "Gaji", type: "income" as const, icon: "💼" },
-  { name: "Investasi & Bunga", type: "income" as const, icon: "📈" },
-  { name: "Usaha / Freelance", type: "income" as const, icon: "💻" },
-  { name: "Pemasukan Lainnya", type: "income" as const, icon: "🎁" },
-];
-
-export async function evaluateOnboarding(
-  db: DrizzleD1Database<typeof schema>,
-  userId: string
-): Promise<{
-  isComplete: boolean;
-  needs: string[];
-  suggestions: string[];
-  message: string;
-}> {
-  const [walletCount] = await db
-    .select({ count: sql<number>`count(*)` })
-    .from(schema.wallets)
-    .where(eq(schema.wallets.walletUserId, userId));
-
-  const [categoryCount] = await db
-    .select({ count: sql<number>`count(*)` })
-    .from(schema.categories)
-    .where(eq(schema.categories.categoryUserId, userId));
-
-  const hasWallets = Number(walletCount?.count || 0) > 0;
-  const hasCategories = Number(categoryCount?.count || 0) > 0;
-  const needs: string[] = [];
-  if (!hasWallets) needs.push("wallet");
-  if (!hasCategories) needs.push("categories");
-
-  const suggestions: string[] = [];
-  const [budgetCount] = await db
-    .select({ count: sql<number>`count(*)` })
-    .from(schema.budgets)
-    .where(eq(schema.budgets.budgetUserId, userId));
-  if (Number(budgetCount?.count || 0) === 0) suggestions.push("budget");
-
-  const isComplete = needs.length === 0;
-  const message = isComplete
-    ? "Setup complete! You can start recording transactions."
-    : `Please set up: ${needs.join(", ")}. Use the onboarding_assistant prompt for guidance.`;
-
-  return { isComplete, needs, suggestions, message };
-}
+export { DEFAULT_CATEGORIES, evaluateOnboarding, type OnboardingStatus };
 
 export type MCPOptions = {
   githubToken?: string;
   githubRepo?: string;
   fetchFn?: typeof fetch;
 };
-
-async function createGithubIssue(opts: {
-  token: string;
-  repo: string;
-  title: string;
-  body: string;
-  labels?: string[];
-  fetchFn?: typeof fetch;
-}): Promise<{ issueUrl: string; issueNumber: number }> {
-  const fetchImpl = opts.fetchFn || fetch;
-  const url = `https://api.github.com/repos/${opts.repo}/issues`;
-  const response = await fetchImpl(url, {
-    method: "POST",
-    headers: {
-      "Accept": "application/vnd.github+json",
-      "Authorization": `Bearer ${opts.token}`,
-      "User-Agent": "Reedrich-MCP-Server",
-      "X-GitHub-Api-Version": "2022-11-28",
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      title: opts.title,
-      body: opts.body,
-      labels: opts.labels || ["feedback", "user-submitted"]
-    })
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`GitHub API Error (${response.status}): ${errorText}`);
-  }
-
-  const data = (await response.json()) as any;
-  return {
-    issueUrl: data.html_url || "",
-    issueNumber: data.number || 0
-  };
-}
 
 export function createMCPServer(
   db: DrizzleD1Database<typeof schema>,
@@ -149,41 +58,18 @@ export function createMCPServer(
   }
 
   // Helper to dynamically resolve user ID from HTTP headers (userId) or tool arguments (apiKey/token)
-  async function resolveEffectiveUserId(args?: any): Promise<string | null> {
+  async function resolveEffectiveUserId(args?: unknown): Promise<string | null> {
     if (userId) return userId;
 
-    const candidate = args?.apiKey || args?.token;
-    if (!candidate || typeof candidate !== "string") return null;
-    const clean = candidate.trim();
-    if (clean.length === 0) return null;
-
-    // Case A: Persistent API Key (starts with rd_live_ or fp_live_)
-    if (clean.startsWith("rd_live_") || clean.startsWith("fp_live_")) {
-      try {
-        const hash = await hashApiKey(clean);
-        const user = await db.select({ userId: schema.users.userId }).from(schema.users).where(eq(schema.users.userApiKeyHash, hash)).get();
-        return user ? user.userId : null;
-      } catch {
-        return null;
+    if (args && typeof args === "object") {
+      const candidate = (args as { apiKey?: string; token?: string }).apiKey || (args as { apiKey?: string; token?: string }).token;
+      if (candidate && typeof candidate === "string") {
+        const resolved = await resolveUserFromKeyOrToken(db, jwtSecret, candidate);
+        if (resolved) return resolved.userId;
       }
     }
 
-    // Case B: Self-Contained JWT Token
-    try {
-      const jwtUser = await verifyUserToken(clean, jwtSecret);
-      if (jwtUser) return jwtUser.userId;
-    } catch {
-      // Continue to fallback
-    }
-
-    // Case C: Fallback raw API key lookup
-    try {
-      const hash = await hashApiKey(clean);
-      const user = await db.select({ userId: schema.users.userId }).from(schema.users).where(eq(schema.users.userApiKeyHash, hash)).get();
-      return user ? user.userId : null;
-    } catch {
-      return null;
-    }
+    return null;
   }
 
   const server = new Server(
@@ -200,27 +86,27 @@ export function createMCPServer(
         uri: "reedrich://db/schema",
         name: "Database Schema",
         mimeType: "application/json",
-        description: "Returns table structures and relationship definitions for Reedrich DB."
+        description: "Returns table structures and relationship definitions for Reedrich DB.",
       },
       {
         uri: "reedrich://wallets/list",
         name: "User Wallets List",
         mimeType: "application/json",
-        description: "Returns current list of active wallets and balances for the authenticated user."
+        description: "Returns current list of active wallets and balances for the authenticated user.",
       },
       {
         uri: "reedrich://budgets/active",
         name: "Active Budgets Utilization",
         mimeType: "application/json",
-        description: "Returns currently active budgets and calculated spending utilization."
+        description: "Returns currently active budgets and calculated spending utilization.",
       },
       {
         uri: "reedrich://debts/active",
         name: "Active Debts and Loans",
         mimeType: "application/json",
-        description: "Returns active/unpaid debts and loans with calculated totals for the authenticated user."
-      }
-    ]
+        description: "Returns active/unpaid debts and loans with calculated totals for the authenticated user.",
+      },
+    ],
   }));
 
   server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
@@ -231,31 +117,31 @@ export function createMCPServer(
         tables: {
           users: [
             "user_id (PK UUID)", "user_first_name", "user_last_name", "user_email (UNIQUE)",
-            "user_whatsapp_number", "user_api_key_hash (UNIQUE)", "user_created_at"
+            "user_whatsapp_number", "user_api_key_hash (UNIQUE)", "user_created_at",
           ],
           wallets: [
             "wallet_id (PK UUID)", "wallet_user_id (FK CASCADE)", "wallet_name", "wallet_institution",
-            "wallet_type", "wallet_balance", "wallet_currency", "wallet_created_at"
+            "wallet_type", "wallet_balance", "wallet_currency", "wallet_created_at",
           ],
           categories: [
             "category_id (PK UUID)", "category_user_id (FK CASCADE)", "category_name", "category_type",
-            "category_icon", "category_created_at"
+            "category_icon", "category_created_at",
           ],
           budgets: [
             "budget_id (PK UUID)", "budget_user_id (FK CASCADE)", "budget_name", "budget_category_id (FK SET NULL)",
-            "budget_amount", "budget_period_start", "budget_period_end", "budget_created_at"
+            "budget_amount", "budget_period_start", "budget_period_end", "budget_created_at",
           ],
           transactions: [
             "transaction_id (PK UUID)", "transaction_user_id (FK CASCADE)", "transaction_wallet_id (FK CASCADE)",
             "transaction_target_wallet_id (FK SET NULL)", "transaction_category_id (FK SET NULL)", "transaction_budget_id (FK SET NULL)",
             "transaction_amount", "transaction_admin_fee", "transaction_type", "transaction_description",
-            "transaction_is_planned", "transaction_date (ISO-8601 TZ)", "transaction_created_at"
+            "transaction_is_planned", "transaction_date (ISO-8601 TZ)", "transaction_created_at",
           ],
           debts_loans: [
             "debt_loan_id (PK UUID)", "debt_loan_user_id (FK CASCADE)", "debt_loan_person_name", "debt_loan_type (debt|loan)",
             "debt_loan_amount", "debt_loan_remaining_amount", "debt_loan_wallet_id (FK SET NULL)", "debt_loan_due_date",
-            "debt_loan_status (unpaid|partially_paid|paid)", "debt_loan_notes", "debt_loan_created_at"
-          ]
+            "debt_loan_status (unpaid|partially_paid|paid)", "debt_loan_notes", "debt_loan_created_at",
+          ],
         },
         indexes: {
           users: ["users_email_idx", "users_api_key_hash_idx"],
@@ -264,21 +150,21 @@ export function createMCPServer(
           budgets: ["budgets_user_period_idx", "budgets_category_id_idx"],
           transactions: [
             "transactions_user_date_idx", "transactions_wallet_id_idx", "transactions_target_wallet_id_idx",
-            "transactions_category_id_idx", "transactions_budget_id_idx"
+            "transactions_category_id_idx", "transactions_budget_id_idx",
           ],
           debts_loans: [
-            "debts_loans_user_status_idx", "debts_loans_user_due_date_idx", "debts_loans_wallet_id_idx"
-          ]
-        }
+            "debts_loans_user_status_idx", "debts_loans_user_due_date_idx", "debts_loans_wallet_id_idx",
+          ],
+        },
       };
       return {
         contents: [
           {
             uri,
             mimeType: "application/json",
-            text: JSON.stringify(schemaDef, null, 2)
-          }
-        ]
+            text: JSON.stringify(schemaDef, null, 2),
+          },
+        ],
       };
     }
 
@@ -289,106 +175,50 @@ export function createMCPServer(
     }
 
     if (uri === "reedrich://wallets/list") {
-      const userWallets = await db.select().from(schema.wallets).where(eq(schema.wallets.walletUserId, effectiveUserId));
+      const userWallets = await listWallets(db, effectiveUserId);
       return {
         contents: [
           {
             uri,
             mimeType: "application/json",
-            text: JSON.stringify(userWallets, null, 2)
-          }
-        ]
+            text: JSON.stringify(userWallets, null, 2),
+          },
+        ],
       };
     }
 
     if (uri === "reedrich://budgets/active") {
-      const nowIso = currentIsoTimestamp();
-      const activeBudgets = await db.select()
-        .from(schema.budgets)
-        .where(
-          and(
-            eq(schema.budgets.budgetUserId, effectiveUserId),
-            lte(schema.budgets.budgetPeriodStart, nowIso),
-            gte(schema.budgets.budgetPeriodEnd, nowIso)
-          )
-        );
-
-      const statusList = [];
-      for (const b of activeBudgets) {
-        const conditions = [
-          eq(schema.transactions.transactionUserId, effectiveUserId),
-          eq(schema.transactions.transactionIsPlanned, 0),
-          eq(schema.transactions.transactionType, "expense"),
-          gte(schema.transactions.transactionDate, b.budgetPeriodStart),
-          lte(schema.transactions.transactionDate, b.budgetPeriodEnd)
-        ];
-        if (b.budgetCategoryId) {
-          conditions.push(eq(schema.transactions.transactionCategoryId, b.budgetCategoryId));
-        } else {
-          conditions.push(eq(schema.transactions.transactionBudgetId, b.budgetId));
-        }
-
-        const txs = await db.select().from(schema.transactions).where(and(...conditions));
-        const spent = txs.reduce((sum, tx) => sum + tx.transactionAmount, 0);
-        statusList.push({
-          budget: b,
-          spent: Number(spent.toFixed(2)),
-          remaining: Number((b.budgetAmount - spent).toFixed(2)),
-          percentUsed: b.budgetAmount > 0 ? Number(((spent / b.budgetAmount) * 100).toFixed(2)) : 0
-        });
-      }
-
+      const statusList = await getBudgetStatus(db, effectiveUserId);
       return {
         contents: [
           {
             uri,
             mimeType: "application/json",
-            text: JSON.stringify(statusList, null, 2)
-          }
-        ]
+            text: JSON.stringify(statusList, null, 2),
+          },
+        ],
       };
     }
 
     if (uri === "reedrich://debts/active") {
-      const activeRecords = await db.select()
-        .from(schema.debtsLoans)
-        .where(
-          and(
-            eq(schema.debtsLoans.debtLoanUserId, effectiveUserId),
-            sql`debt_loan_status != 'paid'`
-          )
-        )
-        .orderBy(desc(schema.debtsLoans.debtLoanCreatedAt));
-
-      let totalDebt = 0;
-      let totalReceivable = 0;
-      for (const r of activeRecords) {
-        if (r.debtLoanType === "debt") {
-          totalDebt += r.debtLoanRemainingAmount;
-        } else if (r.debtLoanType === "loan") {
-          totalReceivable += r.debtLoanRemainingAmount;
-        }
-      }
-
-      const payload = {
-        totalDebt: Number(totalDebt.toFixed(2)),
-        totalReceivable: Number(totalReceivable.toFixed(2)),
-        activeCount: activeRecords.length,
-        items: activeRecords
-      };
-
+      const debtsSummary = await getActiveDebtsLoansSummary(db, effectiveUserId);
       return {
         contents: [
           {
             uri,
             mimeType: "application/json",
-            text: JSON.stringify(payload, null, 2)
-          }
-        ]
+            text: JSON.stringify({
+              totalDebt: debtsSummary.totalDebt,
+              totalReceivable: debtsSummary.totalReceivable,
+              activeCount: debtsSummary.activeCount,
+              records: debtsSummary.activeRecords,
+            }, null, 2),
+          },
+        ],
       };
     }
 
-    throw new Error(`Resource not found: ${uri}`);
+    throw new Error(`Resource '${uri}' not found`);
   });
 
   // ---------------------------------------------------------------------------
@@ -398,55 +228,54 @@ export function createMCPServer(
     prompts: [
       {
         name: "onboarding_assistant",
-        description: "Guide a new user through initial account setup (wallets, default categories, and optional budget).",
+        description: "Step-by-step guidance for setting up a new user account with primary wallets and default categories.",
         arguments: [
           {
             name: "currency",
-            description: "Default currency code for wallets and budgets (default: IDR)",
-            required: false
-          }
-        ]
+            description: "Primary currency for the user's financial setup (default: 'IDR')",
+            required: false,
+          },
+        ],
       },
       {
         name: "daily_briefing",
-        description: "Generate a comprehensive daily financial briefing covering current balances, budget utilization, and due debts/loans.",
+        description: "Structured template for compiling a comprehensive daily financial briefing (balances, budgets, debts, cash flow).",
         arguments: [
           {
             name: "date",
-            description: "Target date for the briefing in ISO format (default: today)",
-            required: false
-          }
-        ]
+            description: "Target date in ISO format (YYYY-MM-DD) for the daily briefing",
+            required: false,
+          },
+        ],
       },
       {
         name: "financial_planning",
-        description: "Project when a financial goal (e.g. buying a laptop) can be achieved based on current net savings and debt obligations.",
+        description: "Reasoning framework for projecting when a target financial goal can be achieved based on income, expenses, and debts.",
         arguments: [
           {
             name: "goal_description",
-            description: "Description of the financial goal (e.g. 'beli laptop')",
-            required: true
+            description: "Description of the target goal (e.g. 'Beli Mobil Baru', 'Dana Darurat 6 Bulan')",
+            required: true,
           },
           {
             name: "target_amount",
-            description: "Target cost or required savings amount",
-            required: true
-          }
-        ]
+            description: "Total cost / target amount needed in user currency",
+            required: true,
+          },
+        ],
       },
       {
         name: "debt_loan_advisor",
-        description: "Analyze active debts and loans, assess available cash flow, and suggest repayment priorities.",
-        arguments: []
-      }
-    ]
+        description: "Actionable strategy and prioritization guide for managing personal debts (payables) and loans (receivables).",
+      },
+    ],
   }));
 
   server.setRequestHandler(GetPromptRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
 
     if (name === "onboarding_assistant") {
-      const currency = (args?.currency as string) || "IDR";
+      const currency = ((args?.currency as string) || "IDR");
       return {
         description: "Step-by-step guidance for setting up a new user account with wallets and default categories in Reedrich.",
         messages: [
@@ -472,15 +301,15 @@ export function createMCPServer(
    - Tool to use: \`manage_budget\` with \`action: "create"\`, \`name\`, \`categoryId\`, \`amount\`, \`periodStart\`, \`periodEnd\`.
 
 4. Completion:
-   - Confirm that the user is now ready to record daily transactions using \`record_transaction\` or transfer funds using \`transfer_funds\`.`
-            }
-          }
-        ]
+   - Confirm that the user is now ready to record daily transactions using \`record_transaction\` or transfer funds using \`transfer_funds\`.`,
+            },
+          },
+        ],
       };
     }
 
     if (name === "daily_briefing") {
-      const targetDate = (args?.date as string) || "";
+      const targetDate = ((args?.date as string) || "");
       return {
         description: "Structured instructions for compiling a daily financial briefing.",
         messages: [
@@ -503,15 +332,15 @@ export function createMCPServer(
    - Cash flow overview: income earned vs expenses incurred.
 
 3. Deliver Briefing:
-   - Provide a clear, structured markdown summary with actionable takeaways and positive reinforcement.`
-            }
-          }
-        ]
+   - Provide a clear, structured markdown summary with actionable takeaways and positive reinforcement.`,
+            },
+          },
+        ],
       };
     }
 
     if (name === "financial_planning") {
-      const goalDescription = (args?.goal_description as string) || "";
+      const goalDescription = ((args?.goal_description as string) || "");
       const targetAmount = args?.target_amount;
       const hasCompleteArgs = Boolean(goalDescription && targetAmount !== undefined && targetAmount !== null);
 
@@ -547,10 +376,10 @@ Reasoning & Calculation Workflow:
 3. Present Financial Plan:
    - State the target month and year clearly (e.g. "Estimasi: sekitar bulan Maret 2027").
    - Breakdown the numbers: Current Savings Allocated, Monthly Savings Target, Remaining Gap.
-   - Provide 2-3 practical tips on how cutting discretionary expenses could accelerate the timeline.`
-            }
-          }
-        ]
+   - Provide 2-3 practical tips on how cutting discretionary expenses could accelerate the timeline.`,
+            },
+          },
+        ],
       };
     }
 
@@ -581,10 +410,10 @@ Reasoning & Calculation Workflow:
 3. Actionable Recommendations:
    - Present a clear prioritization schedule.
    - For repaying debts: suggest allocating a specific percentage of monthly disposable savings to clear debts faster using \`manage_debt_loan(action: "repay")\`.
-   - For collecting loans: suggest checking in with counterparties whose due dates have passed.`
-            }
-          }
-        ]
+   - For collecting loans: suggest checking in with counterparties whose due dates have passed.`,
+            },
+          },
+        ],
       };
     }
 
@@ -596,7 +425,6 @@ Reasoning & Calculation Workflow:
   // ---------------------------------------------------------------------------
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
-      // Authentication Tools
       {
         name: "register_user",
         description: "Register a new user account with first name, last name, email, and WhatsApp number. Returns a persistent API Key (rd_live_...) and 15-minute JWT.",
@@ -606,10 +434,10 @@ Reasoning & Calculation Workflow:
             firstName: { type: "string", description: "User's first name (1-100 characters)" },
             lastName: { type: "string", description: "User's last name (1-100 characters)" },
             email: { type: "string", description: "Valid email address (e.g. user@example.com)" },
-            whatsappNumber: { type: "string", description: "WhatsApp phone number with '+' and country code (e.g. +6281234567890)" }
+            whatsappNumber: { type: "string", description: "WhatsApp phone number with '+' and country code (e.g. +6281234567890)" },
           },
-          required: ["firstName", "lastName", "email", "whatsappNumber"]
-        }
+          required: ["firstName", "lastName", "email", "whatsappNumber"],
+        },
       },
       {
         name: "login_user",
@@ -617,12 +445,11 @@ Reasoning & Calculation Workflow:
         inputSchema: {
           type: "object",
           properties: {
-            apiKey: { type: "string", description: "Your persistent API Key (e.g. rd_live_...)" }
+            apiKey: { type: "string", description: "Your persistent API Key (e.g. rd_live_...)" },
           },
-          required: ["apiKey"]
-        }
+          required: ["apiKey"],
+        },
       },
-      // Feedback & Support Tool
       {
         name: "submit_feedback",
         description: "Submit user feedback, feature request, question, or bug report. Automatically creates a GitHub issue in the repository and logs the submitter's name, email, and timestamp.",
@@ -635,35 +462,34 @@ Reasoning & Calculation Workflow:
               type: "string",
               enum: ["feedback", "bug", "feature_request", "question"],
               default: "feedback",
-              description: "Category of feedback: feedback, bug, feature_request, or question"
+              description: "Category of feedback: feedback, bug, feature_request, or question",
             },
             name: { type: "string", description: "Optional: Submitter's full name (auto-resolved from profile if authenticated)" },
             email: { type: "string", description: "Optional: Submitter's email address (auto-resolved from profile if authenticated)" },
-            apiKey: { type: "string", description: "Optional: Your persistent API Key (rd_live_...) if not set in headers" }
+            apiKey: { type: "string", description: "Optional: Your persistent API Key (rd_live_...) if not set in headers" },
           },
-          required: ["title", "feedback"]
-        }
+          required: ["title", "feedback"],
+        },
       },
-      // Finance Tools (Authenticated with Persistent API Key or JWT)
       {
         name: "record_transaction",
         description: "Record a financial transaction (expense or income) with optional admin fee and ISO timezone timestamp. Automatically and atomically updates wallet balance.",
         inputSchema: {
           type: "object",
           properties: {
-            walletId: { type: "string", description: "Target Wallet UUID" },
-            categoryId: { type: "string", description: "Target Category UUID" },
-            budgetId: { type: "string", description: "Optional: Linked Budget UUID" },
-            amount: { type: "number", minimum: 0.01, description: "Transaction amount (positive finite number)" },
-            adminFee: { type: "number", minimum: 0, default: 0, description: "Optional administrative or transaction fee" },
-            type: { type: "string", enum: ["expense", "income"], default: "expense" },
-            description: { type: "string", description: "Transaction note or description (max 500 characters)" },
-            isPlanned: { type: "boolean", default: false, description: "Set true for projected transactions without altering balance" },
-            transactionDate: { type: "string", description: "ISO-8601 timestamp with timezone (e.g. 2026-08-17T10:31:42+07:00 or YYYY-MM-DD). Defaults to now." },
-            apiKey: { type: "string", description: "Optional: Your persistent API Key (fp_live_...) if not set in headers" }
+            walletId: { type: "string", description: "Valid UUID of the source wallet/pocket where funds were spent or received" },
+            categoryId: { type: "string", description: "Valid UUID of the transaction category" },
+            budgetId: { type: "string", description: "Optional: UUID of the associated spending budget" },
+            amount: { type: "number", description: "Transaction nominal amount (positive finite number > 0)" },
+            adminFee: { type: "number", default: 0.0, description: "Optional admin/convenience fee incurred (e.g. 2500, 6500). Defaults to 0" },
+            type: { type: "string", enum: ["expense", "income"], description: "Type of transaction: expense or income" },
+            description: { type: "string", description: "Optional memo or description for the transaction (max 500 characters)" },
+            isPlanned: { type: "boolean", default: false, description: "Whether this transaction is a planned/future simulation or actual recorded spending" },
+            transactionDate: { type: "string", description: "Optional ISO-8601 timestamp with timezone (e.g. 2026-08-23T14:30:00+07:00 or YYYY-MM-DD). Defaults to current UTC timestamp" },
+            apiKey: { type: "string", description: "Optional: Your persistent API Key (rd_live_...) if not set in headers" },
           },
-          required: ["walletId", "categoryId", "amount"]
-        }
+          required: ["walletId", "categoryId", "amount", "type"],
+        },
       },
       {
         name: "transfer_funds",
@@ -671,18 +497,18 @@ Reasoning & Calculation Workflow:
         inputSchema: {
           type: "object",
           properties: {
-            sourceWalletId: { type: "string", description: "Source / Sender Wallet UUID" },
-            targetWalletId: { type: "string", description: "Destination / Receiver Wallet UUID" },
-            amount: { type: "number", minimum: 0.01, description: "Transfer amount (positive finite number)" },
-            adminFee: { type: "number", minimum: 0, default: 0, description: "Optional administrative / transfer fee (e.g. 2500, 6500)" },
-            categoryId: { type: "string", description: "Optional Category UUID" },
-            description: { type: "string", description: "Transfer note or memo (max 500 characters)" },
-            isPlanned: { type: "boolean", default: false, description: "Set true for projected transfers without altering balance" },
-            transactionDate: { type: "string", description: "ISO-8601 timestamp with timezone (e.g. 2026-08-17T10:31:42+07:00 or YYYY-MM-DD). Defaults to now." },
-            apiKey: { type: "string", description: "Optional: Your persistent API Key (fp_live_...) if not set in headers" }
+            sourceWalletId: { type: "string", description: "Valid UUID of the sending/origin wallet" },
+            targetWalletId: { type: "string", description: "Valid UUID of the receiving/destination wallet" },
+            amount: { type: "number", description: "Transfer principal amount (positive finite number > 0)" },
+            adminFee: { type: "number", default: 0.0, description: "Optional transfer/admin fee incurred on source wallet (e.g. 6500 for BI-FAST). Defaults to 0" },
+            categoryId: { type: "string", description: "Optional category ID for transfer fee tracking (defaults to 'Transfer Antar Dompet')" },
+            description: { type: "string", description: "Optional memo for the transfer (max 500 characters)" },
+            isPlanned: { type: "boolean", default: false, description: "Whether this is a planned future transfer simulation (does not update wallet balance) or actual transfer" },
+            transactionDate: { type: "string", description: "Optional ISO-8601 timestamp (e.g. 2026-08-23T14:30:00+07:00). Defaults to current timestamp" },
+            apiKey: { type: "string", description: "Optional: Your persistent API Key (rd_live_...) if not set in headers" },
           },
-          required: ["sourceWalletId", "targetWalletId", "amount"]
-        }
+          required: ["sourceWalletId", "targetWalletId", "amount"],
+        },
       },
       {
         name: "update_transaction",
@@ -690,20 +516,20 @@ Reasoning & Calculation Workflow:
         inputSchema: {
           type: "object",
           properties: {
-            transactionId: { type: "string", description: "Transaction UUID to update" },
-            amount: { type: "number", minimum: 0.01, description: "New transaction amount" },
-            adminFee: { type: "number", minimum: 0, description: "New admin fee" },
-            walletId: { type: "string", description: "New Source Wallet UUID" },
-            targetWalletId: { type: "string", description: "New Target Wallet UUID (for transfers)" },
-            categoryId: { type: "string", description: "New Category UUID" },
-            budgetId: { type: "string", description: "New Budget UUID (or empty string/null to unlink)" },
-            description: { type: "string", description: "New description (max 500 characters)" },
-            transactionDate: { type: "string", description: "New ISO-8601 timestamp with timezone (e.g. 2026-08-17T10:31:42+07:00)" },
-            isPlanned: { type: "boolean", description: "New planned status" },
-            apiKey: { type: "string", description: "Optional: Your persistent API Key (fp_live_...) if not set in headers" }
+            transactionId: { type: "string", description: "UUID of the transaction to update" },
+            amount: { type: "number", description: "New nominal amount (> 0)" },
+            adminFee: { type: "number", description: "New admin fee (>= 0)" },
+            walletId: { type: "string", description: "New source wallet UUID" },
+            targetWalletId: { type: "string", description: "New target wallet UUID (or empty string/null to unset)" },
+            categoryId: { type: "string", description: "New category UUID" },
+            budgetId: { type: "string", description: "New budget UUID" },
+            description: { type: "string", description: "New description / memo" },
+            transactionDate: { type: "string", description: "New ISO date / timestamp" },
+            isPlanned: { type: "boolean", description: "Change planned/simulation status" },
+            apiKey: { type: "string", description: "Optional: Your persistent API Key (rd_live_...) if not set in headers" },
           },
-          required: ["transactionId"]
-        }
+          required: ["transactionId"],
+        },
       },
       {
         name: "manage_wallet",
@@ -711,17 +537,17 @@ Reasoning & Calculation Workflow:
         inputSchema: {
           type: "object",
           properties: {
-            action: { type: "string", enum: ["list", "create", "update"], description: "Action to perform" },
-            name: { type: "string", description: "Wallet / Pocket name (1-100 characters)" },
-            institution: { type: "string", description: "Bank or Platform institution (e.g. 'BCA', 'Bank Jago', 'Bitget', 'OCBC', 'Cash')" },
-            type: { type: "string", enum: ["bank", "cash", "e-wallet", "credit", "crypto", "investment"], description: "Wallet type" },
-            balance: { type: "number", description: "Initial balance or updated balance (finite number)" },
-            currency: { type: "string", default: "IDR", description: "Currency code (e.g. IDR, USD, USDT)" },
-            walletId: { type: "string", description: "Required for update action (Wallet UUID)" },
-            apiKey: { type: "string", description: "Optional: Your persistent API Key (fp_live_...) if not set in headers" }
+            action: { type: "string", enum: ["list", "create", "update"], description: "Action to perform: list, create, or update" },
+            walletId: { type: "string", description: "Required for 'update': UUID of the wallet to update" },
+            name: { type: "string", description: "Required for 'create', optional for 'update': Name of wallet/pocket (e.g. 'Tabungan Utama', 'Kantong Jajan')" },
+            institution: { type: "string", description: "Financial institution or bank name (e.g. 'Bank BCA', 'Bank Jago', 'GoPay', 'Bibit', 'Cash'). Defaults to 'General'" },
+            type: { type: "string", enum: ["bank", "cash", "e-wallet", "credit", "crypto", "investment"], description: "Pocket type category. Defaults to 'bank'" },
+            balance: { type: "number", description: "Initial balance or updated balance" },
+            currency: { type: "string", description: "Currency ISO code (e.g. 'IDR', 'USD'). Defaults to 'IDR'" },
+            apiKey: { type: "string", description: "Optional: Your persistent API Key (rd_live_...) if not set in headers" },
           },
-          required: ["action"]
-        }
+          required: ["action"],
+        },
       },
       {
         name: "manage_category",
@@ -729,14 +555,14 @@ Reasoning & Calculation Workflow:
         inputSchema: {
           type: "object",
           properties: {
-            action: { type: "string", enum: ["list", "create", "seed_defaults"], description: "Action to perform" },
-            name: { type: "string", description: "Category name (1-100 characters, required for create)" },
-            type: { type: "string", enum: ["expense", "income"], default: "expense" },
-            icon: { type: "string", description: "Emoji icon representation (max 10 characters)" },
-            apiKey: { type: "string", description: "Optional: Your persistent API Key (fp_live_...) if not set in headers" }
+            action: { type: "string", enum: ["list", "create", "seed_defaults"], description: "Action: list, create, or seed_defaults" },
+            name: { type: "string", description: "Required for 'create': Category name (e.g. 'Kopi & Nongkrong', 'Langganan AI')" },
+            type: { type: "string", enum: ["expense", "income"], default: "expense", description: "Type: expense or income" },
+            icon: { type: "string", description: "Optional emoji icon (e.g. '☕', '🤖')" },
+            apiKey: { type: "string", description: "Optional: Your persistent API Key (rd_live_...) if not set in headers" },
           },
-          required: ["action"]
-        }
+          required: ["action"],
+        },
       },
       {
         name: "manage_budget",
@@ -744,48 +570,16 @@ Reasoning & Calculation Workflow:
         inputSchema: {
           type: "object",
           properties: {
-            action: { type: "string", enum: ["list", "create", "status"], description: "Action to perform" },
-            name: { type: "string", description: "Budget title (1-100 characters)" },
-            categoryId: { type: "string", description: "Optional category filter UUID" },
-            amount: { type: "number", minimum: 0.01, description: "Budget target limit amount (positive finite number)" },
-            periodStart: { type: "string", description: "Start ISO-8601 date or timestamp with timezone" },
-            periodEnd: { type: "string", description: "End ISO-8601 date or timestamp with timezone" },
-            apiKey: { type: "string", description: "Optional: Your persistent API Key (fp_live_...) if not set in headers" }
+            action: { type: "string", enum: ["list", "create", "status"], description: "Action: list, create, or status" },
+            name: { type: "string", description: "Required for 'create': Name of the budget (e.g. 'Makan Bulanan')" },
+            categoryId: { type: "string", description: "Optional category UUID to bind this budget to a specific expense category" },
+            amount: { type: "number", description: "Budget limit amount (> 0)" },
+            periodStart: { type: "string", description: "Start date (YYYY-MM-DD or ISO timestamp)" },
+            periodEnd: { type: "string", description: "End date (YYYY-MM-DD or ISO timestamp)" },
+            apiKey: { type: "string", description: "Optional: Your persistent API Key (rd_live_...) if not set in headers" },
           },
-          required: ["action"]
-        }
-      },
-      {
-        name: "list_transactions",
-        description: "Query transactions with structured filters (wallet, target wallet, category, budget, type, date range, is_planned, pagination).",
-        inputSchema: {
-          type: "object",
-          properties: {
-            walletId: { type: "string", description: "Wallet UUID filter" },
-            targetWalletId: { type: "string", description: "Target Wallet UUID filter (for transfers)" },
-            categoryId: { type: "string", description: "Category UUID filter" },
-            budgetId: { type: "string", description: "Budget UUID filter" },
-            type: { type: "string", enum: ["expense", "income", "transfer"] },
-            isPlanned: { type: "boolean" },
-            startDate: { type: "string", description: "Start ISO-8601 date/timestamp filter" },
-            endDate: { type: "string", description: "End ISO-8601 date/timestamp filter" },
-            limit: { type: "integer", default: 50, maximum: 200 },
-            offset: { type: "integer", default: 0, minimum: 0 },
-            apiKey: { type: "string", description: "Optional: Your persistent API Key (fp_live_...) if not set in headers" }
-          }
-        }
-      },
-      {
-        name: "financial_summary",
-        description: "Generate a complete financial report grouped by currency and institution (net worth, income, expenses, admin fees, category breakdown, total debt, total receivable).",
-        inputSchema: {
-          type: "object",
-          properties: {
-            startDate: { type: "string", description: "Start date filter" },
-            endDate: { type: "string", description: "End date filter" },
-            apiKey: { type: "string", description: "Optional: Your persistent API Key (fp_live_...) if not set in headers" }
-          }
-        }
+          required: ["action"],
+        },
       },
       {
         name: "manage_debt_loan",
@@ -793,26 +587,58 @@ Reasoning & Calculation Workflow:
         inputSchema: {
           type: "object",
           properties: {
-            action: { type: "string", enum: ["create", "list", "repay", "update"], description: "Action to perform" },
-            debtLoanId: { type: "string", description: "Debt/Loan UUID (required for repay and update)" },
-            type: { type: "string", enum: ["debt", "loan"], description: "Type: 'debt' (we owe) or 'loan' (counterparty owes us)" },
-            personName: { type: "string", description: "Counterparty person/institution name (1-100 chars)" },
-            amount: { type: "number", minimum: 0.01, description: "Principal amount for create, or repayment amount for repay (positive finite number)" },
-            walletId: { type: "string", description: "Wallet UUID to fund/credit (optional for create, required for repay when adjusting wallet balance)" },
-            dueDate: { type: "string", description: "Due date in ISO format (YYYY-MM-DD or ISO-8601 timestamp)" },
-            notes: { type: "string", description: "Optional notes/description (max 500 chars)" },
-            status: { type: "string", enum: ["unpaid", "partially_paid", "paid"], description: "Status filter for list action" },
-            adjustWalletBalance: { type: "boolean", default: true, description: "Whether to update wallet balance on create/repay (default true)" },
-            apiKey: { type: "string", description: "Optional: Your persistent API Key (fp_live_...) if not set in headers" }
+            action: { type: "string", enum: ["create", "list", "repay", "update"], description: "Action: create, list, repay, or update" },
+            debtLoanId: { type: "string", description: "Required for 'repay' and 'update': UUID of debt/loan record" },
+            type: { type: "string", enum: ["debt", "loan"], description: "Type: 'debt' (payable/hutang kita) or 'loan' (receivable/piutang kita)" },
+            personName: { type: "string", description: "Counterparty person/institution name (e.g. 'Budi Santoso', 'Bank BCA')" },
+            amount: { type: "number", description: "Principal amount (> 0) on create, or repayment amount on repay" },
+            walletId: { type: "string", description: "Optional wallet UUID to automatically credit/debit on create or repay" },
+            dueDate: { type: "string", description: "Optional due date (YYYY-MM-DD)" },
+            notes: { type: "string", description: "Optional notes / memo" },
+            status: { type: "string", enum: ["unpaid", "partially_paid", "paid"], description: "Filter status for list or new status for update" },
+            adjustWalletBalance: { type: "boolean", default: true, description: "Whether to automatically adjust wallet balance (default: true)" },
+            apiKey: { type: "string", description: "Optional: Your persistent API Key (rd_live_...) if not set in headers" },
           },
-          required: ["action"]
-        }
-      }
-    ]
+          required: ["action"],
+        },
+      },
+      {
+        name: "list_transactions",
+        description: "Query transactions with structured filters (wallet, target wallet, category, budget, type, date range, is_planned, pagination).",
+        inputSchema: {
+          type: "object",
+          properties: {
+            walletId: { type: "string", description: "Filter by source wallet UUID" },
+            targetWalletId: { type: "string", description: "Filter by destination wallet UUID for transfers" },
+            categoryId: { type: "string", description: "Filter by category UUID" },
+            budgetId: { type: "string", description: "Filter by budget UUID" },
+            type: { type: "string", enum: ["expense", "income", "transfer"], description: "Filter by transaction type" },
+            isPlanned: { type: "boolean", description: "Filter by actual (false) or simulated/planned (true)" },
+            startDate: { type: "string", description: "Start date filter in ISO format (YYYY-MM-DD or YYYY-MM-DDTHH:mm:ssZ)" },
+            endDate: { type: "string", description: "End date filter in ISO format (YYYY-MM-DD or YYYY-MM-DDTHH:mm:ssZ)" },
+            limit: { type: "number", default: 50, description: "Max number of records (1-200, default: 50)" },
+            offset: { type: "number", default: 0, description: "Pagination offset (default: 0)" },
+            apiKey: { type: "string", description: "Optional: Your persistent API Key (rd_live_...) if not set in headers" },
+          },
+        },
+      },
+      {
+        name: "financial_summary",
+        description: "Generate a complete financial report grouped by currency and institution (net worth, income, expenses, admin fees, category breakdown, total debt, total receivable).",
+        inputSchema: {
+          type: "object",
+          properties: {
+            startDate: { type: "string", description: "Optional start date filter in ISO format (YYYY-MM-DD or ISO timestamp)" },
+            endDate: { type: "string", description: "Optional end date filter in ISO format (YYYY-MM-DD or ISO timestamp)" },
+            apiKey: { type: "string", description: "Optional: Your persistent API Key (rd_live_...) if not set in headers" },
+          },
+        },
+      },
+    ],
   }));
 
   // ---------------------------------------------------------------------------
-  // 3. Tools Execution Handler
+  // 4. Tool Execution Handlers
   // ---------------------------------------------------------------------------
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
@@ -820,202 +646,27 @@ Reasoning & Calculation Workflow:
     // --- Tool: register_user ---
     if (name === "register_user") {
       const { firstName, lastName, email, whatsappNumber } = (args || {}) as any;
-
-      if (!firstName || typeof firstName !== "string" || firstName.trim().length === 0 || firstName.trim().length > 100) {
-        throw new Error("Validation Error: 'firstName' is required and must be between 1 and 100 characters");
-      }
-      if (!lastName || typeof lastName !== "string" || lastName.trim().length === 0 || lastName.trim().length > 100) {
-        throw new Error("Validation Error: 'lastName' is required and must be between 1 and 100 characters");
-      }
-      if (!isValidEmail(email) || (typeof email === "string" && email.length > 255)) {
-        throw new Error("Validation Error: Invalid email format. Please provide a valid email (e.g. user@example.com)");
-      }
-      if (!isValidWhatsApp(whatsappNumber)) {
-        throw new Error("Validation Error: Invalid WhatsApp number format. Must start with '+' followed by country code and 6-14 digits (e.g. +6281234567890)");
-      }
-
-      const normalizedEmail = email.trim().toLowerCase();
-      const existing = await db.select().from(schema.users).where(eq(schema.users.userEmail, normalizedEmail)).get();
-      if (existing) {
-        throw new Error(`Registration Error: Email '${normalizedEmail}' is already registered. Please login with your API key using the 'login_user' tool.`);
-      }
-
-      // Secure server-side user ID (UUID V4 based)
-      const newUserId = generateUserId();
-      const apiKey = generateApiKey();
-      const apiKeyHash = await hashApiKey(apiKey);
-      const cleanFirstName = firstName.trim();
-      const cleanLastName = lastName.trim();
-      const cleanWhatsApp = whatsappNumber.trim();
-      const fullName = `${cleanFirstName} ${cleanLastName}`;
-      const nowIso = currentIsoTimestamp();
-
-      await db.insert(schema.users).values({
-        userId: newUserId,
-        userFirstName: cleanFirstName,
-        userLastName: cleanLastName,
-        userEmail: normalizedEmail,
-        userWhatsappNumber: cleanWhatsApp,
-        userApiKeyHash: apiKeyHash,
-        userCreatedAt: nowIso
-      });
-
-      const token = await generateUserToken({
-        userId: newUserId,
-        name: fullName,
-        email: normalizedEmail,
-        expiresInSeconds: DEFAULT_TOKEN_EXPIRY_SECONDS
-      }, jwtSecret);
-
-      const onboarding = await evaluateOnboarding(db, newUserId);
-
-      const responsePayload = {
-        userId: newUserId,
-        name: fullName,
-        email: normalizedEmail,
-        whatsappNumber: cleanWhatsApp,
-        apiKey,
-        token,
-        tokenType: "Bearer",
-        expiresIn: DEFAULT_TOKEN_EXPIRY_SECONDS,
-        onboarding,
-        message: "Registration successful! Please set 'Authorization: Bearer <token>' in your MCP client headers for subsequent finance tool calls. Save your apiKey to login again via 'login_user' when your 15-minute token expires."
-      };
-
-      return { content: [{ type: "text", text: JSON.stringify(responsePayload, null, 2) }] };
+      const result = await registerUser(db, jwtSecret, { firstName, lastName, email, whatsappNumber });
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
     }
 
     // --- Tool: login_user ---
     if (name === "login_user") {
       const { apiKey } = (args || {}) as any;
-      if (!apiKey || typeof apiKey !== "string" || apiKey.trim() === "") {
-        throw new Error("Validation Error: 'apiKey' is required for login_user");
-      }
-
-      const cleanKey = apiKey.trim();
-      const apiKeyHash = await hashApiKey(cleanKey);
-      const user = await db.select().from(schema.users).where(eq(schema.users.userApiKeyHash, apiKeyHash)).get();
-      if (!user) {
-        throw new Error("Authentication Error: Invalid API Key. User not found. Please verify your API Key or register via 'register_user'.");
-      }
-
-      const fullName = `${user.userFirstName} ${user.userLastName}`.trim();
-      const token = await generateUserToken({
-        userId: user.userId,
-        name: fullName,
-        email: user.userEmail,
-        expiresInSeconds: DEFAULT_TOKEN_EXPIRY_SECONDS
-      }, jwtSecret);
-
-      const onboarding = await evaluateOnboarding(db, user.userId);
-
-      const responsePayload = {
-        userId: user.userId,
-        name: fullName,
-        email: user.userEmail,
-        token,
-        tokenType: "Bearer",
-        expiresIn: DEFAULT_TOKEN_EXPIRY_SECONDS,
-        onboarding,
-        message: "Login successful! Please update 'Authorization: Bearer <token>' in your MCP client headers for subsequent tool calls."
-      };
-
-      return { content: [{ type: "text", text: JSON.stringify(responsePayload, null, 2) }] };
+      const result = await loginUser(db, jwtSecret, apiKey);
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
     }
 
     // --- Tool: submit_feedback ---
     if (name === "submit_feedback") {
-      const { title, feedback, type = "feedback", name: submitterName, email: submitterEmail } = (args || {}) as any;
-
-      if (!title || typeof title !== "string" || title.trim().length < 5 || title.trim().length > 200) {
-        throw new Error("Validation Error: 'title' is required (5-200 characters)");
-      }
-      if (!feedback || typeof feedback !== "string" || feedback.trim().length < 10 || feedback.trim().length > 4000) {
-        throw new Error("Validation Error: 'feedback' is required (10-4000 characters)");
-      }
-
-      let foundUserId: string | null = null;
-      let userName = submitterName && typeof submitterName === "string" && submitterName.trim().length > 0 ? submitterName.trim() : null;
-      let userEmail = submitterEmail && typeof submitterEmail === "string" && submitterEmail.trim().length > 0 ? submitterEmail.trim().toLowerCase() : null;
-
-      const effectiveUserId = await resolveEffectiveUserId(args);
-      if (effectiveUserId) {
-        foundUserId = effectiveUserId;
-        const user = await db.select().from(schema.users).where(eq(schema.users.userId, effectiveUserId)).get();
-        if (user) {
-          if (!userName) {
-            userName = `${user.userFirstName} ${user.userLastName}`.trim();
-          }
-          if (!userEmail) {
-            userEmail = user.userEmail;
-          }
-        }
-      }
-
-      if (!userName) {
-        throw new Error("Validation Error: Submitter 'name' is required when unauthenticated. Please provide 'name' in arguments or authenticate with your API key.");
-      }
-      if (!userEmail || !isValidEmail(userEmail)) {
-        throw new Error(`Validation Error: A valid 'email' is required. Received: '${userEmail || ""}'. Please provide a valid email or authenticate with your API key.`);
-      }
-
-      const githubToken = options?.githubToken;
-      const githubRepo = options?.githubRepo || "lutfi-zain/finnplan-mcp";
-
-      if (!githubToken) {
-        throw new Error("Server Error: GitHub integration is not configured. Missing GITHUB_TOKEN environment secret.");
-      }
-
-      const validTypes = ["feedback", "bug", "feature_request", "question"];
-      const feedbackType = validTypes.includes(type) ? type : "feedback";
-      const typeLabel = feedbackType.replace("_", " ").toUpperCase();
-      const issueTitle = `[${typeLabel}] ${title.trim()}`;
-
-      const issueBody = [
-        `### 📝 Feedback Description`,
-        ``,
-        feedback.trim(),
-        ``,
-        `---`,
-        `### 👤 Submitter Details`,
-        `| Field | Value |`,
-        `| :--- | :--- |`,
-        `| **Name** | ${userName} |`,
-        `| **Email** | \`${userEmail}\` |`,
-        `| **User ID** | ${foundUserId ? `\`${foundUserId}\`` : "_Unauthenticated Guest_"} |`,
-        `| **Type** | \`${feedbackType}\` |`,
-        `| **Submitted At** | ${currentIsoTimestamp()} |`
-      ].join("\n");
-
-      const labels = ["user-feedback", feedbackType];
-      const issueResult = await createGithubIssue({
-        token: githubToken,
-        repo: githubRepo,
-        title: issueTitle,
-        body: issueBody,
-        labels,
-        fetchFn: options?.fetchFn
+      const resolvedUserId = await resolveEffectiveUserId(args);
+      const { title, feedback, type, name: userName, email: userEmail } = (args || {}) as any;
+      const result = await submitFeedback(db, resolvedUserId, { title, feedback, type, name: userName, email: userEmail }, {
+        githubToken: options?.githubToken,
+        githubRepo: options?.githubRepo,
+        fetchFn: options?.fetchFn,
       });
-
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify({
-              success: true,
-              message: "Feedback submitted successfully and created as a GitHub issue!",
-              issueUrl: issueResult.issueUrl,
-              issueNumber: issueResult.issueNumber,
-              type: feedbackType,
-              submitter: {
-                name: userName,
-                email: userEmail,
-                userId: foundUserId
-              }
-            }, null, 2)
-          }
-        ]
-      };
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
     }
 
     // -------------------------------------------------------------------------
@@ -1026,260 +677,57 @@ Reasoning & Calculation Workflow:
       throw new Error("Unauthorized: Please provide your 'apiKey' in tool arguments (e.g. apiKey: 'fp_live_...'), or set 'Authorization: Bearer <apiKey>' in your MCP client headers, or call 'register_user' to create an account.");
     }
 
-    // Helper for atomic wallet balance updates & reconciliations
-    const applyBalanceDelta = async (
-      txType: string,
-      wId: string,
-      targetWId: string | null,
-      amt: number,
-      fee: number,
-      multiplier: 1 | -1
-    ) => {
-      if (txType === "expense") {
-        const delta = -(amt + fee) * multiplier;
-        await db.update(schema.wallets)
-          .set({ walletBalance: sql`wallet_balance + ${delta}` })
-          .where(and(eq(schema.wallets.walletId, wId), eq(schema.wallets.walletUserId, effectiveUserId)));
-      } else if (txType === "income") {
-        const delta = (amt - fee) * multiplier;
-        await db.update(schema.wallets)
-          .set({ walletBalance: sql`wallet_balance + ${delta}` })
-          .where(and(eq(schema.wallets.walletId, wId), eq(schema.wallets.walletUserId, effectiveUserId)));
-      } else if (txType === "transfer" && targetWId) {
-        const sourceDelta = -(amt + fee) * multiplier;
-        const targetDelta = amt * multiplier;
-        await db.update(schema.wallets)
-          .set({ walletBalance: sql`wallet_balance + ${sourceDelta}` })
-          .where(and(eq(schema.wallets.walletId, wId), eq(schema.wallets.walletUserId, effectiveUserId)));
-        await db.update(schema.wallets)
-          .set({ walletBalance: sql`wallet_balance + ${targetDelta}` })
-          .where(and(eq(schema.wallets.walletId, targetWId), eq(schema.wallets.walletUserId, effectiveUserId)));
-      }
-    };
-
     // --- Tool: manage_wallet ---
     if (name === "manage_wallet") {
       const { action, name: walletName, institution, type, balance, currency, walletId } = (args || {}) as any;
-      
       if (action === "list") {
-        const result = await db.select().from(schema.wallets).where(eq(schema.wallets.walletUserId, effectiveUserId));
+        const result = await listWallets(db, effectiveUserId);
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
-      
       if (action === "create") {
-        if (!walletName || typeof walletName !== "string" || walletName.trim().length === 0 || walletName.trim().length > 100) {
-          throw new Error("Validation Error: Wallet 'name' is required (1-100 characters)");
-        }
-        const allowedTypes = ["bank", "cash", "e-wallet", "credit", "crypto", "investment"];
-        const cleanType = type && allowedTypes.includes(type) ? type : "bank";
-        const cleanBalance = isValidFiniteNumber(balance) ? balance : 0;
-        const cleanCurrency = currency && typeof currency === "string" && currency.trim().length > 0 && currency.trim().length <= 10
-          ? currency.trim().toUpperCase()
-          : "IDR";
-        const cleanInstitution = institution && typeof institution === "string" && institution.trim().length > 0
-          ? institution.trim()
-          : "General";
-
-        const newWalletId = crypto.randomUUID();
-        const nowIso = currentIsoTimestamp();
-        const result = await db.insert(schema.wallets).values({
-          walletId: newWalletId,
-          walletUserId: effectiveUserId,
-          walletName: walletName.trim(),
-          walletInstitution: cleanInstitution,
-          walletType: cleanType,
-          walletBalance: cleanBalance,
-          walletCurrency: cleanCurrency,
-          walletCreatedAt: nowIso
-        }).returning();
-        return { content: [{ type: "text", text: JSON.stringify(result[0], null, 2) }] };
+        const result = await createWallet(db, effectiveUserId, { name: walletName, institution, type, balance, currency });
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
-      
       if (action === "update") {
-        if (!isValidUUID(walletId)) {
-          throw new Error("Validation Error: Valid string 'walletId' (UUID) is required for update action");
-        }
-        const cleanWalletId = walletId.trim();
-        const existing = await db.select().from(schema.wallets).where(and(eq(schema.wallets.walletId, cleanWalletId), eq(schema.wallets.walletUserId, effectiveUserId))).get();
-        if (!existing) {
-          throw new Error(`Wallet ID ${cleanWalletId} not found or unauthorized`);
-        }
-
-        const updates: any = {};
-        if (walletName && typeof walletName === "string" && walletName.trim().length > 0 && walletName.trim().length <= 100) {
-          updates.walletName = walletName.trim();
-        }
-        if (institution && typeof institution === "string" && institution.trim().length > 0) {
-          updates.walletInstitution = institution.trim();
-        }
-        if (balance !== undefined) {
-          if (!isValidFiniteNumber(balance)) {
-            throw new Error("Validation Error: 'balance' must be a valid finite number");
-          }
-          updates.walletBalance = balance;
-        }
-        if (type && ["bank", "cash", "e-wallet", "credit", "crypto", "investment"].includes(type)) {
-          updates.walletType = type;
-        }
-        if (currency && typeof currency === "string" && currency.trim().length > 0 && currency.trim().length <= 10) {
-          updates.walletCurrency = currency.trim().toUpperCase();
-        }
-
-        const result = await db.update(schema.wallets)
-          .set(updates)
-          .where(and(eq(schema.wallets.walletId, cleanWalletId), eq(schema.wallets.walletUserId, effectiveUserId)))
-          .returning();
-        return { content: [{ type: "text", text: JSON.stringify(result[0], null, 2) }] };
+        const result = await updateWallet(db, effectiveUserId, { walletId, name: walletName, institution, type, balance, currency });
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
-
       throw new Error(`Invalid action '${action}' for manage_wallet. Valid actions: list, create, update`);
     }
 
     // --- Tool: manage_category ---
     if (name === "manage_category") {
       const { action, name: catName, type, icon } = (args || {}) as any;
-      
       if (action === "list") {
-        const result = await db.select().from(schema.categories).where(eq(schema.categories.categoryUserId, effectiveUserId));
+        const result = await listCategories(db, effectiveUserId);
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
-      
       if (action === "create") {
-        if (!catName || typeof catName !== "string" || catName.trim().length === 0 || catName.trim().length > 100) {
-          throw new Error("Validation Error: Category 'name' is required (1-100 characters)");
-        }
-        const cleanIcon = icon && typeof icon === "string" && icon.trim().length <= 10 ? icon.trim() : null;
-        const newCategoryId = crypto.randomUUID();
-        const nowIso = currentIsoTimestamp();
-
-        const result = await db.insert(schema.categories).values({
-          categoryId: newCategoryId,
-          categoryUserId: effectiveUserId,
-          categoryName: catName.trim(),
-          categoryType: type === "income" ? "income" : "expense",
-          categoryIcon: cleanIcon,
-          categoryCreatedAt: nowIso
-        }).returning();
-        return { content: [{ type: "text", text: JSON.stringify(result[0], null, 2) }] };
+        const result = await createCategory(db, effectiveUserId, { name: catName, type, icon });
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
-
       if (action === "seed_defaults") {
-        const existing = await db.select().from(schema.categories).where(eq(schema.categories.categoryUserId, effectiveUserId));
-        const existingNames = new Set(existing.map(c => c.categoryName.trim().toLowerCase()));
-
-        const toCreate = DEFAULT_CATEGORIES.filter(c => !existingNames.has(c.name.trim().toLowerCase()));
-        const createdCategories: any[] = [];
-        const nowIso = currentIsoTimestamp();
-
-        for (const cat of toCreate) {
-          const newCategoryId = crypto.randomUUID();
-          const [inserted] = await db.insert(schema.categories).values({
-            categoryId: newCategoryId,
-            categoryUserId: effectiveUserId,
-            categoryName: cat.name,
-            categoryType: cat.type,
-            categoryIcon: cat.icon,
-            categoryCreatedAt: nowIso
-          }).returning();
-          createdCategories.push(inserted);
-        }
-
-        const skippedCount = DEFAULT_CATEGORIES.length - toCreate.length;
-        const responseData = {
-          message: `Seeded ${createdCategories.length} default categories (${skippedCount} skipped due to existing names).`,
-          createdCount: createdCategories.length,
-          skippedCount,
-          categories: createdCategories
-        };
-
-        return { content: [{ type: "text", text: JSON.stringify(responseData, null, 2) }] };
+        const result = await seedDefaultCategories(db, effectiveUserId);
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
-
       throw new Error(`Invalid action '${action}' for manage_category. Valid actions: list, create, seed_defaults`);
     }
 
     // --- Tool: manage_budget ---
     if (name === "manage_budget") {
       const { action, name: budgetName, categoryId, amount, periodStart, periodEnd } = (args || {}) as any;
-      
       if (action === "list") {
-        const result = await db.select().from(schema.budgets).where(eq(schema.budgets.budgetUserId, effectiveUserId));
+        const result = await listBudgets(db, effectiveUserId);
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
-      
       if (action === "create") {
-        if (!budgetName || typeof budgetName !== "string" || budgetName.trim().length === 0 || budgetName.trim().length > 100) {
-          throw new Error("Validation Error: Budget 'name' is required (1-100 characters)");
-        }
-        if (!isValidPositiveNumber(amount)) {
-          throw new Error("Validation Error: Budget 'amount' must be a positive finite number");
-        }
-        if (!isValidIsoDateOrTimestamp(periodStart) || !isValidIsoDateOrTimestamp(periodEnd)) {
-          throw new Error("Validation Error: 'periodStart' and 'periodEnd' must be valid ISO dates or timestamps (e.g. YYYY-MM-DD or YYYY-MM-DDTHH:mm:ssZ)");
-        }
-        const cleanStart = normalizeToIsoTimestamp(periodStart);
-        const cleanEnd = normalizeToIsoTimestamp(periodEnd);
-        if (cleanStart > cleanEnd) {
-          throw new Error("Validation Error: 'periodStart' cannot be after 'periodEnd'");
-        }
-
-        let cleanCategoryId: string | null = null;
-        if (categoryId) {
-          if (!isValidUUID(categoryId)) {
-            throw new Error("Validation Error: 'categoryId' must be a valid string (UUID)");
-          }
-          const targetCatId = (categoryId as string).trim();
-          const category = await db.select().from(schema.categories).where(and(eq(schema.categories.categoryId, targetCatId), eq(schema.categories.categoryUserId, effectiveUserId))).get();
-          if (!category) {
-            throw new Error(`Category ID ${targetCatId} not found or unauthorized`);
-          }
-          cleanCategoryId = targetCatId;
-        }
-
-        const newBudgetId = crypto.randomUUID();
-        const nowIso = currentIsoTimestamp();
-        const result = await db.insert(schema.budgets).values({
-          budgetId: newBudgetId,
-          budgetUserId: effectiveUserId,
-          budgetName: budgetName.trim(),
-          budgetCategoryId: cleanCategoryId,
-          budgetAmount: amount,
-          budgetPeriodStart: cleanStart,
-          budgetPeriodEnd: cleanEnd,
-          budgetCreatedAt: nowIso
-        }).returning();
-        return { content: [{ type: "text", text: JSON.stringify(result[0], null, 2) }] };
+        const result = await createBudget(db, effectiveUserId, { name: budgetName, categoryId, amount, periodStart, periodEnd });
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
-      
       if (action === "status") {
-        const budgets = await db.select().from(schema.budgets).where(eq(schema.budgets.budgetUserId, effectiveUserId));
-        const statusList = [];
-        for (const b of budgets) {
-          const conditions = [
-            eq(schema.transactions.transactionUserId, effectiveUserId),
-            eq(schema.transactions.transactionIsPlanned, 0),
-            eq(schema.transactions.transactionType, "expense"),
-            gte(schema.transactions.transactionDate, b.budgetPeriodStart),
-            lte(schema.transactions.transactionDate, b.budgetPeriodEnd)
-          ];
-          if (b.budgetCategoryId) {
-            conditions.push(eq(schema.transactions.transactionCategoryId, b.budgetCategoryId));
-          } else {
-            conditions.push(eq(schema.transactions.transactionBudgetId, b.budgetId));
-          }
-
-          const txs = await db.select().from(schema.transactions).where(and(...conditions));
-          const spent = txs.reduce((sum, tx) => sum + tx.transactionAmount, 0);
-          statusList.push({
-            budget: b,
-            spent: Number(spent.toFixed(2)),
-            remaining: Number((b.budgetAmount - spent).toFixed(2)),
-            percentUsed: b.budgetAmount > 0 ? Number(((spent / b.budgetAmount) * 100).toFixed(2)) : 0
-          });
-        }
-        return { content: [{ type: "text", text: JSON.stringify(statusList, null, 2) }] };
+        const result = await getBudgetStatus(db, effectiveUserId);
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
-
       throw new Error(`Invalid action '${action}' for manage_budget. Valid actions: list, create, status`);
     }
 
@@ -1289,88 +737,26 @@ Reasoning & Calculation Workflow:
         .select({ count: sql<number>`count(*)` })
         .from(schema.wallets)
         .where(eq(schema.wallets.walletUserId, effectiveUserId));
+
       if (Number(walletCheck?.count || 0) === 0) {
         return {
           content: [{
             type: "text",
             text: JSON.stringify({
-              error: "No wallets found. Please create a wallet first using manage_wallet(action: 'create') or follow the onboarding_assistant prompt.",
-              suggestion: "onboarding_assistant"
-            }, null, 2)
+              error: "Cannot record transaction: No wallets found. You must create at least one wallet before recording transactions.",
+              suggestion: "onboarding_assistant",
+              message: "Please create at least one wallet first (e.g. Cash, Bank BCA, Mandiri, GoPay) using tool 'manage_wallet' with action: 'create'.",
+              actionRequired: "create_wallet",
+              onboardingStep: "wallet_creation",
+            }, null, 2),
           }],
-          isError: true
+          isError: true,
         };
       }
 
       const { walletId, categoryId, budgetId, amount, adminFee, type, description, isPlanned, transactionDate } = (args || {}) as any;
-      
-      if (!isValidPositiveNumber(amount)) {
-        throw new Error("Validation Error: Transaction 'amount' must be a positive finite number greater than 0");
-      }
-      if (!isValidUUID(walletId)) {
-        throw new Error("Validation Error: Valid string 'walletId' (UUID) is required");
-      }
-      if (!isValidUUID(categoryId)) {
-        throw new Error("Validation Error: Valid string 'categoryId' (UUID) is required");
-      }
-      if (adminFee !== undefined && (!isValidFiniteNumber(adminFee) || adminFee < 0)) {
-        throw new Error("Validation Error: 'adminFee' must be a non-negative finite number");
-      }
-      if (transactionDate && !isValidIsoDateOrTimestamp(transactionDate)) {
-        throw new Error("Validation Error: 'transactionDate' must be in valid ISO format (e.g. YYYY-MM-DD or YYYY-MM-DDTHH:mm:ss+07:00)");
-      }
-      if (description && (typeof description !== "string" || description.length > 500)) {
-        throw new Error("Validation Error: 'description' cannot exceed 500 characters");
-      }
-
-      const cleanWalletId = walletId.trim();
-      const cleanCategoryId = categoryId.trim();
-      const cleanAdminFee = isValidFiniteNumber(adminFee) && adminFee >= 0 ? adminFee : 0;
-      const txType = type === "income" ? "income" : "expense";
-
-      const wallet = await db.select().from(schema.wallets).where(and(eq(schema.wallets.walletId, cleanWalletId), eq(schema.wallets.walletUserId, effectiveUserId))).get();
-      if (!wallet) throw new Error(`Wallet ID ${cleanWalletId} not found or unauthorized`);
-
-      const category = await db.select().from(schema.categories).where(and(eq(schema.categories.categoryId, cleanCategoryId), eq(schema.categories.categoryUserId, effectiveUserId))).get();
-      if (!category) throw new Error(`Category ID ${cleanCategoryId} not found or unauthorized`);
-
-      let cleanBudgetId: string | null = null;
-      if (budgetId) {
-        if (!isValidUUID(budgetId)) {
-          throw new Error("Validation Error: 'budgetId' must be a valid string (UUID)");
-        }
-        const targetBudgetId = (budgetId as string).trim();
-        const budget = await db.select().from(schema.budgets).where(and(eq(schema.budgets.budgetId, targetBudgetId), eq(schema.budgets.budgetUserId, effectiveUserId))).get();
-        if (!budget) throw new Error(`Budget ID ${targetBudgetId} not found or unauthorized`);
-        cleanBudgetId = targetBudgetId;
-      }
-
-      const dateStr = normalizeToIsoTimestamp(transactionDate);
-      const isPlannedInt = isPlanned ? 1 : 0;
-      const newTransactionId = crypto.randomUUID();
-      const nowIso = currentIsoTimestamp();
-
-      const tx = await db.insert(schema.transactions).values({
-        transactionId: newTransactionId,
-        transactionUserId: effectiveUserId,
-        transactionWalletId: cleanWalletId,
-        transactionCategoryId: cleanCategoryId,
-        transactionBudgetId: cleanBudgetId,
-        transactionAmount: amount,
-        transactionAdminFee: cleanAdminFee,
-        transactionType: txType,
-        transactionDescription: description ? description.trim() : null,
-        transactionIsPlanned: isPlannedInt,
-        transactionDate: dateStr,
-        transactionCreatedAt: nowIso
-      }).returning();
-
-      // Atomic wallet balance update for actual transactions (isPlanned == 0)
-      if (!isPlannedInt) {
-        await applyBalanceDelta(txType, cleanWalletId, null, amount, cleanAdminFee, 1);
-      }
-
-      return { content: [{ type: "text", text: JSON.stringify(tx[0], null, 2) }] };
+      const tx = await recordTransaction(db, effectiveUserId, { walletId, categoryId, budgetId, amount, adminFee, type, description, isPlanned, transactionDate });
+      return { content: [{ type: "text", text: JSON.stringify(tx, null, 2) }] };
     }
 
     // --- Tool: transfer_funds ---
@@ -1379,593 +765,88 @@ Reasoning & Calculation Workflow:
         .select({ count: sql<number>`count(*)` })
         .from(schema.wallets)
         .where(eq(schema.wallets.walletUserId, effectiveUserId));
+
       if (Number(walletCheck?.count || 0) === 0) {
         return {
           content: [{
             type: "text",
             text: JSON.stringify({
-              error: "No wallets found. You need at least 2 wallets to transfer funds. Please create wallets first using manage_wallet(action: 'create') or follow the onboarding_assistant prompt.",
-              suggestion: "onboarding_assistant"
-            }, null, 2)
+              error: "Cannot transfer funds: No wallets found. You must create at least two wallets before transferring funds.",
+              suggestion: "onboarding_assistant",
+              message: "Please create at least two wallets first (e.g. Bank BCA and GoPay) using tool 'manage_wallet' with action: 'create'.",
+              actionRequired: "create_wallet",
+              onboardingStep: "wallet_creation",
+            }, null, 2),
           }],
-          isError: true
+          isError: true,
+        };
+      }
+
+      if (Number(walletCheck?.count || 0) < 2) {
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify({
+              error: "Cannot transfer funds: You only have one wallet.",
+              message: "A fund transfer requires at least two distinct wallets. Please create an additional wallet using tool 'manage_wallet' with action: 'create'.",
+              actionRequired: "create_additional_wallet",
+              onboardingStep: "wallet_creation",
+            }, null, 2),
+          }],
+          isError: true,
         };
       }
 
       const { sourceWalletId, targetWalletId, amount, adminFee, categoryId, description, isPlanned, transactionDate } = (args || {}) as any;
-
-      if (!isValidPositiveNumber(amount)) {
-        throw new Error("Validation Error: Transfer 'amount' must be a positive finite number greater than 0");
-      }
-      if (!isValidUUID(sourceWalletId)) {
-        throw new Error("Validation Error: Valid string 'sourceWalletId' (UUID) is required");
-      }
-      if (!isValidUUID(targetWalletId)) {
-        throw new Error("Validation Error: Valid string 'targetWalletId' (UUID) is required");
-      }
-      if (sourceWalletId.trim() === targetWalletId.trim()) {
-        throw new Error("Validation Error: 'sourceWalletId' and 'targetWalletId' cannot be the same wallet");
-      }
-      if (adminFee !== undefined && (!isValidFiniteNumber(adminFee) || adminFee < 0)) {
-        throw new Error("Validation Error: 'adminFee' must be a non-negative finite number");
-      }
-      if (transactionDate && !isValidIsoDateOrTimestamp(transactionDate)) {
-        throw new Error("Validation Error: 'transactionDate' must be in valid ISO format (e.g. YYYY-MM-DD or YYYY-MM-DDTHH:mm:ss+07:00)");
-      }
-      if (description && (typeof description !== "string" || description.length > 500)) {
-        throw new Error("Validation Error: 'description' cannot exceed 500 characters");
-      }
-
-      const cleanSourceWalletId = sourceWalletId.trim();
-      const cleanTargetWalletId = targetWalletId.trim();
-      const cleanAdminFee = isValidFiniteNumber(adminFee) && adminFee >= 0 ? adminFee : 0;
-
-      const sourceWallet = await db.select().from(schema.wallets).where(and(eq(schema.wallets.walletId, cleanSourceWalletId), eq(schema.wallets.walletUserId, effectiveUserId))).get();
-      if (!sourceWallet) throw new Error(`Source Wallet ID ${cleanSourceWalletId} not found or unauthorized`);
-
-      const targetWallet = await db.select().from(schema.wallets).where(and(eq(schema.wallets.walletId, cleanTargetWalletId), eq(schema.wallets.walletUserId, effectiveUserId))).get();
-      if (!targetWallet) throw new Error(`Target Wallet ID ${cleanTargetWalletId} not found or unauthorized`);
-
-      let cleanCategoryId: string | null = null;
-      if (categoryId && typeof categoryId === "string" && categoryId.trim().length > 0) {
-        if (!isValidUUID(categoryId)) {
-          throw new Error("Validation Error: 'categoryId' must be a valid string (UUID)");
-        }
-        const targetCatId = (categoryId as string).trim();
-        const category = await db.select().from(schema.categories).where(and(eq(schema.categories.categoryId, targetCatId), eq(schema.categories.categoryUserId, effectiveUserId))).get();
-        if (!category) throw new Error(`Category ID ${targetCatId} not found or unauthorized`);
-        cleanCategoryId = targetCatId;
-      } else {
-        let transferCat = await db.select().from(schema.categories).where(and(eq(schema.categories.categoryUserId, effectiveUserId), eq(schema.categories.categoryName, "Transfer"))).get();
-        if (!transferCat) {
-          const newCatId = crypto.randomUUID();
-          const created = await db.insert(schema.categories).values({
-            categoryId: newCatId,
-            categoryUserId: effectiveUserId,
-            categoryName: "Transfer",
-            categoryType: "expense",
-            categoryIcon: "🔄",
-            categoryCreatedAt: currentIsoTimestamp()
-          }).returning();
-          transferCat = created[0];
-        }
-        cleanCategoryId = transferCat.categoryId;
-      }
-
-      const dateStr = normalizeToIsoTimestamp(transactionDate);
-      const isPlannedInt = isPlanned ? 1 : 0;
-      const newTransactionId = crypto.randomUUID();
-      const nowIso = currentIsoTimestamp();
-
-      const tx = await db.insert(schema.transactions).values({
-        transactionId: newTransactionId,
-        transactionUserId: effectiveUserId,
-        transactionWalletId: cleanSourceWalletId,
-        transactionTargetWalletId: cleanTargetWalletId,
-        transactionCategoryId: cleanCategoryId,
-        transactionAmount: amount,
-        transactionAdminFee: cleanAdminFee,
-        transactionType: "transfer",
-        transactionDescription: description ? description.trim() : null,
-        transactionIsPlanned: isPlannedInt,
-        transactionDate: dateStr,
-        transactionCreatedAt: nowIso
-      }).returning();
-
-      // Atomic wallet balance update for actual transfer (isPlanned == 0)
-      if (!isPlannedInt) {
-        await applyBalanceDelta("transfer", cleanSourceWalletId, cleanTargetWalletId, amount, cleanAdminFee, 1);
-      }
-
-      return { content: [{ type: "text", text: JSON.stringify(tx[0], null, 2) }] };
+      const tx = await transferFunds(db, effectiveUserId, { sourceWalletId, targetWalletId, amount, adminFee, categoryId, description, isPlanned, transactionDate });
+      return { content: [{ type: "text", text: JSON.stringify(tx, null, 2) }] };
     }
 
     // --- Tool: update_transaction ---
     if (name === "update_transaction") {
       const { transactionId, amount, adminFee, walletId, targetWalletId, categoryId, budgetId, description, transactionDate, isPlanned } = (args || {}) as any;
-
-      if (!isValidUUID(transactionId)) {
-        throw new Error("Validation Error: Valid string 'transactionId' (UUID) is required");
-      }
-      const cleanTxId = transactionId.trim();
-      const existingTx = await db.select().from(schema.transactions).where(and(eq(schema.transactions.transactionId, cleanTxId), eq(schema.transactions.transactionUserId, effectiveUserId))).get();
-      if (!existingTx) {
-        throw new Error(`Transaction ID ${cleanTxId} not found or unauthorized`);
-      }
-
-      if (amount !== undefined && !isValidPositiveNumber(amount)) {
-        throw new Error("Validation Error: 'amount' must be a positive finite number greater than 0");
-      }
-      if (adminFee !== undefined && (!isValidFiniteNumber(adminFee) || adminFee < 0)) {
-        throw new Error("Validation Error: 'adminFee' must be a non-negative finite number");
-      }
-      if (transactionDate !== undefined && !isValidIsoDateOrTimestamp(transactionDate)) {
-        throw new Error("Validation Error: 'transactionDate' must be in valid ISO format (e.g. YYYY-MM-DD or YYYY-MM-DDTHH:mm:ss+07:00)");
-      }
-      if (description !== undefined && (typeof description !== "string" || description.length > 500)) {
-        throw new Error("Validation Error: 'description' cannot exceed 500 characters");
-      }
-
-      let newWalletId = existingTx.transactionWalletId;
-      if (walletId !== undefined) {
-        if (!isValidUUID(walletId)) throw new Error("Validation Error: 'walletId' must be a valid UUID");
-        const cleanWId = (walletId as string).trim();
-        const w = await db.select().from(schema.wallets).where(and(eq(schema.wallets.walletId, cleanWId), eq(schema.wallets.walletUserId, effectiveUserId))).get();
-        if (!w) throw new Error(`Wallet ID ${cleanWId} not found or unauthorized`);
-        newWalletId = cleanWId;
-      }
-
-      let newTargetWalletId = existingTx.transactionTargetWalletId;
-      if (targetWalletId !== undefined) {
-        if (targetWalletId === null || targetWalletId === "") {
-          newTargetWalletId = null;
-        } else {
-          if (!isValidUUID(targetWalletId)) throw new Error("Validation Error: 'targetWalletId' must be a valid UUID");
-          const cleanTWId = (targetWalletId as string).trim();
-          const tw = await db.select().from(schema.wallets).where(and(eq(schema.wallets.walletId, cleanTWId), eq(schema.wallets.walletUserId, effectiveUserId))).get();
-          if (!tw) throw new Error(`Target Wallet ID ${cleanTWId} not found or unauthorized`);
-          newTargetWalletId = cleanTWId;
-        }
-      }
-
-      let newCategoryId = existingTx.transactionCategoryId;
-      if (categoryId !== undefined) {
-        if (categoryId === null || categoryId === "") {
-          newCategoryId = null;
-        } else {
-          if (!isValidUUID(categoryId)) throw new Error("Validation Error: 'categoryId' must be a valid UUID");
-          const cleanCatId = (categoryId as string).trim();
-          const cat = await db.select().from(schema.categories).where(and(eq(schema.categories.categoryId, cleanCatId), eq(schema.categories.categoryUserId, effectiveUserId))).get();
-          if (!cat) throw new Error(`Category ID ${cleanCatId} not found or unauthorized`);
-          newCategoryId = cleanCatId;
-        }
-      }
-
-      let newBudgetId = existingTx.transactionBudgetId;
-      if (budgetId !== undefined) {
-        if (budgetId === null || budgetId === "") {
-          newBudgetId = null;
-        } else {
-          if (!isValidUUID(budgetId)) throw new Error("Validation Error: 'budgetId' must be a valid UUID");
-          const cleanBId = (budgetId as string).trim();
-          const b = await db.select().from(schema.budgets).where(and(eq(schema.budgets.budgetId, cleanBId), eq(schema.budgets.budgetUserId, effectiveUserId))).get();
-          if (!b) throw new Error(`Budget ID ${cleanBId} not found or unauthorized`);
-          newBudgetId = cleanBId;
-        }
-      }
-
-      const newAmount = amount !== undefined ? amount : existingTx.transactionAmount;
-      const newAdminFee = adminFee !== undefined ? adminFee : existingTx.transactionAdminFee;
-      const newIsPlannedInt = isPlanned !== undefined ? (isPlanned ? 1 : 0) : existingTx.transactionIsPlanned;
-
-      // -----------------------------------------------------------------------
-      // Atomic Balance Reconciliation
-      // -----------------------------------------------------------------------
-      // 1. Revert previous transaction impact if it was an actual transaction
-      if (existingTx.transactionIsPlanned === 0) {
-        await applyBalanceDelta(existingTx.transactionType, existingTx.transactionWalletId, existingTx.transactionTargetWalletId, existingTx.transactionAmount, existingTx.transactionAdminFee, -1);
-      }
-
-      // 2. Apply new transaction impact if the updated transaction is an actual transaction
-      if (newIsPlannedInt === 0) {
-        await applyBalanceDelta(existingTx.transactionType, newWalletId, newTargetWalletId, newAmount, newAdminFee, 1);
-      }
-
-      const updates: any = {
-        transactionAmount: newAmount,
-        transactionAdminFee: newAdminFee,
-        transactionWalletId: newWalletId,
-        transactionTargetWalletId: newTargetWalletId,
-        transactionCategoryId: newCategoryId,
-        transactionBudgetId: newBudgetId,
-        transactionIsPlanned: newIsPlannedInt
-      };
-
-      if (description !== undefined) updates.transactionDescription = description ? description.trim() : null;
-      if (transactionDate !== undefined) updates.transactionDate = normalizeToIsoTimestamp(transactionDate);
-
-      const updated = await db.update(schema.transactions)
-        .set(updates)
-        .where(and(eq(schema.transactions.transactionId, cleanTxId), eq(schema.transactions.transactionUserId, effectiveUserId)))
-        .returning();
-
-      return { content: [{ type: "text", text: JSON.stringify(updated[0], null, 2) }] };
+      const updated = await updateTransaction(db, effectiveUserId, { transactionId, amount, adminFee, walletId, targetWalletId, categoryId, budgetId, description, transactionDate, isPlanned });
+      return { content: [{ type: "text", text: JSON.stringify(updated, null, 2) }] };
     }
 
     // --- Tool: list_transactions ---
     if (name === "list_transactions") {
-      const { walletId, targetWalletId, categoryId, budgetId, type, isPlanned, startDate, endDate, limit = 50, offset = 0 } = (args || {}) as any;
-      const conditions = [eq(schema.transactions.transactionUserId, effectiveUserId)];
-      
-      if (walletId !== undefined && typeof walletId === "string" && walletId.trim() !== "") {
-        conditions.push(eq(schema.transactions.transactionWalletId, walletId.trim()));
-      }
-      if (targetWalletId !== undefined && typeof targetWalletId === "string" && targetWalletId.trim() !== "") {
-        conditions.push(eq(schema.transactions.transactionTargetWalletId, targetWalletId.trim()));
-      }
-      if (categoryId !== undefined && typeof categoryId === "string" && categoryId.trim() !== "") {
-        conditions.push(eq(schema.transactions.transactionCategoryId, categoryId.trim()));
-      }
-      if (budgetId !== undefined && typeof budgetId === "string" && budgetId.trim() !== "") {
-        conditions.push(eq(schema.transactions.transactionBudgetId, budgetId.trim()));
-      }
-      if (type !== undefined && (type === "expense" || type === "income" || type === "transfer")) {
-        conditions.push(eq(schema.transactions.transactionType, type));
-      }
-      if (isPlanned !== undefined) {
-        conditions.push(eq(schema.transactions.transactionIsPlanned, isPlanned ? 1 : 0));
-      }
-      if (startDate !== undefined) {
-        if (!isValidIsoDateOrTimestamp(startDate)) throw new Error("Validation Error: 'startDate' must be a valid ISO date or timestamp");
-        conditions.push(gte(schema.transactions.transactionDate, normalizeToIsoTimestamp(startDate)));
-      }
-      if (endDate !== undefined) {
-        if (!isValidIsoDateOrTimestamp(endDate)) throw new Error("Validation Error: 'endDate' must be a valid ISO date or timestamp");
-        // If end date is YYYY-MM-DD, allow up to end of the day YYYY-MM-DDT23:59:59.999Z
-        const cleanEndDate = /^\d{4}-\d{2}-\d{2}$/.test(endDate.trim())
-          ? `${endDate.trim()}T23:59:59.999Z`
-          : normalizeToIsoTimestamp(endDate);
-        conditions.push(lte(schema.transactions.transactionDate, cleanEndDate));
-      }
-
-      const safeLimit = Math.min(Math.max(1, Number(limit) || 50), 200);
-      const safeOffset = Math.max(0, Number(offset) || 0);
-
-      const txs = await db.select()
-        .from(schema.transactions)
-        .where(and(...conditions))
-        .orderBy(desc(schema.transactions.transactionDate), desc(schema.transactions.transactionCreatedAt))
-        .limit(safeLimit)
-        .offset(safeOffset);
-
+      const { walletId, targetWalletId, categoryId, budgetId, type, isPlanned, startDate, endDate, limit, offset } = (args || {}) as any;
+      const txs = await listTransactions(db, effectiveUserId, { walletId, targetWalletId, categoryId, budgetId, type, isPlanned, startDate, endDate, limit, offset });
       return { content: [{ type: "text", text: JSON.stringify(txs, null, 2) }] };
     }
 
     // --- Tool: financial_summary ---
     if (name === "financial_summary") {
       const { startDate, endDate } = (args || {}) as any;
-      
-      if (startDate !== undefined && !isValidIsoDateOrTimestamp(startDate)) throw new Error("Validation Error: 'startDate' must be a valid ISO date or timestamp");
-      if (endDate !== undefined && !isValidIsoDateOrTimestamp(endDate)) throw new Error("Validation Error: 'endDate' must be a valid ISO date or timestamp");
-
-      // 1. Group net worth by currency and institution across all user wallets
-      const walletsData = await db.select().from(schema.wallets).where(eq(schema.wallets.walletUserId, effectiveUserId));
-      const netWorthByCurrency: Record<string, number> = {};
-      const netWorthByInstitution: Record<string, number> = {};
-      for (const w of walletsData) {
-        netWorthByCurrency[w.walletCurrency] = Number(((netWorthByCurrency[w.walletCurrency] || 0) + w.walletBalance).toFixed(2));
-        netWorthByInstitution[w.walletInstitution] = Number(((netWorthByInstitution[w.walletInstitution] || 0) + w.walletBalance).toFixed(2));
-      }
-
-      // 2. Query non-planned transactions
-      const conditions = [
-        eq(schema.transactions.transactionUserId, effectiveUserId),
-        eq(schema.transactions.transactionIsPlanned, 0)
-      ];
-      if (startDate !== undefined) conditions.push(gte(schema.transactions.transactionDate, normalizeToIsoTimestamp(startDate)));
-      if (endDate !== undefined) {
-        const cleanEndDate = /^\d{4}-\d{2}-\d{2}$/.test(endDate.trim())
-          ? `${endDate.trim()}T23:59:59.999Z`
-          : normalizeToIsoTimestamp(endDate);
-        conditions.push(lte(schema.transactions.transactionDate, cleanEndDate));
-      }
-
-      const txs = await db.select().from(schema.transactions).where(and(...conditions));
-      
-      // 3. Map categories for human-readable breakdown
-      const categoriesData = await db.select().from(schema.categories).where(eq(schema.categories.categoryUserId, effectiveUserId));
-      const categoryMap = new Map(categoriesData.map(c => [c.categoryId, c.categoryName]));
-
-      let totalIncome = 0;
-      let totalExpense = 0;
-      let totalAdminFees = 0;
-      let transfersCount = 0;
-      const categoryBreakdown: Record<string, number> = {};
-
-      for (const tx of txs) {
-        const fee = tx.transactionAdminFee || 0;
-        totalAdminFees += fee;
-
-        if (tx.transactionType === "income") {
-          totalIncome += (tx.transactionAmount - fee);
-        } else if (tx.transactionType === "expense") {
-          const totalCost = tx.transactionAmount + fee;
-          totalExpense += totalCost;
-          const catName = tx.transactionCategoryId ? (categoryMap.get(tx.transactionCategoryId) || `Category #${tx.transactionCategoryId}`) : "Uncategorized";
-          categoryBreakdown[catName] = Number(((categoryBreakdown[catName] || 0) + totalCost).toFixed(2));
-        } else if (tx.transactionType === "transfer") {
-          transfersCount += 1;
-          if (fee > 0) {
-            totalExpense += fee;
-            const catName = tx.transactionCategoryId ? (categoryMap.get(tx.transactionCategoryId) || `Category #${tx.transactionCategoryId}`) : "Transfer Fees";
-            categoryBreakdown[catName] = Number(((categoryBreakdown[catName] || 0) + fee).toFixed(2));
-          }
-        }
-      }
-
-      // 4. Query active debts & loans for summary totals
-      const activeDebtsLoans = await db.select().from(schema.debtsLoans)
-        .where(
-          and(
-            eq(schema.debtsLoans.debtLoanUserId, effectiveUserId),
-            sql`debt_loan_status != 'paid'`
-          )
-        );
-
-      let totalDebt = 0;
-      let totalReceivable = 0;
-      for (const dl of activeDebtsLoans) {
-        if (dl.debtLoanType === "debt") {
-          totalDebt += dl.debtLoanRemainingAmount;
-        } else if (dl.debtLoanType === "loan") {
-          totalReceivable += dl.debtLoanRemainingAmount;
-        }
-      }
-
-      const summary = {
-        netWorthByCurrency,
-        netWorthByInstitution,
-        totalIncome: Number(totalIncome.toFixed(2)),
-        totalExpense: Number(totalExpense.toFixed(2)),
-        totalAdminFees: Number(totalAdminFees.toFixed(2)),
-        netSavings: Number((totalIncome - totalExpense).toFixed(2)),
-        totalDebt: Number(totalDebt.toFixed(2)),
-        totalReceivable: Number(totalReceivable.toFixed(2)),
-        walletsCount: walletsData.length,
-        transactionsCount: txs.length,
-        transfersCount,
-        categoryBreakdown
-      };
-
+      const summary = await getFinancialSummary(db, effectiveUserId, { startDate, endDate });
       return { content: [{ type: "text", text: JSON.stringify(summary, null, 2) }] };
     }
 
     // --- Tool: manage_debt_loan ---
     if (name === "manage_debt_loan") {
-      const {
-        action,
-        debtLoanId,
-        type,
-        personName,
-        amount,
-        walletId,
-        dueDate,
-        notes,
-        status,
-        adjustWalletBalance,
-      } = (args || {}) as any;
+      const { action, debtLoanId, type, personName, amount, walletId, dueDate, notes, status, adjustWalletBalance } = (args || {}) as any;
 
-      if (!action || typeof action !== "string") {
-        throw new Error("Validation Error: 'action' is required for manage_debt_loan. Valid actions: create, list, repay, update");
-      }
-
-      // 1. Action: create
       if (action === "create") {
-        if (!personName || typeof personName !== "string" || personName.trim().length === 0 || personName.trim().length > 100) {
-          throw new Error("Validation Error: 'personName' is required (1-100 characters)");
-        }
-        if (!isValidPositiveNumber(amount)) {
-          throw new Error("Validation Error: 'amount' must be a positive finite number greater than 0");
-        }
-        const cleanType = type === "debt" ? "debt" : "loan";
-        const cleanPersonName = personName.trim();
-        const shouldAdjustWallet = adjustWalletBalance !== false;
-
-        let cleanWalletId: string | null = null;
-        if (walletId) {
-          if (!isValidUUID(walletId)) {
-            throw new Error("Validation Error: 'walletId' must be a valid UUID string");
-          }
-          const targetWallet = await db.select().from(schema.wallets)
-            .where(and(eq(schema.wallets.walletId, walletId.trim()), eq(schema.wallets.walletUserId, effectiveUserId)))
-            .get();
-          if (!targetWallet) {
-            throw new Error(`Wallet ID ${walletId.trim()} not found or unauthorized`);
-          }
-          cleanWalletId = walletId.trim();
-        }
-
-        if (dueDate && !isValidIsoDateOrTimestamp(dueDate)) {
-          throw new Error("Validation Error: 'dueDate' must be in valid ISO format (e.g. YYYY-MM-DD or YYYY-MM-DDTHH:mm:ss+07:00)");
-        }
-        if (notes && (typeof notes !== "string" || notes.length > 500)) {
-          throw new Error("Validation Error: 'notes' cannot exceed 500 characters");
-        }
-
-        const newDebtLoanId = crypto.randomUUID();
-        const nowIso = currentIsoTimestamp();
-        const cleanDueDate = dueDate ? dueDate.trim() : null;
-
-        const newRecord = await db.insert(schema.debtsLoans).values({
-          debtLoanId: newDebtLoanId,
-          debtLoanUserId: effectiveUserId,
-          debtLoanPersonName: cleanPersonName,
-          debtLoanType: cleanType,
-          debtLoanAmount: amount,
-          debtLoanRemainingAmount: amount,
-          debtLoanWalletId: cleanWalletId,
-          debtLoanDueDate: cleanDueDate,
-          debtLoanStatus: "unpaid",
-          debtLoanNotes: notes ? notes.trim() : null,
-          debtLoanCreatedAt: nowIso,
-        }).returning();
-
-        // Atomic wallet balance adjustment on create
-        if (shouldAdjustWallet && cleanWalletId) {
-          if (cleanType === "loan") {
-            // Giving loan -> deduct from wallet balance
-            await db.update(schema.wallets)
-              .set({ walletBalance: sql`wallet_balance - ${amount}` })
-              .where(and(eq(schema.wallets.walletId, cleanWalletId), eq(schema.wallets.walletUserId, effectiveUserId)));
-          } else if (cleanType === "debt") {
-            // Borrowing -> credit to wallet balance
-            await db.update(schema.wallets)
-              .set({ walletBalance: sql`wallet_balance + ${amount}` })
-              .where(and(eq(schema.wallets.walletId, cleanWalletId), eq(schema.wallets.walletUserId, effectiveUserId)));
-          }
-        }
-
-        return { content: [{ type: "text", text: JSON.stringify(newRecord[0], null, 2) }] };
+        const record = await createDebtLoan(db, effectiveUserId, { personName, type, amount, walletId, dueDate, notes, adjustWalletBalance });
+        return { content: [{ type: "text", text: JSON.stringify(record, null, 2) }] };
       }
-
-      // 2. Action: list
       if (action === "list") {
-        const conditions = [eq(schema.debtsLoans.debtLoanUserId, effectiveUserId)];
-        if (status && ["unpaid", "partially_paid", "paid"].includes(status)) {
-          conditions.push(eq(schema.debtsLoans.debtLoanStatus, status));
-        }
-        if (type && ["debt", "loan"].includes(type)) {
-          conditions.push(eq(schema.debtsLoans.debtLoanType, type));
-        }
-
-        const results = await db.select().from(schema.debtsLoans)
-          .where(and(...conditions))
-          .orderBy(desc(schema.debtsLoans.debtLoanCreatedAt));
-
+        const results = await listDebtsLoans(db, effectiveUserId, { type, status });
         return { content: [{ type: "text", text: JSON.stringify(results, null, 2) }] };
       }
-
-      // 3. Action: repay
       if (action === "repay") {
-        if (!isValidUUID(debtLoanId)) {
-          throw new Error("Validation Error: Valid string 'debtLoanId' (UUID) is required for repay");
-        }
-        if (!isValidPositiveNumber(amount)) {
-          throw new Error("Validation Error: Repayment 'amount' must be a positive finite number greater than 0");
-        }
-
-        const cleanId = (debtLoanId as string).trim();
-        const existingRecord = await db.select().from(schema.debtsLoans)
-          .where(and(eq(schema.debtsLoans.debtLoanId, cleanId), eq(schema.debtsLoans.debtLoanUserId, effectiveUserId)))
-          .get();
-
-        if (!existingRecord) {
-          throw new Error(`Debt/Loan ID ${cleanId} not found or unauthorized`);
-        }
-
-        if (existingRecord.debtLoanStatus === "paid" || existingRecord.debtLoanRemainingAmount <= 0) {
-          throw new Error(`Debt/Loan ${cleanId} is already fully paid`);
-        }
-
-        if (amount > existingRecord.debtLoanRemainingAmount + 0.001) {
-          throw new Error(`Validation Error: Repayment amount (${amount}) cannot exceed remaining balance (${existingRecord.debtLoanRemainingAmount})`);
-        }
-
-        const shouldAdjustWallet = adjustWalletBalance !== false;
-        let cleanWalletId = existingRecord.debtLoanWalletId;
-        if (walletId) {
-          if (!isValidUUID(walletId)) {
-            throw new Error("Validation Error: 'walletId' must be a valid UUID string");
-          }
-          const targetWallet = await db.select().from(schema.wallets)
-            .where(and(eq(schema.wallets.walletId, walletId.trim()), eq(schema.wallets.walletUserId, effectiveUserId)))
-            .get();
-          if (!targetWallet) {
-            throw new Error(`Wallet ID ${walletId.trim()} not found or unauthorized`);
-          }
-          cleanWalletId = walletId.trim();
-        }
-
-        const newRemaining = Number((existingRecord.debtLoanRemainingAmount - amount).toFixed(2));
-        const newStatus = newRemaining <= 0.001 ? "paid" : "partially_paid";
-        const finalRemaining = newRemaining <= 0.001 ? 0 : newRemaining;
-
-        const updated = await db.update(schema.debtsLoans)
-          .set({
-            debtLoanRemainingAmount: finalRemaining,
-            debtLoanStatus: newStatus,
-          })
-          .where(and(eq(schema.debtsLoans.debtLoanId, cleanId), eq(schema.debtsLoans.debtLoanUserId, effectiveUserId)))
-          .returning();
-
-        // Atomic wallet balance adjustment on repay
-        if (shouldAdjustWallet && cleanWalletId) {
-          if (existingRecord.debtLoanType === "loan") {
-            // Debtor pays us back -> credit our wallet
-            await db.update(schema.wallets)
-              .set({ walletBalance: sql`wallet_balance + ${amount}` })
-              .where(and(eq(schema.wallets.walletId, cleanWalletId), eq(schema.wallets.walletUserId, effectiveUserId)));
-          } else if (existingRecord.debtLoanType === "debt") {
-            // We pay creditor back -> deduct from our wallet
-            await db.update(schema.wallets)
-              .set({ walletBalance: sql`wallet_balance - ${amount}` })
-              .where(and(eq(schema.wallets.walletId, cleanWalletId), eq(schema.wallets.walletUserId, effectiveUserId)));
-          }
-        }
-
-        return { content: [{ type: "text", text: JSON.stringify(updated[0], null, 2) }] };
+        const result = await repayDebtLoan(db, effectiveUserId, { debtLoanId, amount, walletId, notes, adjustWalletBalance });
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
-
-      // 4. Action: update
       if (action === "update") {
-        if (!isValidUUID(debtLoanId)) {
-          throw new Error("Validation Error: Valid string 'debtLoanId' (UUID) is required for update");
-        }
-        const cleanId = (debtLoanId as string).trim();
-        const existingRecord = await db.select().from(schema.debtsLoans)
-          .where(and(eq(schema.debtsLoans.debtLoanId, cleanId), eq(schema.debtsLoans.debtLoanUserId, effectiveUserId)))
-          .get();
-
-        if (!existingRecord) {
-          throw new Error(`Debt/Loan ID ${cleanId} not found or unauthorized`);
-        }
-
-        const updateData: Partial<typeof schema.debtsLoans.$inferInsert> = {};
-        if (personName !== undefined) {
-          if (typeof personName !== "string" || personName.trim().length === 0 || personName.trim().length > 100) {
-            throw new Error("Validation Error: 'personName' must be 1-100 characters");
-          }
-          updateData.debtLoanPersonName = personName.trim();
-        }
-        if (dueDate !== undefined) {
-          if (dueDate && !isValidIsoDateOrTimestamp(dueDate)) {
-            throw new Error("Validation Error: 'dueDate' must be in valid ISO format");
-          }
-          updateData.debtLoanDueDate = dueDate ? dueDate.trim() : null;
-        }
-        if (notes !== undefined) {
-          if (notes && (typeof notes !== "string" || notes.length > 500)) {
-            throw new Error("Validation Error: 'notes' cannot exceed 500 characters");
-          }
-          updateData.debtLoanNotes = notes ? notes.trim() : null;
-        }
-
-        if (Object.keys(updateData).length === 0) {
-          return { content: [{ type: "text", text: JSON.stringify(existingRecord, null, 2) }] };
-        }
-
-        const updated = await db.update(schema.debtsLoans)
-          .set(updateData)
-          .where(and(eq(schema.debtsLoans.debtLoanId, cleanId), eq(schema.debtsLoans.debtLoanUserId, effectiveUserId)))
-          .returning();
-
-        return { content: [{ type: "text", text: JSON.stringify(updated[0], null, 2) }] };
+        const updated = await updateDebtLoan(db, effectiveUserId, { debtLoanId, personName, dueDate, notes, status });
+        return { content: [{ type: "text", text: JSON.stringify(updated, null, 2) }] };
       }
-
       throw new Error(`Invalid action '${action}' for manage_debt_loan. Valid actions: create, list, repay, update`);
     }
 
-    throw new Error(`Tool not found: ${name}`);
+    throw new Error(`Tool '${name}' not found`);
   });
 
   return server;
