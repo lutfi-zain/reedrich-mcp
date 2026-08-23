@@ -96,3 +96,26 @@ export const transactions = sqliteTable("transactions", {
   index("transactions_category_id_idx").on(table.transactionCategoryId),
   index("transactions_budget_id_idx").on(table.transactionBudgetId),
 ]);
+
+export const debtsLoans = sqliteTable("debts_loans", {
+  debtLoanId: text("debt_loan_id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+  debtLoanUserId: text("debt_loan_user_id")
+    .notNull()
+    .references(() => users.userId, { onDelete: "cascade" }),
+  debtLoanPersonName: text("debt_loan_person_name").notNull(),
+  debtLoanType: text("debt_loan_type").notNull().default("loan"), // "debt" | "loan"
+  debtLoanAmount: real("debt_loan_amount").notNull(),
+  debtLoanRemainingAmount: real("debt_loan_remaining_amount").notNull(),
+  debtLoanWalletId: text("debt_loan_wallet_id")
+    .references(() => wallets.walletId, { onDelete: "set null" }),
+  debtLoanDueDate: text("debt_loan_due_date"), // YYYY-MM-DD or ISO-8601 string
+  debtLoanStatus: text("debt_loan_status").notNull().default("unpaid"), // "unpaid" | "partially_paid" | "paid"
+  debtLoanNotes: text("debt_loan_notes"),
+  debtLoanCreatedAt: text("debt_loan_created_at")
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  index("debts_loans_user_status_idx").on(table.debtLoanUserId, table.debtLoanStatus),
+  index("debts_loans_user_due_date_idx").on(table.debtLoanUserId, table.debtLoanDueDate),
+  index("debts_loans_wallet_id_idx").on(table.debtLoanWalletId),
+]);

@@ -129,6 +129,25 @@ Represents individual financial transactions (actual spent/received or planned/p
 
 ---
 
+### 3.5. `debts_loans` Table
+Represents personal debt (liabilities/payable) and loan (receivable) commitments.
+
+| Column Name | SQLite Data Type | Constraints | Default | Description |
+|---|---|---|---|---|
+| `debt_loan_id` | `TEXT` | `PRIMARY KEY (UUID)` | `crypto.randomUUID()` | Unique debt/loan identifier |
+| `debt_loan_user_id` | `TEXT` | `FOREIGN KEY (users.user_id) ON DELETE CASCADE` | - | Tenant user ID owner |
+| `debt_loan_person_name` | `TEXT` | `NOT NULL` | - | Counterparty person or institution name |
+| `debt_loan_type` | `TEXT` | `NOT NULL` | `'loan'` | Type (`'debt'` = we owe, `'loan'` = they owe us) |
+| `debt_loan_amount` | `REAL` | `NOT NULL` | - | Initial principal amount |
+| `debt_loan_remaining_amount` | `REAL` | `NOT NULL` | - | Outstanding unpaid amount |
+| `debt_loan_wallet_id` | `TEXT` | `FOREIGN KEY (wallets.wallet_id) ON DELETE SET NULL` | `NULL` | Associated source/destination wallet |
+| `debt_loan_due_date` | `TEXT` | `NULLABLE` | `NULL` | Due date string (YYYY-MM-DD or ISO-8601) |
+| `debt_loan_status` | `TEXT` | `NOT NULL` | `'unpaid'` | Status (`'unpaid'`, `'partially_paid'`, `'paid'`) |
+| `debt_loan_notes` | `TEXT` | `NULLABLE` | `NULL` | Optional notes or description |
+| `debt_loan_created_at` | `TEXT` | `NOT NULL` | `CURRENT_TIMESTAMP` | ISO-8601 creation timestamp |
+
+---
+
 ## 4. Key Business Logic & Cardinality Rules
 
 1. **Wallet Balance Auto-Update**:

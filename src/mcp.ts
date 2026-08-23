@@ -4,6 +4,8 @@ import {
   ListToolsRequestSchema,
   ListResourcesRequestSchema,
   ReadResourceRequestSchema,
+  ListPromptsRequestSchema,
+  GetPromptRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { DrizzleD1Database } from "drizzle-orm/d1";
 import * as schema from "./db/schema";
@@ -35,6 +37,61 @@ function isValidFiniteNumber(val: any): boolean {
 
 function isValidUUID(id: any): boolean {
   return typeof id === "string" && id.trim().length > 0;
+}
+
+export const DEFAULT_CATEGORIES = [
+  // Expense categories
+  { name: "Makanan & Minuman", type: "expense" as const, icon: "🍔" },
+  { name: "Transportasi", type: "expense" as const, icon: "🚗" },
+  { name: "Belanja", type: "expense" as const, icon: "🛍️" },
+  { name: "Tagihan & Utilitas", type: "expense" as const, icon: "💡" },
+  { name: "Hiburan", type: "expense" as const, icon: "🎬" },
+  { name: "Kesehatan", type: "expense" as const, icon: "💊" },
+  // Income categories
+  { name: "Gaji", type: "income" as const, icon: "💼" },
+  { name: "Investasi & Bunga", type: "income" as const, icon: "📈" },
+  { name: "Usaha / Freelance", type: "income" as const, icon: "💻" },
+  { name: "Pemasukan Lainnya", type: "income" as const, icon: "🎁" },
+];
+
+export async function evaluateOnboarding(
+  db: DrizzleD1Database<typeof schema>,
+  userId: string
+): Promise<{
+  isComplete: boolean;
+  needs: string[];
+  suggestions: string[];
+  message: string;
+}> {
+  const [walletCount] = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(schema.wallets)
+    .where(eq(schema.wallets.walletUserId, userId));
+
+  const [categoryCount] = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(schema.categories)
+    .where(eq(schema.categories.categoryUserId, userId));
+
+  const hasWallets = Number(walletCount?.count || 0) > 0;
+  const hasCategories = Number(categoryCount?.count || 0) > 0;
+  const needs: string[] = [];
+  if (!hasWallets) needs.push("wallet");
+  if (!hasCategories) needs.push("categories");
+
+  const suggestions: string[] = [];
+  const [budgetCount] = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(schema.budgets)
+    .where(eq(schema.budgets.budgetUserId, userId));
+  if (Number(budgetCount?.count || 0) === 0) suggestions.push("budget");
+
+  const isComplete = needs.length === 0;
+  const message = isComplete
+    ? "Setup complete! You can start recording transactions."
+    : `Please set up: ${needs.join(", ")}. Use the onboarding_assistant prompt for guidance.`;
+
+  return { isComplete, needs, suggestions, message };
 }
 
 export type MCPOptions = {
@@ -131,7 +188,7 @@ export function createMCPServer(
 
   const server = new Server(
     { name: "eve-finance-mcp", version: "1.0.0" },
-    { capabilities: { tools: {}, resources: {} } }
+    { capabilities: { tools: {}, resources: {}, prompts: {} } }
   );
 
   // ---------------------------------------------------------------------------
@@ -156,6 +213,12 @@ export function createMCPServer(
         name: "Active Budgets Utilization",
         mimeType: "application/json",
         description: "Returns currently active budgets and calculated spending utilization."
+      },
+      {
+        uri: "finance://debts/active",
+        name: "Active Debts and Loans",
+        mimeType: "application/json",
+        description: "Returns active/unpaid debts and loans with calculated totals for the authenticated user."
       }
     ]
   }));
@@ -187,6 +250,11 @@ export function createMCPServer(
             "transaction_target_wallet_id (FK SET NULL)", "transaction_category_id (FK SET NULL)", "transaction_budget_id (FK SET NULL)",
             "transaction_amount", "transaction_admin_fee", "transaction_type", "transaction_description",
             "transaction_is_planned", "transaction_date (ISO-8601 TZ)", "transaction_created_at"
+          ],
+          debts_loans: [
+            "debt_loan_id (PK UUID)", "debt_loan_user_id (FK CASCADE)", "debt_loan_person_name", "debt_loan_type (debt|loan)",
+            "debt_loan_amount", "debt_loan_remaining_amount", "debt_loan_wallet_id (FK SET NULL)", "debt_loan_due_date",
+            "debt_loan_status (unpaid|partially_paid|paid)", "debt_loan_notes", "debt_loan_created_at"
           ]
         },
         indexes: {
@@ -197,6 +265,9 @@ export function createMCPServer(
           transactions: [
             "transactions_user_date_idx", "transactions_wallet_id_idx", "transactions_target_wallet_id_idx",
             "transactions_category_id_idx", "transactions_budget_id_idx"
+          ],
+          debts_loans: [
+            "debts_loans_user_status_idx", "debts_loans_user_due_date_idx", "debts_loans_wallet_id_idx"
           ]
         }
       };
@@ -278,11 +349,250 @@ export function createMCPServer(
       };
     }
 
+    if (uri === "finance://debts/active") {
+      const activeRecords = await db.select()
+        .from(schema.debtsLoans)
+        .where(
+          and(
+            eq(schema.debtsLoans.debtLoanUserId, effectiveUserId),
+            sql`debt_loan_status != 'paid'`
+          )
+        )
+        .orderBy(desc(schema.debtsLoans.debtLoanCreatedAt));
+
+      let totalDebt = 0;
+      let totalReceivable = 0;
+      for (const r of activeRecords) {
+        if (r.debtLoanType === "debt") {
+          totalDebt += r.debtLoanRemainingAmount;
+        } else if (r.debtLoanType === "loan") {
+          totalReceivable += r.debtLoanRemainingAmount;
+        }
+      }
+
+      const payload = {
+        totalDebt: Number(totalDebt.toFixed(2)),
+        totalReceivable: Number(totalReceivable.toFixed(2)),
+        activeCount: activeRecords.length,
+        items: activeRecords
+      };
+
+      return {
+        contents: [
+          {
+            uri,
+            mimeType: "application/json",
+            text: JSON.stringify(payload, null, 2)
+          }
+        ]
+      };
+    }
+
     throw new Error(`Resource not found: ${uri}`);
   });
 
   // ---------------------------------------------------------------------------
-  // 2. Tools Registry
+  // 2. Prompts Registry & Handlers
+  // ---------------------------------------------------------------------------
+  server.setRequestHandler(ListPromptsRequestSchema, async () => ({
+    prompts: [
+      {
+        name: "onboarding_assistant",
+        description: "Guide a new user through initial account setup (wallets, default categories, and optional budget).",
+        arguments: [
+          {
+            name: "currency",
+            description: "Default currency code for wallets and budgets (default: IDR)",
+            required: false
+          }
+        ]
+      },
+      {
+        name: "daily_briefing",
+        description: "Generate a comprehensive daily financial briefing covering current balances, budget utilization, and due debts/loans.",
+        arguments: [
+          {
+            name: "date",
+            description: "Target date for the briefing in ISO format (default: today)",
+            required: false
+          }
+        ]
+      },
+      {
+        name: "financial_planning",
+        description: "Project when a financial goal (e.g. buying a laptop) can be achieved based on current net savings and debt obligations.",
+        arguments: [
+          {
+            name: "goal_description",
+            description: "Description of the financial goal (e.g. 'beli laptop')",
+            required: true
+          },
+          {
+            name: "target_amount",
+            description: "Target cost or required savings amount",
+            required: true
+          }
+        ]
+      },
+      {
+        name: "debt_loan_advisor",
+        description: "Analyze active debts and loans, assess available cash flow, and suggest repayment priorities.",
+        arguments: []
+      }
+    ]
+  }));
+
+  server.setRequestHandler(GetPromptRequestSchema, async (request) => {
+    const { name, arguments: args } = request.params;
+
+    if (name === "onboarding_assistant") {
+      const currency = (args?.currency as string) || "IDR";
+      return {
+        description: "Step-by-step guidance for setting up a new user account with wallets and default categories.",
+        messages: [
+          {
+            role: "user",
+            content: {
+              type: "text",
+              text: `You are the Eve Finance Onboarding Assistant. Guide the user through setting up their financial workspace step by step:
+
+1. Check Onboarding Status:
+   - Review the \`onboarding\` object from the user's login or registration response.
+   - If \`hasWallets\` is false, ask the user if they want to create their primary wallet (e.g. Cash, Bank BCA, Mandiri, GoPay) using currency '${currency}'.
+   - Tool to use: \`manage_wallet\` with \`action: "create"\`, \`name\`, \`institution\`, \`type\` (bank/ewallet/cash), \`balance\`, \`currency: "${currency}"\`.
+
+2. Default Categories Setup (User Confirmation Required):
+   - Ask the user: "Would you like me to set up standard categories for you (Makanan & Minuman 🍔, Transportasi 🚗, Tagihan & Utilitas 💡, Belanja 🛍️, Gaji 💼, etc.)?"
+   - If the user confirms, invoke \`manage_category\` with \`action: "seed_defaults"\`.
+   - If the user prefers custom categories, create them with \`manage_category\` using \`action: "create"\`.
+
+3. Optional Budget Setup:
+   - Once at least one wallet and category exist, offer to set monthly spending budgets for key categories.
+   - Remind the user that budget setup is completely optional.
+   - Tool to use: \`manage_budget\` with \`action: "create"\`, \`name\`, \`categoryId\`, \`amount\`, \`periodStart\`, \`periodEnd\`.
+
+4. Completion:
+   - Confirm that the user is now ready to record daily transactions using \`record_transaction\` or transfer funds using \`transfer_funds\`.`
+            }
+          }
+        ]
+      };
+    }
+
+    if (name === "daily_briefing") {
+      const targetDate = (args?.date as string) || "";
+      return {
+        description: "Structured instructions for compiling a daily financial briefing.",
+        messages: [
+          {
+            role: "user",
+            content: {
+              type: "text",
+              text: `You are the Eve Finance Financial Analyst. Generate a comprehensive daily financial status report for the user${targetDate ? ` for date ${targetDate}` : ""}:
+
+1. Retrieve Financial State:
+   - Read resource \`finance://wallets/list\` to get all account balances and total liquid assets.
+   - Read resource \`finance://budgets/active\` to check current budget utilization and remaining limits.
+   - Read resource \`finance://debts/active\` to check upcoming debt and loan obligations.
+   - Call tool \`financial_summary\` with startDate and endDate${targetDate ? ` around ${targetDate}` : ""} to inspect cash flow (income vs expenses).
+
+2. Analyze & Synthesize:
+   - Total Net Worth & Liquid Balance across all institutions.
+   - Spending health: highlight any budgets near or over 100% utilization.
+   - Upcoming commitments: flag any debts or loans due soon.
+   - Cash flow overview: income earned vs expenses incurred.
+
+3. Deliver Briefing:
+   - Provide a clear, structured markdown summary with actionable takeaways and positive reinforcement.`
+            }
+          }
+        ]
+      };
+    }
+
+    if (name === "financial_planning") {
+      const goalDescription = (args?.goal_description as string) || "";
+      const targetAmount = args?.target_amount;
+      const hasCompleteArgs = Boolean(goalDescription && targetAmount !== undefined && targetAmount !== null);
+
+      return {
+        description: "Reasoning framework for projecting when a financial goal can be achieved.",
+        messages: [
+          {
+            role: "user",
+            content: {
+              type: "text",
+              text: `You are the Eve Finance Financial Planning Advisor. Help the user project when they can achieve their financial goal:
+
+Goal: ${goalDescription || "[Not specified - ask user]"}
+Target Amount: ${targetAmount !== undefined && targetAmount !== null ? targetAmount : "[Not specified - ask user]"}
+
+${!hasCompleteArgs ? `NOTE: The user has not provided complete goal details (goal description or target amount). First ask the user what item/goal they want to achieve and the estimated target cost before calculating.` : ""}
+
+Reasoning & Calculation Workflow:
+1. Gather Financial Profile:
+   - Call \`financial_summary\` to determine the user's historical monthly income, monthly expenses, and net savings rate (Net Savings = Total Income - Total Expenses).
+   - Read \`finance://wallets/list\` to evaluate available idle savings that can be allocated toward this goal.
+   - Read \`finance://debts/active\` to factor in monthly debt repayment obligations that reduce disposable savings.
+
+2. Compute Timeline Projection:
+   - Effective Monthly Savings Capacity = Average Net Monthly Savings - Monthly Debt Obligations.
+   - Remaining Funding Gap = Target Amount - Allocatable Existing Balance.
+   - If Effective Monthly Savings Capacity <= 0:
+     * Explain that current expenses exceed or equal income, and suggest expense optimization areas before saving for this goal.
+   - If Effective Monthly Savings Capacity > 0:
+     * Estimated Months = Math.ceil(Remaining Funding Gap / Effective Monthly Savings Capacity).
+     * Calculate the projected target completion month and year starting from the current date.
+
+3. Present Financial Plan:
+   - State the target month and year clearly (e.g. "Estimasi: sekitar bulan Maret 2027").
+   - Breakdown the numbers: Current Savings Allocated, Monthly Savings Target, Remaining Gap.
+   - Provide 2-3 practical tips on how cutting discretionary expenses could accelerate the timeline.`
+            }
+          }
+        ]
+      };
+    }
+
+    if (name === "debt_loan_advisor") {
+      return {
+        description: "Strategy and prioritization guide for managing personal debts and loans.",
+        messages: [
+          {
+            role: "user",
+            content: {
+              type: "text",
+              text: `You are the Eve Finance Debt & Loan Advisor. Help the user manage and optimize their liabilities and receivables:
+
+1. Retrieve Active Commitments:
+   - Read resource \`finance://debts/active\` to get aggregate total debt and total receivable.
+   - Call tool \`manage_debt_loan\` with \`action: "list"\` to get all individual debt and loan records.
+   - Call tool \`financial_summary\` to understand monthly disposable cash flow.
+
+2. Prioritization & Strategy:
+   - Debts (Payables / Kewajiban):
+     1. Overdue debts (past dueDate) require immediate action.
+     2. Upcoming debts sorted by nearest due date.
+     3. High-balance debts.
+   - Loans (Receivables / Piutang):
+     1. Overdue loans where follow-up / gentle reminder with counterparty is needed.
+     2. Upcoming expected repayments.
+
+3. Actionable Recommendations:
+   - Present a clear prioritization schedule.
+   - For repaying debts: suggest allocating a specific percentage of monthly disposable savings to clear debts faster using \`manage_debt_loan(action: "repay")\`.
+   - For collecting loans: suggest checking in with counterparties whose due dates have passed.`
+            }
+          }
+        ]
+      };
+    }
+
+    throw new Error(`Prompt '${name}' not found`);
+  });
+
+  // ---------------------------------------------------------------------------
+  // 3. Tools Registry
   // ---------------------------------------------------------------------------
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
@@ -415,12 +725,12 @@ export function createMCPServer(
       },
       {
         name: "manage_category",
-        description: "Manage categories: list existing categories or create a new category.",
+        description: "Manage categories: list existing categories, create a new category, or seed standard default categories.",
         inputSchema: {
           type: "object",
           properties: {
-            action: { type: "string", enum: ["list", "create"], description: "Action to perform" },
-            name: { type: "string", description: "Category name (1-100 characters)" },
+            action: { type: "string", enum: ["list", "create", "seed_defaults"], description: "Action to perform" },
+            name: { type: "string", description: "Category name (1-100 characters, required for create)" },
             type: { type: "string", enum: ["expense", "income"], default: "expense" },
             icon: { type: "string", description: "Emoji icon representation (max 10 characters)" },
             apiKey: { type: "string", description: "Optional: Your persistent API Key (fp_live_...) if not set in headers" }
@@ -467,7 +777,7 @@ export function createMCPServer(
       },
       {
         name: "financial_summary",
-        description: "Generate a complete financial report grouped by currency and institution (net worth, income, expenses, admin fees, category breakdown).",
+        description: "Generate a complete financial report grouped by currency and institution (net worth, income, expenses, admin fees, category breakdown, total debt, total receivable).",
         inputSchema: {
           type: "object",
           properties: {
@@ -475,6 +785,27 @@ export function createMCPServer(
             endDate: { type: "string", description: "End date filter" },
             apiKey: { type: "string", description: "Optional: Your persistent API Key (fp_live_...) if not set in headers" }
           }
+        }
+      },
+      {
+        name: "manage_debt_loan",
+        description: "Manage personal debts (liabilities/payable) and loans (receivables). Create debt/loan, list with filters, record repayments (full/partial), or update details.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            action: { type: "string", enum: ["create", "list", "repay", "update"], description: "Action to perform" },
+            debtLoanId: { type: "string", description: "Debt/Loan UUID (required for repay and update)" },
+            type: { type: "string", enum: ["debt", "loan"], description: "Type: 'debt' (we owe) or 'loan' (counterparty owes us)" },
+            personName: { type: "string", description: "Counterparty person/institution name (1-100 chars)" },
+            amount: { type: "number", minimum: 0.01, description: "Principal amount for create, or repayment amount for repay (positive finite number)" },
+            walletId: { type: "string", description: "Wallet UUID to fund/credit (optional for create, required for repay when adjusting wallet balance)" },
+            dueDate: { type: "string", description: "Due date in ISO format (YYYY-MM-DD or ISO-8601 timestamp)" },
+            notes: { type: "string", description: "Optional notes/description (max 500 chars)" },
+            status: { type: "string", enum: ["unpaid", "partially_paid", "paid"], description: "Status filter for list action" },
+            adjustWalletBalance: { type: "boolean", default: true, description: "Whether to update wallet balance on create/repay (default true)" },
+            apiKey: { type: "string", description: "Optional: Your persistent API Key (fp_live_...) if not set in headers" }
+          },
+          required: ["action"]
         }
       }
     ]
@@ -536,6 +867,8 @@ export function createMCPServer(
         expiresInSeconds: DEFAULT_TOKEN_EXPIRY_SECONDS
       }, jwtSecret);
 
+      const onboarding = await evaluateOnboarding(db, newUserId);
+
       const responsePayload = {
         userId: newUserId,
         name: fullName,
@@ -545,6 +878,7 @@ export function createMCPServer(
         token,
         tokenType: "Bearer",
         expiresIn: DEFAULT_TOKEN_EXPIRY_SECONDS,
+        onboarding,
         message: "Registration successful! Please set 'Authorization: Bearer <token>' in your MCP client headers for subsequent finance tool calls. Save your apiKey to login again via 'login_user' when your 15-minute token expires."
       };
 
@@ -573,6 +907,8 @@ export function createMCPServer(
         expiresInSeconds: DEFAULT_TOKEN_EXPIRY_SECONDS
       }, jwtSecret);
 
+      const onboarding = await evaluateOnboarding(db, user.userId);
+
       const responsePayload = {
         userId: user.userId,
         name: fullName,
@@ -580,6 +916,7 @@ export function createMCPServer(
         token,
         tokenType: "Bearer",
         expiresIn: DEFAULT_TOKEN_EXPIRY_SECONDS,
+        onboarding,
         message: "Login successful! Please update 'Authorization: Bearer <token>' in your MCP client headers for subsequent tool calls."
       };
 
@@ -826,7 +1163,39 @@ export function createMCPServer(
         return { content: [{ type: "text", text: JSON.stringify(result[0], null, 2) }] };
       }
 
-      throw new Error(`Invalid action '${action}' for manage_category. Valid actions: list, create`);
+      if (action === "seed_defaults") {
+        const existing = await db.select().from(schema.categories).where(eq(schema.categories.categoryUserId, effectiveUserId));
+        const existingNames = new Set(existing.map(c => c.categoryName.trim().toLowerCase()));
+
+        const toCreate = DEFAULT_CATEGORIES.filter(c => !existingNames.has(c.name.trim().toLowerCase()));
+        const createdCategories: any[] = [];
+        const nowIso = currentIsoTimestamp();
+
+        for (const cat of toCreate) {
+          const newCategoryId = crypto.randomUUID();
+          const [inserted] = await db.insert(schema.categories).values({
+            categoryId: newCategoryId,
+            categoryUserId: effectiveUserId,
+            categoryName: cat.name,
+            categoryType: cat.type,
+            categoryIcon: cat.icon,
+            categoryCreatedAt: nowIso
+          }).returning();
+          createdCategories.push(inserted);
+        }
+
+        const skippedCount = DEFAULT_CATEGORIES.length - toCreate.length;
+        const responseData = {
+          message: `Seeded ${createdCategories.length} default categories (${skippedCount} skipped due to existing names).`,
+          createdCount: createdCategories.length,
+          skippedCount,
+          categories: createdCategories
+        };
+
+        return { content: [{ type: "text", text: JSON.stringify(responseData, null, 2) }] };
+      }
+
+      throw new Error(`Invalid action '${action}' for manage_category. Valid actions: list, create, seed_defaults`);
     }
 
     // --- Tool: manage_budget ---
@@ -916,6 +1285,23 @@ export function createMCPServer(
 
     // --- Tool: record_transaction ---
     if (name === "record_transaction") {
+      const [walletCheck] = await db
+        .select({ count: sql<number>`count(*)` })
+        .from(schema.wallets)
+        .where(eq(schema.wallets.walletUserId, effectiveUserId));
+      if (Number(walletCheck?.count || 0) === 0) {
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify({
+              error: "No wallets found. Please create a wallet first using manage_wallet(action: 'create') or follow the onboarding_assistant prompt.",
+              suggestion: "onboarding_assistant"
+            }, null, 2)
+          }],
+          isError: true
+        };
+      }
+
       const { walletId, categoryId, budgetId, amount, adminFee, type, description, isPlanned, transactionDate } = (args || {}) as any;
       
       if (!isValidPositiveNumber(amount)) {
@@ -989,6 +1375,23 @@ export function createMCPServer(
 
     // --- Tool: transfer_funds ---
     if (name === "transfer_funds") {
+      const [walletCheck] = await db
+        .select({ count: sql<number>`count(*)` })
+        .from(schema.wallets)
+        .where(eq(schema.wallets.walletUserId, effectiveUserId));
+      if (Number(walletCheck?.count || 0) === 0) {
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify({
+              error: "No wallets found. You need at least 2 wallets to transfer funds. Please create wallets first using manage_wallet(action: 'create') or follow the onboarding_assistant prompt.",
+              suggestion: "onboarding_assistant"
+            }, null, 2)
+          }],
+          isError: true
+        };
+      }
+
       const { sourceWalletId, targetWalletId, amount, adminFee, categoryId, description, isPlanned, transactionDate } = (args || {}) as any;
 
       if (!isValidPositiveNumber(amount)) {
@@ -1300,6 +1703,25 @@ export function createMCPServer(
         }
       }
 
+      // 4. Query active debts & loans for summary totals
+      const activeDebtsLoans = await db.select().from(schema.debtsLoans)
+        .where(
+          and(
+            eq(schema.debtsLoans.debtLoanUserId, effectiveUserId),
+            sql`debt_loan_status != 'paid'`
+          )
+        );
+
+      let totalDebt = 0;
+      let totalReceivable = 0;
+      for (const dl of activeDebtsLoans) {
+        if (dl.debtLoanType === "debt") {
+          totalDebt += dl.debtLoanRemainingAmount;
+        } else if (dl.debtLoanType === "loan") {
+          totalReceivable += dl.debtLoanRemainingAmount;
+        }
+      }
+
       const summary = {
         netWorthByCurrency,
         netWorthByInstitution,
@@ -1307,6 +1729,8 @@ export function createMCPServer(
         totalExpense: Number(totalExpense.toFixed(2)),
         totalAdminFees: Number(totalAdminFees.toFixed(2)),
         netSavings: Number((totalIncome - totalExpense).toFixed(2)),
+        totalDebt: Number(totalDebt.toFixed(2)),
+        totalReceivable: Number(totalReceivable.toFixed(2)),
         walletsCount: walletsData.length,
         transactionsCount: txs.length,
         transfersCount,
@@ -1314,6 +1738,231 @@ export function createMCPServer(
       };
 
       return { content: [{ type: "text", text: JSON.stringify(summary, null, 2) }] };
+    }
+
+    // --- Tool: manage_debt_loan ---
+    if (name === "manage_debt_loan") {
+      const {
+        action,
+        debtLoanId,
+        type,
+        personName,
+        amount,
+        walletId,
+        dueDate,
+        notes,
+        status,
+        adjustWalletBalance,
+      } = (args || {}) as any;
+
+      if (!action || typeof action !== "string") {
+        throw new Error("Validation Error: 'action' is required for manage_debt_loan. Valid actions: create, list, repay, update");
+      }
+
+      // 1. Action: create
+      if (action === "create") {
+        if (!personName || typeof personName !== "string" || personName.trim().length === 0 || personName.trim().length > 100) {
+          throw new Error("Validation Error: 'personName' is required (1-100 characters)");
+        }
+        if (!isValidPositiveNumber(amount)) {
+          throw new Error("Validation Error: 'amount' must be a positive finite number greater than 0");
+        }
+        const cleanType = type === "debt" ? "debt" : "loan";
+        const cleanPersonName = personName.trim();
+        const shouldAdjustWallet = adjustWalletBalance !== false;
+
+        let cleanWalletId: string | null = null;
+        if (walletId) {
+          if (!isValidUUID(walletId)) {
+            throw new Error("Validation Error: 'walletId' must be a valid UUID string");
+          }
+          const targetWallet = await db.select().from(schema.wallets)
+            .where(and(eq(schema.wallets.walletId, walletId.trim()), eq(schema.wallets.walletUserId, effectiveUserId)))
+            .get();
+          if (!targetWallet) {
+            throw new Error(`Wallet ID ${walletId.trim()} not found or unauthorized`);
+          }
+          cleanWalletId = walletId.trim();
+        }
+
+        if (dueDate && !isValidIsoDateOrTimestamp(dueDate)) {
+          throw new Error("Validation Error: 'dueDate' must be in valid ISO format (e.g. YYYY-MM-DD or YYYY-MM-DDTHH:mm:ss+07:00)");
+        }
+        if (notes && (typeof notes !== "string" || notes.length > 500)) {
+          throw new Error("Validation Error: 'notes' cannot exceed 500 characters");
+        }
+
+        const newDebtLoanId = crypto.randomUUID();
+        const nowIso = currentIsoTimestamp();
+        const cleanDueDate = dueDate ? dueDate.trim() : null;
+
+        const newRecord = await db.insert(schema.debtsLoans).values({
+          debtLoanId: newDebtLoanId,
+          debtLoanUserId: effectiveUserId,
+          debtLoanPersonName: cleanPersonName,
+          debtLoanType: cleanType,
+          debtLoanAmount: amount,
+          debtLoanRemainingAmount: amount,
+          debtLoanWalletId: cleanWalletId,
+          debtLoanDueDate: cleanDueDate,
+          debtLoanStatus: "unpaid",
+          debtLoanNotes: notes ? notes.trim() : null,
+          debtLoanCreatedAt: nowIso,
+        }).returning();
+
+        // Atomic wallet balance adjustment on create
+        if (shouldAdjustWallet && cleanWalletId) {
+          if (cleanType === "loan") {
+            // Giving loan -> deduct from wallet balance
+            await db.update(schema.wallets)
+              .set({ walletBalance: sql`wallet_balance - ${amount}` })
+              .where(and(eq(schema.wallets.walletId, cleanWalletId), eq(schema.wallets.walletUserId, effectiveUserId)));
+          } else if (cleanType === "debt") {
+            // Borrowing -> credit to wallet balance
+            await db.update(schema.wallets)
+              .set({ walletBalance: sql`wallet_balance + ${amount}` })
+              .where(and(eq(schema.wallets.walletId, cleanWalletId), eq(schema.wallets.walletUserId, effectiveUserId)));
+          }
+        }
+
+        return { content: [{ type: "text", text: JSON.stringify(newRecord[0], null, 2) }] };
+      }
+
+      // 2. Action: list
+      if (action === "list") {
+        const conditions = [eq(schema.debtsLoans.debtLoanUserId, effectiveUserId)];
+        if (status && ["unpaid", "partially_paid", "paid"].includes(status)) {
+          conditions.push(eq(schema.debtsLoans.debtLoanStatus, status));
+        }
+        if (type && ["debt", "loan"].includes(type)) {
+          conditions.push(eq(schema.debtsLoans.debtLoanType, type));
+        }
+
+        const results = await db.select().from(schema.debtsLoans)
+          .where(and(...conditions))
+          .orderBy(desc(schema.debtsLoans.debtLoanCreatedAt));
+
+        return { content: [{ type: "text", text: JSON.stringify(results, null, 2) }] };
+      }
+
+      // 3. Action: repay
+      if (action === "repay") {
+        if (!isValidUUID(debtLoanId)) {
+          throw new Error("Validation Error: Valid string 'debtLoanId' (UUID) is required for repay");
+        }
+        if (!isValidPositiveNumber(amount)) {
+          throw new Error("Validation Error: Repayment 'amount' must be a positive finite number greater than 0");
+        }
+
+        const cleanId = (debtLoanId as string).trim();
+        const existingRecord = await db.select().from(schema.debtsLoans)
+          .where(and(eq(schema.debtsLoans.debtLoanId, cleanId), eq(schema.debtsLoans.debtLoanUserId, effectiveUserId)))
+          .get();
+
+        if (!existingRecord) {
+          throw new Error(`Debt/Loan ID ${cleanId} not found or unauthorized`);
+        }
+
+        if (existingRecord.debtLoanStatus === "paid" || existingRecord.debtLoanRemainingAmount <= 0) {
+          throw new Error(`Debt/Loan ${cleanId} is already fully paid`);
+        }
+
+        if (amount > existingRecord.debtLoanRemainingAmount + 0.001) {
+          throw new Error(`Validation Error: Repayment amount (${amount}) cannot exceed remaining balance (${existingRecord.debtLoanRemainingAmount})`);
+        }
+
+        const shouldAdjustWallet = adjustWalletBalance !== false;
+        let cleanWalletId = existingRecord.debtLoanWalletId;
+        if (walletId) {
+          if (!isValidUUID(walletId)) {
+            throw new Error("Validation Error: 'walletId' must be a valid UUID string");
+          }
+          const targetWallet = await db.select().from(schema.wallets)
+            .where(and(eq(schema.wallets.walletId, walletId.trim()), eq(schema.wallets.walletUserId, effectiveUserId)))
+            .get();
+          if (!targetWallet) {
+            throw new Error(`Wallet ID ${walletId.trim()} not found or unauthorized`);
+          }
+          cleanWalletId = walletId.trim();
+        }
+
+        const newRemaining = Number((existingRecord.debtLoanRemainingAmount - amount).toFixed(2));
+        const newStatus = newRemaining <= 0.001 ? "paid" : "partially_paid";
+        const finalRemaining = newRemaining <= 0.001 ? 0 : newRemaining;
+
+        const updated = await db.update(schema.debtsLoans)
+          .set({
+            debtLoanRemainingAmount: finalRemaining,
+            debtLoanStatus: newStatus,
+          })
+          .where(and(eq(schema.debtsLoans.debtLoanId, cleanId), eq(schema.debtsLoans.debtLoanUserId, effectiveUserId)))
+          .returning();
+
+        // Atomic wallet balance adjustment on repay
+        if (shouldAdjustWallet && cleanWalletId) {
+          if (existingRecord.debtLoanType === "loan") {
+            // Debtor pays us back -> credit our wallet
+            await db.update(schema.wallets)
+              .set({ walletBalance: sql`wallet_balance + ${amount}` })
+              .where(and(eq(schema.wallets.walletId, cleanWalletId), eq(schema.wallets.walletUserId, effectiveUserId)));
+          } else if (existingRecord.debtLoanType === "debt") {
+            // We pay creditor back -> deduct from our wallet
+            await db.update(schema.wallets)
+              .set({ walletBalance: sql`wallet_balance - ${amount}` })
+              .where(and(eq(schema.wallets.walletId, cleanWalletId), eq(schema.wallets.walletUserId, effectiveUserId)));
+          }
+        }
+
+        return { content: [{ type: "text", text: JSON.stringify(updated[0], null, 2) }] };
+      }
+
+      // 4. Action: update
+      if (action === "update") {
+        if (!isValidUUID(debtLoanId)) {
+          throw new Error("Validation Error: Valid string 'debtLoanId' (UUID) is required for update");
+        }
+        const cleanId = (debtLoanId as string).trim();
+        const existingRecord = await db.select().from(schema.debtsLoans)
+          .where(and(eq(schema.debtsLoans.debtLoanId, cleanId), eq(schema.debtsLoans.debtLoanUserId, effectiveUserId)))
+          .get();
+
+        if (!existingRecord) {
+          throw new Error(`Debt/Loan ID ${cleanId} not found or unauthorized`);
+        }
+
+        const updateData: Partial<typeof schema.debtsLoans.$inferInsert> = {};
+        if (personName !== undefined) {
+          if (typeof personName !== "string" || personName.trim().length === 0 || personName.trim().length > 100) {
+            throw new Error("Validation Error: 'personName' must be 1-100 characters");
+          }
+          updateData.debtLoanPersonName = personName.trim();
+        }
+        if (dueDate !== undefined) {
+          if (dueDate && !isValidIsoDateOrTimestamp(dueDate)) {
+            throw new Error("Validation Error: 'dueDate' must be in valid ISO format");
+          }
+          updateData.debtLoanDueDate = dueDate ? dueDate.trim() : null;
+        }
+        if (notes !== undefined) {
+          if (notes && (typeof notes !== "string" || notes.length > 500)) {
+            throw new Error("Validation Error: 'notes' cannot exceed 500 characters");
+          }
+          updateData.debtLoanNotes = notes ? notes.trim() : null;
+        }
+
+        if (Object.keys(updateData).length === 0) {
+          return { content: [{ type: "text", text: JSON.stringify(existingRecord, null, 2) }] };
+        }
+
+        const updated = await db.update(schema.debtsLoans)
+          .set(updateData)
+          .where(and(eq(schema.debtsLoans.debtLoanId, cleanId), eq(schema.debtsLoans.debtLoanUserId, effectiveUserId)))
+          .returning();
+
+        return { content: [{ type: "text", text: JSON.stringify(updated[0], null, 2) }] };
+      }
+
+      throw new Error(`Invalid action '${action}' for manage_debt_loan. Valid actions: create, list, repay, update`);
     }
 
     throw new Error(`Tool not found: ${name}`);

@@ -96,6 +96,14 @@ async function readResource(uri: string, token?: string): Promise<any> {
   return result;
 }
 
+async function listPrompts(token?: string): Promise<any> {
+  return mcpCall('prompts/list', {}, token);
+}
+
+async function getPrompt(name: string, args: Record<string, any> = {}, token?: string): Promise<any> {
+  return mcpCall('prompts/get', { name, arguments: args }, token);
+}
+
 // ---------------------------------------------------------------------------
 // Test Suite
 // ---------------------------------------------------------------------------
@@ -544,5 +552,191 @@ describe('Integration Test: Full User Journey (Deployed Worker + Remote D1)', ()
     assert.equal(userBTxs.length, 0, 'User B should have 0 transactions');
 
     console.log(`    ✓ User B (${regB.userId}) fully isolated from User A data`);
+  });
+
+  // -------------------------------------------------------------------------
+  // Step 27: Debt & Loan Management Journey
+  // -------------------------------------------------------------------------
+  it('Step 27: Debt & Loan Management Journey', async () => {
+    // 1. Create a loan given to Budi (Rp 500,000) from BCA
+    const loanBudi = await callTool('manage_debt_loan', {
+      action: 'create',
+      type: 'loan',
+      personName: 'Budi',
+      amount: 500000,
+      walletId: state.wallets.bca.walletId,
+      dueDate: '2026-09-30',
+      notes: 'Pinjaman Budi',
+    }, state.userA.token);
+
+    assert.equal(loanBudi.debtLoanType, 'loan');
+    assert.equal(loanBudi.debtLoanAmount, 500000);
+    assert.equal(loanBudi.debtLoanRemainingAmount, 500000);
+    assert.equal(loanBudi.debtLoanStatus, 'unpaid');
+
+    // 2. Create a debt borrowed from Joni (Rp 1,000,000) into BCA
+    const debtJoni = await callTool('manage_debt_loan', {
+      action: 'create',
+      type: 'debt',
+      personName: 'Joni',
+      amount: 1000000,
+      walletId: state.wallets.bca.walletId,
+      dueDate: '2026-10-15',
+      notes: 'Pinjam Joni',
+    }, state.userA.token);
+
+    assert.equal(debtJoni.debtLoanType, 'debt');
+    assert.equal(debtJoni.debtLoanRemainingAmount, 1000000);
+
+    // 3. List active debts & loans
+    const listDebts = await callTool('manage_debt_loan', { action: 'list', status: 'unpaid' }, state.userA.token);
+    assert.equal(listDebts.length, 2);
+
+    // 4. Repay Joni's debt partially (Rp 400,000)
+    const repayJoni = await callTool('manage_debt_loan', {
+      action: 'repay',
+      debtLoanId: debtJoni.debtLoanId,
+      amount: 400000,
+      walletId: state.wallets.bca.walletId,
+    }, state.userA.token);
+
+    assert.equal(repayJoni.debtLoanRemainingAmount, 600000);
+    assert.equal(repayJoni.debtLoanStatus, 'partially_paid');
+
+    // 5. Read finance://debts/active resource
+    const debtsRes = await readResource('finance://debts/active', state.userA.token);
+    assert.equal(debtsRes.activeCount, 2);
+    assert.equal(debtsRes.totalDebt, 600000);
+    assert.equal(debtsRes.totalReceivable, 500000);
+
+    // 6. Check summary has totalDebt and totalReceivable
+    const summary = await callTool('financial_summary', {}, state.userA.token);
+    assert.equal(summary.totalDebt, 600000);
+    assert.equal(summary.totalReceivable, 500000);
+
+    // 7. Verify User B cannot see User A's debts
+    const userBDebts = await callTool('manage_debt_loan', { action: 'list' }, state.userB.token);
+    assert.equal(userBDebts.length, 0);
+
+    console.log(`    ✓ Debt & Loan: created loan & debt, partial repay, active resource, summary integration, RLS verified`);
+  });
+
+  // -------------------------------------------------------------------------
+  // Step 28: Onboarding Journey, Default Category Seeding & Guardrails
+  // -------------------------------------------------------------------------
+  it('Step 28: Onboarding Journey, Default Category Seeding & Guardrails', async () => {
+    const email = `${TEST_PREFIX}_onboarding@example.com`;
+    const regResult = await callTool('register_user', {
+      firstName: 'Onboarding',
+      lastName: 'User',
+      email,
+      whatsappNumber: '+628777666555',
+    });
+
+    assert.ok(regResult.onboarding);
+    assert.equal(regResult.onboarding.isComplete, false);
+    assert.deepEqual(regResult.onboarding.needs, ['wallet', 'categories']);
+    assert.deepEqual(regResult.onboarding.suggestions, ['budget']);
+
+    const userCToken = regResult.token;
+    const userCApiKey = regResult.apiKey;
+
+    // Precondition Guardrails: Transaction & Transfer fail when 0 wallets exist
+    await assert.rejects(async () => {
+      await callTool('record_transaction', {
+        walletId: 'd3b07384-d113-4567-8901-123456789abc',
+        categoryId: 'c3b07384-d113-4567-8901-123456789abc',
+        amount: 50000,
+      }, userCToken);
+    }, /No wallets found/i);
+
+    await assert.rejects(async () => {
+      await callTool('transfer_funds', {
+        sourceWalletId: 'd3b07384-d113-4567-8901-123456789abc',
+        targetWalletId: 'e3b07384-d113-4567-8901-123456789abc',
+        amount: 50000,
+      }, userCToken);
+    }, /No wallets found/i);
+
+    // Seed default categories
+    const seedResult = await callTool('manage_category', {
+      action: 'seed_defaults',
+    }, userCToken);
+
+    assert.equal(seedResult.createdCount, 10);
+    assert.equal(seedResult.skippedCount, 0);
+
+    // Login check after seeding: wallet still missing
+    const login1 = await callTool('login_user', { apiKey: userCApiKey });
+    assert.equal(login1.onboarding.isComplete, false);
+    assert.deepEqual(login1.onboarding.needs, ['wallet']);
+
+    // Create a wallet for User C
+    const userCWallet = await callTool('manage_wallet', {
+      action: 'create',
+      name: 'Dompet User C',
+      institution: 'Cash',
+      type: 'cash',
+      balance: 1000000,
+    }, userCToken);
+
+    // Login check after wallet: onboarding is complete!
+    const login2 = await callTool('login_user', { apiKey: userCApiKey });
+    assert.equal(login2.onboarding.isComplete, true);
+    assert.deepEqual(login2.onboarding.needs, []);
+
+    // Transaction now succeeds
+    const foodCat = seedResult.categories.find((c: any) => c.categoryName === 'Makanan & Minuman');
+    assert.ok(foodCat);
+
+    const txResult = await callTool('record_transaction', {
+      walletId: userCWallet.walletId,
+      categoryId: foodCat.categoryId,
+      amount: 25000,
+      description: 'Makan siang',
+    }, userCToken);
+    assert.equal(txResult.transactionAmount, 25000);
+
+    console.log(`    ✓ Onboarding: dynamic status, guardrails, seed_defaults (10 categories), completion lifecycle verified`);
+  });
+
+  // -------------------------------------------------------------------------
+  // Step 29: MCP Prompts Protocol Discovery & Retrieval
+  // -------------------------------------------------------------------------
+  it('Step 29: MCP Prompts Protocol Discovery & Retrieval', async () => {
+    // 1. List Prompts
+    const promptList = await listPrompts(state.userA.token);
+    assert.equal(promptList.prompts.length, 4);
+    const names = promptList.prompts.map((p: any) => p.name);
+    assert.ok(names.includes('onboarding_assistant'));
+    assert.ok(names.includes('daily_briefing'));
+    assert.ok(names.includes('financial_planning'));
+    assert.ok(names.includes('debt_loan_advisor'));
+
+    // 2. Get onboarding_assistant prompt
+    const obPrompt = await getPrompt('onboarding_assistant', { currency: 'IDR' }, state.userA.token);
+    assert.ok(obPrompt.messages.length > 0);
+    assert.ok(obPrompt.messages[0].content.text.includes('manage_wallet'));
+
+    // 3. Get daily_briefing prompt
+    const dbPrompt = await getPrompt('daily_briefing', { date: '2026-08-23' }, state.userA.token);
+    assert.ok(dbPrompt.messages.length > 0);
+    assert.ok(dbPrompt.messages[0].content.text.includes('finance://debts/active'));
+
+    // 4. Get financial_planning prompt with target goal
+    const fpPrompt = await getPrompt('financial_planning', {
+      goal_description: 'beli laptop ROG',
+      target_amount: '20000000',
+    }, state.userA.token);
+    assert.ok(fpPrompt.messages.length > 0);
+    assert.ok(fpPrompt.messages[0].content.text.includes('beli laptop ROG'));
+    assert.ok(fpPrompt.messages[0].content.text.includes('20000000'));
+
+    // 5. Get debt_loan_advisor prompt
+    const dlaPrompt = await getPrompt('debt_loan_advisor', {}, state.userA.token);
+    assert.ok(dlaPrompt.messages.length > 0);
+    assert.ok(dlaPrompt.messages[0].content.text.includes('manage_debt_loan'));
+
+    console.log(`    ✓ Prompts: prompts/list and prompts/get verified for 4 workflow playbooks`);
   });
 });

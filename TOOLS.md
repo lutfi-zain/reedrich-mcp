@@ -133,7 +133,7 @@ If you are extending this project into a standalone MCP server (or integrating w
 ---
 
 ### 2.5. `manage_category`
-**Description**: Create a new expense/income category or list existing categories.
+**Description**: Create a new expense/income category, list existing categories, or seed 10 standard default categories.
 
 - **Access Level**: Read / Write.
 - **Input Schema**:
@@ -141,8 +141,8 @@ If you are extending this project into a standalone MCP server (or integrating w
   {
     "type": "object",
     "properties": {
-      "action": { "type": "string", "enum": ["list", "create"] },
-      "name": { "type": "string", "description": "Category name (e.g. Utilities, Transportation)" },
+      "action": { "type": "string", "enum": ["list", "create", "seed_defaults"] },
+      "name": { "type": "string", "description": "Category name (e.g. Utilities, Transportation, required for create)" },
       "type": { "type": "string", "enum": ["expense", "income"], "default": "expense" },
       "icon": { "type": "string", "description": "Emoji icon representation (e.g. 🍔, 🚗)" }
     },
@@ -210,6 +210,32 @@ If you are extending this project into a standalone MCP server (or integrating w
 
 ---
 
+### 2.9. `manage_debt_loan`
+**Description**: Manage personal debts (*hutang* / payable) and loans given (*piutang* / receivable). Supports creating debts/loans, listing with status/type filters, full/partial repayments, and updating metadata.
+
+- **Access Level**: Dynamic (`list` = Read-Only; `create` / `repay` / `update` = Requires Write Access).
+- **Input Schema**:
+  ```json
+  {
+    "type": "object",
+    "properties": {
+      "action": { "type": "string", "enum": ["create", "list", "repay", "update"], "description": "Action to perform" },
+      "debtLoanId": { "type": "string", "description": "Debt/Loan UUID (required for repay and update)" },
+      "type": { "type": "string", "enum": ["debt", "loan"], "description": "'debt' (we owe) or 'loan' (counterparty owes us)" },
+      "personName": { "type": "string", "description": "Counterparty person/institution name (1-100 characters)" },
+      "amount": { "type": "number", "minimum": 0.01, "description": "Principal amount for create, or repayment amount for repay" },
+      "walletId": { "type": "string", "description": "Wallet UUID to fund/credit" },
+      "dueDate": { "type": "string", "description": "Due date (YYYY-MM-DD or ISO format)" },
+      "notes": { "type": "string", "description": "Optional notes or descriptions" },
+      "status": { "type": "string", "enum": ["unpaid", "partially_paid", "paid"], "description": "Status filter for list action" },
+      "adjustWalletBalance": { "type": "boolean", "default": true, "description": "Whether to sync wallet balance" }
+    },
+    "required": ["action"]
+  }
+  ```
+
+---
+
 ## 3. MCP Resources Schema
 
 An MCP server for this database exposes the following URI resources:
@@ -219,6 +245,7 @@ An MCP server for this database exposes the following URI resources:
 | `finance://db/schema` | `application/json` | Returns database DDL schema and table structures |
 | `finance://wallets/list` | `application/json` | Returns current list of active wallets & balances |
 | `finance://budgets/active` | `application/json` | Returns currently active budgets and utilization |
+| `finance://debts/active` | `application/json` | Returns currently active/unpaid debts & loans with summary totals |
 | `finance://uploads/{type}/{filename}` | `image/*`, `application/pdf`, `text/csv` | Binary resource accessor for uploaded receipt files |
 
 ---

@@ -84,7 +84,7 @@ class MockD1PreparedStatement {
 function createTestDB() {
   const sqlite = new DatabaseSync(':memory:');
   sqlite.exec('PRAGMA foreign_keys = ON;');
-  const migrationFiles = ['0002_table_prefixed_schema_and_tz.sql'];
+  const migrationFiles = ['0002_table_prefixed_schema_and_tz.sql', '0003_add_debts_loans.sql'];
   for (const file of migrationFiles) {
     const ddlPath = join(__dirname, `../drizzle/${file}`);
     const ddl = readFileSync(ddlPath, 'utf-8');
@@ -129,6 +129,22 @@ async function readResource(server: any, uri: string) {
   return handler({
     method: 'resources/read',
     params: { uri },
+  });
+}
+
+async function listPrompts(server: any) {
+  const handler = server._requestHandlers.get('prompts/list');
+  return handler({ method: 'prompts/list' });
+}
+
+async function getPrompt(server: any, name: string, args: Record<string, any> = {}) {
+  const handler = server._requestHandlers.get('prompts/get');
+  return handler({
+    method: 'prompts/get',
+    params: {
+      name,
+      arguments: args,
+    },
   });
 }
 
@@ -514,12 +530,14 @@ describe('Eve Finance MCP Server — Complete Test Suite', () => {
     const authServer = createMCPServer(db, user.userId, TEST_JWT_SECRET);
 
     const resourcesList = await listResources(authServer);
-    assert.equal(resourcesList.resources.length, 3);
+    assert.equal(resourcesList.resources.length, 4);
 
     const schemaRes = await readResource(authServer, 'finance://db/schema');
     const schemaJson = JSON.parse(schemaRes.contents[0].text);
     assert.ok(schemaJson.tables.users.includes('user_id (PK UUID)'));
     assert.ok(schemaJson.tables.wallets.includes('wallet_id (PK UUID)'));
+    assert.ok(schemaJson.tables.debts_loans);
+    assert.ok(schemaJson.indexes.debts_loans);
     assert.ok(schemaJson.indexes.transactions);
   });
 
@@ -992,5 +1010,348 @@ describe('Eve Finance MCP Server — Complete Test Suite', () => {
         amount: 50000,
       });
     }, /cannot be the same wallet/i);
+  });
+
+  it('13. Debt & Loan Management: Create, Repay, Settle, Resources, Summary, and RLS Isolation', async () => {
+    const { db } = createTestDB();
+    const publicServer = createMCPServer(db, null, TEST_JWT_SECRET);
+
+    // 1. Register User 1
+    const user1 = JSON.parse((await callTool(publicServer, 'register_user', {
+      firstName: 'Debt',
+      lastName: 'Master',
+      email: 'debtmaster@example.com',
+      whatsappNumber: '+6281111222233',
+    })).content[0].text);
+
+    const authServer1 = createMCPServer(db, user1.userId, TEST_JWT_SECRET);
+
+    // Create Initial Wallet for User 1 with balance 5,000,000 IDR
+    const walletBca = JSON.parse((await callTool(authServer1, 'manage_wallet', {
+      action: 'create',
+      name: 'BCA Main',
+      institution: 'BCA',
+      type: 'bank',
+      balance: 5000000,
+      currency: 'IDR',
+    })).content[0].text);
+
+    // 2. Action: create loan (Lend 500,000 to Budi)
+    const loanBudi = JSON.parse((await callTool(authServer1, 'manage_debt_loan', {
+      action: 'create',
+      type: 'loan',
+      personName: 'Budi',
+      amount: 500000,
+      walletId: walletBca.walletId,
+      dueDate: '2026-09-15',
+      notes: 'Pinjaman dana darurat Budi',
+    })).content[0].text);
+
+    assert.equal(loanBudi.debtLoanType, 'loan');
+    assert.equal(loanBudi.debtLoanPersonName, 'Budi');
+    assert.equal(loanBudi.debtLoanAmount, 500000);
+    assert.equal(loanBudi.debtLoanRemainingAmount, 500000);
+    assert.equal(loanBudi.debtLoanStatus, 'unpaid');
+
+    // Wallet balance should deduct 500,000 -> 4,500,000
+    const bcaAfterLoan = (await db.select().from(schema.wallets).where(eq(schema.wallets.walletId, walletBca.walletId)).get())!;
+    assert.equal(bcaAfterLoan.walletBalance, 4500000);
+
+    // 3. Action: create debt (Borrow 1,000,000 from Joni)
+    const debtJoni = JSON.parse((await callTool(authServer1, 'manage_debt_loan', {
+      action: 'create',
+      type: 'debt',
+      personName: 'Joni',
+      amount: 1000000,
+      walletId: walletBca.walletId,
+      dueDate: '2026-09-30',
+      notes: 'Pinjam modal Joni',
+    })).content[0].text);
+
+    assert.equal(debtJoni.debtLoanType, 'debt');
+    assert.equal(debtJoni.debtLoanPersonName, 'Joni');
+    assert.equal(debtJoni.debtLoanAmount, 1000000);
+    assert.equal(debtJoni.debtLoanRemainingAmount, 1000000);
+    assert.equal(debtJoni.debtLoanStatus, 'unpaid');
+
+    // Wallet balance should credit 1,000,000 -> 4,500,000 + 1,000,000 = 5,500,000
+    const bcaAfterDebt = (await db.select().from(schema.wallets).where(eq(schema.wallets.walletId, walletBca.walletId)).get())!;
+    assert.equal(bcaAfterDebt.walletBalance, 5500000);
+
+    // 4. Action: create self-debt without wallet balance adjustment (adjustWalletBalance: false)
+    const selfDebt = JSON.parse((await callTool(authServer1, 'manage_debt_loan', {
+      action: 'create',
+      type: 'debt',
+      personName: 'Uang Rumah OCBC',
+      amount: 750000,
+      adjustWalletBalance: false,
+      dueDate: '2026-09-01',
+      notes: 'Talangan beli sepatu',
+    })).content[0].text);
+
+    assert.equal(selfDebt.debtLoanPersonName, 'Uang Rumah OCBC');
+    assert.equal(selfDebt.debtLoanAmount, 750000);
+
+    // Wallet balance remains 5,500,000
+    const bcaAfterSelfDebt = (await db.select().from(schema.wallets).where(eq(schema.wallets.walletId, walletBca.walletId)).get())!;
+    assert.equal(bcaAfterSelfDebt.walletBalance, 5500000);
+
+    // 5. Action: list with filters
+    const allUnpaid = JSON.parse((await callTool(authServer1, 'manage_debt_loan', { action: 'list', status: 'unpaid' })).content[0].text);
+    assert.equal(allUnpaid.length, 3);
+
+    const loansOnly = JSON.parse((await callTool(authServer1, 'manage_debt_loan', { action: 'list', type: 'loan' })).content[0].text);
+    assert.equal(loansOnly.length, 1);
+    assert.equal(loansOnly[0].debtLoanPersonName, 'Budi');
+
+    const debtsOnly = JSON.parse((await callTool(authServer1, 'manage_debt_loan', { action: 'list', type: 'debt' })).content[0].text);
+    assert.equal(debtsOnly.length, 2);
+
+    // 6. Action: update metadata
+    const updatedBudi = JSON.parse((await callTool(authServer1, 'manage_debt_loan', {
+      action: 'update',
+      debtLoanId: loanBudi.debtLoanId,
+      dueDate: '2026-10-01',
+      notes: 'Diperpanjang sampai Oktober',
+    })).content[0].text);
+
+    assert.equal(updatedBudi.debtLoanDueDate, '2026-10-01');
+    assert.equal(updatedBudi.debtLoanNotes, 'Diperpanjang sampai Oktober');
+
+    // 7. Action: repay - Partial repayment of Joni's debt (Pay 400,000 from BCA)
+    const partialRepayJoni = JSON.parse((await callTool(authServer1, 'manage_debt_loan', {
+      action: 'repay',
+      debtLoanId: debtJoni.debtLoanId,
+      amount: 400000,
+      walletId: walletBca.walletId,
+    })).content[0].text);
+
+    assert.equal(partialRepayJoni.debtLoanRemainingAmount, 600000);
+    assert.equal(partialRepayJoni.debtLoanStatus, 'partially_paid');
+
+    // Wallet balance deducted by 400,000 -> 5,500,000 - 400,000 = 5,100,000
+    const bcaAfterPartialRepay = (await db.select().from(schema.wallets).where(eq(schema.wallets.walletId, walletBca.walletId)).get())!;
+    assert.equal(bcaAfterPartialRepay.walletBalance, 5100000);
+
+    // 8. Action: repay - Full repayment of Budi's loan (Budi pays 500,000 to BCA)
+    const fullRepayBudi = JSON.parse((await callTool(authServer1, 'manage_debt_loan', {
+      action: 'repay',
+      debtLoanId: loanBudi.debtLoanId,
+      amount: 500000,
+      walletId: walletBca.walletId,
+    })).content[0].text);
+
+    assert.equal(fullRepayBudi.debtLoanRemainingAmount, 0);
+    assert.equal(fullRepayBudi.debtLoanStatus, 'paid');
+
+    // Wallet balance credited by 500,000 -> 5,100,000 + 500,000 = 5,600,000
+    const bcaAfterFullRepay = (await db.select().from(schema.wallets).where(eq(schema.wallets.walletId, walletBca.walletId)).get())!;
+    assert.equal(bcaAfterFullRepay.walletBalance, 5600000);
+
+    // 9. Negative Validation: Overpayment and Repay Already Paid
+    await assert.rejects(async () => {
+      await callTool(authServer1, 'manage_debt_loan', {
+        action: 'repay',
+        debtLoanId: debtJoni.debtLoanId,
+        amount: 800000, // Remaining is 600,000
+      });
+    }, /cannot exceed remaining balance/i);
+
+    await assert.rejects(async () => {
+      await callTool(authServer1, 'manage_debt_loan', {
+        action: 'repay',
+        debtLoanId: loanBudi.debtLoanId,
+        amount: 100000, // Budi is already fully paid
+      });
+    }, /already fully paid/i);
+
+    // 10. Verify Resource: finance://debts/active
+    const debtsResource = await readResource(authServer1, 'finance://debts/active');
+    const debtsPayload = JSON.parse(debtsResource.contents[0].text);
+    assert.equal(debtsPayload.activeCount, 2); // Joni (600,000) and Uang Rumah (750,000)
+    assert.equal(debtsPayload.totalDebt, 1350000);
+    assert.equal(debtsPayload.totalReceivable, 0); // Budi is paid
+
+    // 11. Verify Financial Summary integration
+    const summary = JSON.parse((await callTool(authServer1, 'financial_summary', {})).content[0].text);
+    assert.equal(summary.totalDebt, 1350000);
+    assert.equal(summary.totalReceivable, 0);
+
+    // 12. Multi-Tenant RLS Isolation: User 2 cannot access or repay User 1's debt
+    const user2 = JSON.parse((await callTool(publicServer, 'register_user', {
+      firstName: 'Other',
+      lastName: 'User',
+      email: 'other@example.com',
+      whatsappNumber: '+628999888777',
+    })).content[0].text);
+
+    const authServer2 = createMCPServer(db, user2.userId, TEST_JWT_SECRET);
+    const user2Debts = JSON.parse((await callTool(authServer2, 'manage_debt_loan', { action: 'list' })).content[0].text);
+    assert.equal(user2Debts.length, 0);
+
+    await assert.rejects(async () => {
+      await callTool(authServer2, 'manage_debt_loan', {
+        action: 'repay',
+        debtLoanId: debtJoni.debtLoanId,
+        amount: 100000,
+      });
+    }, /not found or unauthorized/i);
+  });
+
+  it('14. Onboarding Status, Default Category Seeding, Transaction Guardrails, and MCP Prompts', async () => {
+    const { db } = createTestDB();
+    const publicServer = createMCPServer(db, null, TEST_JWT_SECRET);
+
+    // 1. Verify Prompts Capability and List Prompts
+    const promptList = await listPrompts(publicServer);
+    assert.equal(promptList.prompts.length, 4);
+    const promptNames = promptList.prompts.map((p: any) => p.name);
+    assert.ok(promptNames.includes('onboarding_assistant'));
+    assert.ok(promptNames.includes('daily_briefing'));
+    assert.ok(promptNames.includes('financial_planning'));
+    assert.ok(promptNames.includes('debt_loan_advisor'));
+
+    // Check financial_planning arguments
+    const fpPrompt = promptList.prompts.find((p: any) => p.name === 'financial_planning');
+    assert.ok(fpPrompt?.arguments.some((a: any) => a.name === 'goal_description' && a.required === true));
+    assert.ok(fpPrompt?.arguments.some((a: any) => a.name === 'target_amount' && a.required === true));
+
+    // 2. Verify Prompts/Get for all 4 prompts
+    const obGet = await getPrompt(publicServer, 'onboarding_assistant', { currency: 'USD' });
+    assert.ok(obGet.messages.length > 0);
+    assert.ok(obGet.messages[0].content.text.includes('USD'));
+    assert.ok(obGet.messages[0].content.text.includes('manage_wallet'));
+    assert.ok(obGet.messages[0].content.text.includes('seed_defaults'));
+
+    const dbGet = await getPrompt(publicServer, 'daily_briefing', { date: '2026-08-23' });
+    assert.ok(dbGet.messages.length > 0);
+    assert.ok(dbGet.messages[0].content.text.includes('2026-08-23'));
+    assert.ok(dbGet.messages[0].content.text.includes('finance://wallets/list'));
+    assert.ok(dbGet.messages[0].content.text.includes('finance://debts/active'));
+
+    const fpGetWithArgs = await getPrompt(publicServer, 'financial_planning', {
+      goal_description: 'beli laptop',
+      target_amount: '15000000',
+    });
+    assert.ok(fpGetWithArgs.messages.length > 0);
+    assert.ok(fpGetWithArgs.messages[0].content.text.includes('beli laptop'));
+    assert.ok(fpGetWithArgs.messages[0].content.text.includes('15000000'));
+    assert.ok(fpGetWithArgs.messages[0].content.text.includes('financial_summary'));
+
+    const fpGetNoArgs = await getPrompt(publicServer, 'financial_planning', {});
+    assert.ok(fpGetNoArgs.messages[0].content.text.includes('NOTE: The user has not provided complete goal details'));
+
+    const dlaGet = await getPrompt(publicServer, 'debt_loan_advisor');
+    assert.ok(dlaGet.messages.length > 0);
+    assert.ok(dlaGet.messages[0].content.text.includes('manage_debt_loan'));
+    assert.ok(dlaGet.messages[0].content.text.includes('Overdue debts'));
+
+    // Prompts/Get unknown prompt throws error
+    await assert.rejects(async () => {
+      await getPrompt(publicServer, 'nonexistent_prompt');
+    }, /Prompt 'nonexistent_prompt' not found/i);
+
+    // 3. Register brand-new user and verify onboarding status in payload
+    const regRes = await callTool(publicServer, 'register_user', {
+      firstName: 'Rian',
+      lastName: 'Hidayat',
+      email: 'rian@example.com',
+      whatsappNumber: '+628111222333',
+    });
+    const regData = JSON.parse(regRes.content[0].text);
+    assert.ok(regData.onboarding);
+    assert.equal(regData.onboarding.isComplete, false);
+    assert.deepEqual(regData.onboarding.needs, ['wallet', 'categories']);
+    assert.deepEqual(regData.onboarding.suggestions, ['budget']);
+
+    const authServer = createMCPServer(db, regData.userId, TEST_JWT_SECRET);
+
+    // 4. Precondition Guardrails: Transaction & Transfer fail when 0 wallets exist
+    const txFailRes = await callTool(authServer, 'record_transaction', {
+      walletId: 'd3b07384-d113-4567-8901-123456789abc',
+      categoryId: 'c3b07384-d113-4567-8901-123456789abc',
+      amount: 50000,
+    });
+    assert.equal(txFailRes.isError, true);
+    const txFailData = JSON.parse(txFailRes.content[0].text);
+    assert.ok(txFailData.error.includes('No wallets found'));
+    assert.equal(txFailData.suggestion, 'onboarding_assistant');
+
+    const transferFailRes = await callTool(authServer, 'transfer_funds', {
+      sourceWalletId: 'd3b07384-d113-4567-8901-123456789abc',
+      targetWalletId: 'e3b07384-d113-4567-8901-123456789abc',
+      amount: 50000,
+    });
+    assert.equal(transferFailRes.isError, true);
+    const transferFailData = JSON.parse(transferFailRes.content[0].text);
+    assert.ok(transferFailData.error.includes('No wallets found'));
+    assert.equal(transferFailData.suggestion, 'onboarding_assistant');
+
+    // 5. Seed Default Categories (manage_category with action: 'seed_defaults')
+    const seedRes = await callTool(authServer, 'manage_category', {
+      action: 'seed_defaults',
+    });
+    const seedData = JSON.parse(seedRes.content[0].text);
+    assert.equal(seedData.createdCount, 10);
+    assert.equal(seedData.skippedCount, 0);
+    assert.equal(seedData.categories.length, 10);
+
+    // Verify all 10 categories exist in database
+    const catList = JSON.parse((await callTool(authServer, 'manage_category', { action: 'list' })).content[0].text);
+    assert.equal(catList.length, 10);
+
+    // 6. Re-seed defaults: should skip all 10 existing categories
+    const reseedRes = await callTool(authServer, 'manage_category', {
+      action: 'seed_defaults',
+    });
+    const reseedData = JSON.parse(reseedRes.content[0].text);
+    assert.equal(reseedData.createdCount, 0);
+    assert.equal(reseedData.skippedCount, 10);
+
+    // 7. Check Login Onboarding Status (categories exist, wallet still missing)
+    const loginRes1 = await callTool(publicServer, 'login_user', {
+      apiKey: regData.apiKey,
+    });
+    const loginData1 = JSON.parse(loginRes1.content[0].text);
+    assert.equal(loginData1.onboarding.isComplete, false);
+    assert.deepEqual(loginData1.onboarding.needs, ['wallet']);
+    assert.deepEqual(loginData1.onboarding.suggestions, ['budget']);
+
+    // 8. Create a primary wallet
+    const wallet = JSON.parse((await callTool(authServer, 'manage_wallet', {
+      action: 'create',
+      name: 'Dompet Utama',
+      institution: 'BCA',
+      type: 'bank',
+      balance: 5000000,
+    })).content[0].text);
+
+    // 9. Check Login Onboarding Status again (both wallet and categories exist -> complete!)
+    const loginRes2 = await callTool(publicServer, 'login_user', {
+      apiKey: regData.apiKey,
+    });
+    const loginData2 = JSON.parse(loginRes2.content[0].text);
+    assert.equal(loginData2.onboarding.isComplete, true);
+    assert.deepEqual(loginData2.onboarding.needs, []);
+    assert.deepEqual(loginData2.onboarding.suggestions, ['budget']);
+
+    // 10. Record Transaction now succeeds
+    const foodCat = catList.find((c: any) => c.categoryName === 'Makanan & Minuman');
+    assert.ok(foodCat);
+
+    const txSuccessRes = await callTool(authServer, 'record_transaction', {
+      walletId: wallet.walletId,
+      categoryId: foodCat.categoryId,
+      amount: 45000,
+      description: 'Nasi Padang Siang',
+    });
+    const txSuccessData = JSON.parse(txSuccessRes.content[0].text);
+    assert.equal(txSuccessData.transactionAmount, 45000);
+    assert.equal(txSuccessData.transactionType, 'expense');
+
+    // 11. Invalid action on manage_category throws error mentioning seed_defaults
+    await assert.rejects(async () => {
+      await callTool(authServer, 'manage_category', { action: 'unknown_action' });
+    }, /Valid actions: list, create, seed_defaults/i);
   });
 });

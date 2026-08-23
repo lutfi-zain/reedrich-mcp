@@ -10,26 +10,33 @@ Stateless Model Context Protocol (MCP) server for personal finance management de
 - **Pure MCP-Native Authentication**: Register and login directly using MCP tools (`register_user` & `login_user`) without external REST endpoints.
 - **15-Minute Self-Contained JWT**: Cryptographic token verification with **zero database queries** required for auth on finance tool calls.
 - **Multi-Tenant Row-Level Security (RLS)**: Automatically isolates user data via `userId` extracted directly from JWT token payload.
-- **11 MCP Tools**:
-  - `register_user`: Register with `firstName`, `lastName`, `email`, and `whatsappNumber` (with country code `+...`) → returns persistent `apiKey` & 15-minute JWT.
-  - `login_user`: Authenticate with `apiKey` → returns fresh 15-minute JWT.
+- **12 MCP Tools**:
+  - `register_user`: Register with `firstName`, `lastName`, `email`, and `whatsappNumber` (with country code `+...`) → returns persistent `apiKey`, 15-minute JWT, and dynamic `onboarding` status.
+  - `login_user`: Authenticate with `apiKey` → returns fresh 15-minute JWT and dynamic `onboarding` status.
   - `submit_feedback`: Submit user feedback, bug reports, or feature requests → automatically creates a formatted GitHub Issue with the user's name and email.
   - `manage_wallet`: Create, list, update wallets.
-  - `manage_category`: Create, list expense and income categories.
+  - `manage_category`: Create, list, and bulk-seed standard expense and income categories (`action: "seed_defaults"`).
   - `manage_budget`: Create, list, and compute real-time budget utilization status.
-  - `record_transaction`: Record income/expenses with optional admin fee and automatic atomic wallet balance sync.
-  - `transfer_funds`: Transfer money between wallets with optional admin fees and atomic dual-wallet balance adjustment.
+  - `manage_debt_loan`: Manage debts (*hutang*) and loans given (*piutang*), counterparty tracking, full/partial repayments, and wallet sync.
+  - `record_transaction`: Record income/expenses with optional admin fee, automatic atomic wallet balance sync, and walletless guardrails.
+  - `transfer_funds`: Transfer money between wallets with optional admin fees, atomic dual-wallet balance adjustment, and walletless guardrails.
   - `update_transaction`: Update transactions (amount, fee, wallet, category, budget, date, memo, planned status) with automatic balance reconciliation.
   - `list_transactions`: Dynamic filtering across date ranges, wallets, categories, budgets, and planning status.
-  - `financial_summary`: Aggregate net worth, income, expense, savings, admin fees, and category breakdowns.
-- **3 MCP Resources**:
-  - `finance://db/schema`
-  - `finance://wallets/list`
-  - `finance://budgets/active`
+  - `financial_summary`: Aggregate net worth, income, expense, savings, admin fees, category breakdowns, total debt, and total receivable.
+- **4 MCP Resources**:
+  - `finance://db/schema`: Database schema and relationship documentation.
+  - `finance://wallets/list`: Live list of authenticated user wallets and balances.
+  - `finance://budgets/active`: Current active budgets with spending utilization percentages.
+  - `finance://debts/active`: Active liabilities and receivables with total remaining balances.
+- **4 MCP Prompts (AI Workflow Playbooks)**:
+  - `onboarding_assistant`: Step-by-step guidance for setting up initial wallets and standard categories.
+  - `daily_briefing`: Comprehensive financial health overview (balances, active budgets, upcoming debt/loan due dates).
+  - `financial_planning`: Goal timeline projection (e.g. "Kapan bisa beli laptop Rp 15jt?") based on net savings and debt obligations.
+  - `debt_loan_advisor`: Prioritization and repayment strategy for active debts and loan collections.
 
 ---
 
-## 🔄 Authentication Workflow via MCP
+## 🔄 Authentication & Onboarding Workflow via MCP
 
 1. **Register User via MCP Tool**:
    Call tool `register_user`:
@@ -51,21 +58,36 @@ Stateless Model Context Protocol (MCP) server for personal finance management de
      "apiKey": "fp_live_8f3d9b2c...",
      "token": "eyJhbGciOi...",
      "tokenType": "Bearer",
-     "expiresIn": 900
+     "expiresIn": 900,
+     "onboarding": {
+       "isComplete": false,
+       "needs": ["wallet", "categories"],
+       "suggestions": ["budget"],
+       "message": "Please set up: wallet, categories. Use the onboarding_assistant prompt for guidance."
+     }
    }
    ```
 
-2. **Call Finance Tools**:
+2. **Seed Default Categories (On User Confirmation)**:
+   Call tool `manage_category` with `action: "seed_defaults"`:
+   ```json
+   {
+     "action": "seed_defaults"
+   }
+   ```
+   Populates 10 standard categories: Makanan & Minuman 🍔, Transportasi 🚗, Belanja 🛍️, Tagihan & Utilitas 💡, Hiburan 🎬, Kesehatan 💊, Gaji 💼, Investasi & Bunga 📈, Usaha / Freelance 💻, Pemasukan Lainnya 🎁.
+
+3. **Call Finance Tools**:
    Set `Authorization: Bearer <token>` in your MCP client headers to execute `manage_wallet`, `record_transaction`, etc.
 
-3. **Re-Login when Token Expires (after 15 minutes)**:
+4. **Re-Login when Token Expires (after 15 minutes)**:
    When a token expires, call tool `login_user`:
    ```json
    {
      "apiKey": "fp_live_8f3d9b2c..."
    }
    ```
-   **Response:** Fresh 15-minute JWT token.
+   **Response:** Fresh 15-minute JWT token with live `onboarding` status.
 
 ---
 
