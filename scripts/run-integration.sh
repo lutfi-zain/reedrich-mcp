@@ -36,14 +36,14 @@ WORKER_URL="${WORKER_URL}" JWT_SECRET="${JWT_SECRET}" npx tsx --test tests/integ
 TEST_EXIT=$?
 echo ""
 
-# 5. Cleanup test data from remote D1 (unless KEEP_DATA=1)
+# 5. Cleanup test data from remote D1 (only delete test users with test email pattern)
 if [ "$KEEP_DATA" = "1" ]; then
   echo "ℹ️  KEEP_DATA=1 detected. Skipping teardown/cleanup so test data stays in D1."
 else
-  echo "🧹 Cleaning up test data from remote D1..."
+  echo "🧹 Cleaning up test-only data from remote D1..."
   npx wrangler d1 execute finance_db --remote \
-    --command="DELETE FROM transactions WHERE transaction_user_id LIKE 'usr_%'; DELETE FROM budgets WHERE budget_user_id LIKE 'usr_%'; DELETE FROM categories WHERE category_user_id LIKE 'usr_%'; DELETE FROM wallets WHERE wallet_user_id LIKE 'usr_%'; DELETE FROM users WHERE user_id LIKE 'usr_%';" 2>/dev/null || true
-  echo "✅ Test data cleaned up."
+    --command="DELETE FROM users WHERE user_email LIKE '%@example.com' AND user_first_name IN ('Budi', 'Other', 'Citra');" 2>/dev/null || true
+  echo "✅ Test-specific data cleaned up."
 fi
 echo ""
 
