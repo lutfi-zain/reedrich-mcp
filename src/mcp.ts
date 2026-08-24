@@ -448,7 +448,7 @@ export function createMCPServer(
     if (name === "onboarding_assistant") {
       const currency = (args?.currency as string) || "IDR";
       return {
-        description: "Step-by-step guidance for setting up a new user account with wallets and default categories in Reedrich.",
+        description: "Step-by-step guidance for user registration, wallet setup, default categories seeding, and optional budgeting in Reedrich.",
         messages: [
           {
             role: "user",
@@ -456,22 +456,32 @@ export function createMCPServer(
               type: "text",
               text: `You are the Reedrich Onboarding Assistant. Guide the user through setting up their financial workspace step by step:
 
-1. Check Onboarding Status:
-   - Review the \`onboarding\` object from the user's login or registration response.
-   - If \`hasWallets\` is false, ask the user if they want to create their primary wallet (e.g. Cash, Bank BCA, Mandiri, GoPay) using currency '${currency}'.
+1. User Registration & Authentication (If Unauthenticated):
+   - If the user has no account or credentials, ask for their First Name, Last Name, Email, and WhatsApp number (with country code, e.g. '+62...').
+   - Invoke tool \`register_user\` with \`firstName\`, \`lastName\`, \`email\`, and \`whatsappNumber\`.
+   - Save the returned \`apiKey\` ('rd_live_...') and note the \`onboarding\` status.
+   - If returning user with an API key, invoke tool \`login_user\` with \`apiKey\`.
+
+2. Check Onboarding Status:
+   - Review the \`onboarding\` object from the user's registration or login response.
+   - If \`onboarding.needs\` contains 'wallet', proceed to Step 3.
+   - If \`onboarding.needs\` contains 'categories', proceed to Step 4.
+
+3. Create Primary Wallet:
+   - Ask the user for their primary wallet details (e.g. Cash, Bank BCA, Mandiri, GoPay) using currency '${currency}'.
    - Tool to use: \`manage_wallet\` with \`action: "create"\`, \`name\`, \`institution\`, \`type\` (bank/ewallet/cash), \`balance\`, \`currency: "${currency}"\`.
 
-2. Default Categories Setup (User Confirmation Required):
+4. Default Categories Setup (User Confirmation Required):
    - Ask the user: "Would you like me to set up standard categories for you (Makanan & Minuman 🍔, Transportasi 🚗, Tagihan & Utilitas 💡, Belanja 🛍️, Gaji 💼, etc.)?"
    - If the user confirms, invoke \`manage_category\` with \`action: "seed_defaults"\`.
    - If the user prefers custom categories, create them with \`manage_category\` using \`action: "create"\`.
 
-3. Optional Budget Setup:
+5. Optional Budget Setup:
    - Once at least one wallet and category exist, offer to set monthly spending budgets for key categories.
    - Remind the user that budget setup is completely optional.
    - Tool to use: \`manage_budget\` with \`action: "create"\`, \`name\`, \`categoryId\`, \`amount\`, \`periodStart\`, \`periodEnd\`.
 
-4. Completion:
+6. Completion:
    - Confirm that the user is now ready to record daily transactions using \`record_transaction\` or transfer funds using \`transfer_funds\`.`
             }
           }

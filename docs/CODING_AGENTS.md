@@ -263,6 +263,10 @@ If you connect without an `Authorization` header, the agent can call `register_u
 
 Once authenticated, prompt your coding agent with natural language:
 
+#### 🚀 Onboarding Playbook (From Zero to First Transaction)
+- *"Run the onboarding assistant to set up my Reedrich financial account."*
+- *"Guide me through registering my account and setting up my initial wallets and categories."*
+
 #### 💼 Wallets & Balances
 - *"Show all my wallets and total balances."*
 - *"Create a new wallet called 'BCA Main' with initial balance IDR 15,000,000 in IDR currency."*

@@ -1266,9 +1266,10 @@ describe('Eve Finance MCP Server — Complete Test Suite', () => {
     const obGet = await getPrompt(publicServer, 'onboarding_assistant', { currency: 'USD' });
     assert.ok(obGet.messages.length > 0);
     assert.ok(obGet.messages[0].content.text.includes('USD'));
+    assert.ok(obGet.messages[0].content.text.includes('register_user'));
+    assert.ok(obGet.messages[0].content.text.includes('login_user'));
     assert.ok(obGet.messages[0].content.text.includes('manage_wallet'));
     assert.ok(obGet.messages[0].content.text.includes('seed_defaults'));
-
     const dbGet = await getPrompt(publicServer, 'daily_briefing', { date: '2026-08-23' });
     assert.ok(dbGet.messages.length > 0);
     assert.ok(dbGet.messages[0].content.text.includes('2026-08-23'));
