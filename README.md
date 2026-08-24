@@ -35,6 +35,32 @@ Stateless Model Context Protocol (MCP) server for personal finance & determinist
   - `debt_loan_advisor`: Prioritization and repayment strategy for active debts and loan collections.
 
 ---
+## ⚡ Quick Install: Claude Code Plugin & Desktop
+
+Install Reedrich directly in **Claude Code CLI** or connect with **Claude Desktop**:
+
+### Claude Code Plugin (One-Command Install):
+```bash
+/plugin marketplace add lutfi-zain/reedrich-mcp
+/plugin install reedrich-finance@reedrich-marketplace
+```
+
+### Claude Desktop (`claude_desktop_config.json`):
+```json
+{
+  "mcpServers": {
+    "reedrich": {
+      "type": "http",
+      "url": "https://reedrich-mcp.lutfidmz.workers.dev/mcp"
+    }
+  }
+}
+```
+
+👉 **Full Claude Plugin Guide & Slash Commands**: See [docs/CLAUDE_PLUGIN.md](docs/CLAUDE_PLUGIN.md).
+
+---
+
 
 ## 🔄 Authentication & Onboarding Workflow via MCP
 

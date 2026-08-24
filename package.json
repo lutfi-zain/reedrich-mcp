@@ -27,6 +27,9 @@
   "keywords": [
     "mcp",
     "reedrich",
+    "claude-plugin",
+    "claude-code",
+    "claude-desktop",
     "cloudflare-workers",
     "d1",
     "drizzle-orm",
@@ -34,7 +37,11 @@
     "financial-planning",
     "mathematics"
   ],
-  "author": "",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lutfi-zain/reedrich-mcp.git"
+  },
+  "author": "Lutfi Zain (https://github.com/lutfi-zain)",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {

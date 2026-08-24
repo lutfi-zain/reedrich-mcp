@@ -1,0 +1,15 @@
+{
+  "name": "reedrich-marketplace",
+  "description": "Reedrich Personal Finance & Wealth Planning Plugin Marketplace for Claude",
+  "owner": {
+    "name": "Lutfi Zain",
+    "url": "https://github.com/lutfi-zain"
+  },
+  "plugins": [
+    {
+      "name": "reedrich-finance",
+      "source": "./",
+      "description": "Mathematical intelligence & personal financial planning engine for Claude with multi-currency wallets, budget tracking, debt payoff, and savings goal projections."
+    }
+  ]
+}

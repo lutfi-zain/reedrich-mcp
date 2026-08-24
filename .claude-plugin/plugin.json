@@ -1,0 +1,30 @@
+{
+  "name": "reedrich-finance",
+  "version": "1.0.0",
+  "description": "Mathematical intelligence & deterministic personal financial planning engine for Claude with multi-currency wallets, budget tracking, debt payoff, and savings goal projections.",
+  "author": {
+    "name": "Lutfi Zain",
+    "url": "https://github.com/lutfi-zain"
+  },
+  "homepage": "https://github.com/lutfi-zain/reedrich-mcp",
+  "repository": "https://github.com/lutfi-zain/reedrich-mcp",
+  "license": "ISC",
+  "keywords": [
+    "finance",
+    "financial-planning",
+    "budget",
+    "wealth-management",
+    "mcp",
+    "debt-tracker",
+    "savings"
+  ],
+  "mcpServers": {
+    "reedrich": {
+      "type": "http",
+      "url": "https://reedrich-mcp.lutfidmz.workers.dev/mcp",
+      "headers": {
+        "Authorization": "Bearer ${REEDRICH_API_KEY}"
+      }
+    }
+  }
+}
