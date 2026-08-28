@@ -117,6 +117,135 @@ Install Reedrich directly in **Claude Code CLI** or connect with **Claude Deskto
 
 ---
 
+## 🔐 Stateless OAuth 2.1 for Perplexity & ChatGPT (RFC 8414/9728, PKCE S256)
+
+Reedrich MCP now exposes **100% stateless** OAuth discovery and token endpoints for **Perplexity Pro Connectors** and **ChatGPT Custom Actions** (Streamable HTTP `/mcp` with RFC 9728 protected-resource discovery). All state is encoded in **HMAC-SHA256 JWTs** via Web Crypto — **zero D1 tables, zero D1 writes, zero KV/DO**.
+
+> **Backward Compatibility:** Existing `Authorization: Bearer rd_live_...` / `fp_live_...` and 15-minute `reedrich-mcp` JWTs remain fully functional on `/mcp` and `/sse` alongside new OAuth access tokens. No migration required.
+
+### Discovery (Public, `Cache-Control: public, max-age=3600`)
+
+```bash
+# Authorization Server Metadata (RFC 8414)
+curl https://reedrich-mcp.lutfidmz.workers.dev/.well-known/oauth-authorization-server
+# -> { issuer, authorization_endpoint, token_endpoint, registration_endpoint,
+#      scopes_supported: ["mcp"], response_types_supported: ["code"],
+#      grant_types_supported: ["authorization_code","refresh_token"],
+#      code_challenge_methods_supported: ["S256"],
+#      token_endpoint_auth_methods_supported: ["none","client_secret_basic","client_secret_post"],
+#      revocation_endpoint }
+
+# Protected Resource Metadata (RFC 9728)
+curl https://reedrich-mcp.lutfidmz.workers.dev/.well-known/oauth-protected-resource
+# -> { resource: "https://<host>/mcp", authorization_servers: ["https://<host>"],
+#      scopes_supported: ["mcp"], bearer_methods_supported: ["header"], resource_name: "Reedrich MCP" }
+
+# OpenID Discovery Alias
+curl https://reedrich-mcp.lutfidmz.workers.dev/.well-known/openid-configuration
+```
+
+All `/.well-known/*` endpoints are **public** (ignore `Authorization` header), support `OPTIONS` `204` with `Access-Control-Allow-Origin: *`, and reflect the request `Host` dynamically (`new URL(c.req.url).origin` — no hard-coded domain).
+
+### Dynamic Client Registration (RFC 7591, Stateless)
+
+```bash
+# Public client (Perplexity) — no secret
+curl -X POST https://reedrich-mcp.lutfidmz.workers.dev/oauth/register \
+  -H "Content-Type: application/json" \
+  -d '{"client_name":"Perplexity","redirect_uris":["https://perplexity.ai/oauth/callback"],"grant_types":["authorization_code","refresh_token"],"response_types":["code"],"token_endpoint_auth_method":"none"}'
+# -> 201 { client_id: "550e8400-...", client_id_issued_at: 1234567890,
+#          redirect_uris, grant_types, response_types, scope: "mcp",
+#          token_endpoint_auth_method: "none" }   # no client_secret
+
+# Confidential client (ChatGPT) — HMAC-derived secret (43 chars, 256-bit)
+curl -X POST https://reedrich-mcp.lutfidmz.workers.dev/oauth/register \
+  -H "Content-Type: application/json" \
+  -d '{"client_name":"ChatGPT","redirect_uris":["https://chat.openai.com/aip/callback"],"token_endpoint_auth_method":"client_secret_basic"}'
+# -> 201 { client_id, client_secret: "Na71QEn2...", client_secret_expires_at: 0, ... }
+# client_secret is deterministic: HMAC-SHA256(JWT_SECRET, "oauth:client-secret:"+clientId) + base64url
+# Verification is stateless via re-derivation + constant-time compare — zero D1 writes.
+```
+
+Validation: `redirect_uris` must be `https` (or `http://localhost`/`http://127.0.0.1` loopback), `grant_types` ⊆ `["authorization_code","refresh_token"]`, `response_types` ⊆ `["code"]`, `token_endpoint_auth_method` ∈ `["none","client_secret_basic","client_secret_post"]`. Defaults: `grant_types` → `["authorization_code","refresh_token"]`, `response_types` → `["code"]`, `scope` → `"mcp"`.
+
+### Authorization Code + PKCE S256 (5-Minute JWT)
+
+```bash
+# 1. Compute challenge (Node) — RFC 7636 Appendix B vector:
+# verifier: dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk
+# challenge: E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM  (BASE64URL(SHA256(verifier)))
+node -e "import('node:crypto').then(async m=>{ const v='dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk'; const h=await m.subtle.digest('SHA-256', Buffer.from(v)); console.log(Buffer.from(h).toString('base64url')) })"
+
+# 2. Authorize (user must be authenticated via rd_live_ or JWT)
+curl -G https://reedrich-mcp.lutfidmz.workers.dev/oauth/authorize \
+  --data-urlencode "response_type=code" \
+  --data-urlencode "client_id=<client_id>" \
+  --data-urlencode "redirect_uri=https://perplexity.ai/oauth/callback" \
+  --data-urlencode "scope=mcp" \
+  --data-urlencode "state=xyz123" \
+  --data-urlencode "code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM" \
+  --data-urlencode "code_challenge_method=S256" \
+  -H "Authorization: Bearer rd_live_..."
+# -> 302 Location: https://perplexity.ai/oauth/callback?code=<JWT 5m>&state=xyz123
+# code JWT payload: { sub, client_id, redirect_uri, scope, code_challenge, code_challenge_method:"S256", iss, aud, iat, exp=iat+300, jti }
+# Rejects: plain, missing challenge, invalid scope, mismatched redirect_uri (400), unauthenticated (401 login_required)
+```
+
+### Token Exchange (15m Access + 30d Refresh, Stateless)
+
+```bash
+# Authorization Code Grant (form or JSON lenient)
+curl -X POST https://reedrich-mcp.lutfidmz.workers.dev/oauth/token \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "grant_type=authorization_code&code=<jwt>&redirect_uri=https://perplexity.ai/oauth/callback&client_id=<id>&code_verifier=dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
+# Also accepts: Authorization: Basic base64(client_id:client_secret) for confidential clients
+# -> 200 { access_token: <JWT 15m>, token_type:"Bearer", expires_in:900, refresh_token: <JWT 30d>, scope:"mcp" }
+# access JWT: { sub, client_id, scope, iss, aud, iat, exp=iat+900, jti }
+# refresh JWT: { sub, client_id, scope, token_type:"refresh", iss, aud, iat, exp=iat+2592000, jti }
+
+# Refresh Token Grant (rotation, scope narrowing)
+curl -X POST https://reedrich-mcp.lutfidmz.workers.dev/oauth/token \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "grant_type=refresh_token&refresh_token=<refresh_jwt>&client_id=<id>&scope=mcp"
+# -> 200 { access_token: <new 15m>, refresh_token: <new 30d rotated>, scope }
+# Rejects: broader scope (400 invalid_scope), expired/mismatched client (400 invalid_grant), access_token as refresh (400), wrong secret (401 invalid_client + WWW-Authenticate: Basic)
+
+# Revocation (stateless best-effort, always 200)
+curl -X POST https://reedrich-mcp.lutfidmz.workers.dev/oauth/revoke \
+  -d "token=<refresh_jwt>&token_type_hint=refresh_token"
+# -> 200 {}  (expiry-based revocation; revoked token remains valid until exp — documented)
+```
+
+### Protected Resource Gate (`/mcp`, `/sse`)
+
+```bash
+# Unauthenticated -> 401 with RFC 9728 WWW-Authenticate
+curl -i -X POST https://reedrich-mcp.lutfidmz.workers.dev/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+# <- 401 WWW-Authenticate: Bearer resource_metadata="https://<host>/.well-known/oauth-protected-resource", error="invalid_token"
+#    { error:"invalid_token", error_description:"Authentication required" }
+#    Cache-Control: no-store, Pragma: no-cache, Access-Control-Allow-Origin: *
+
+# Valid OAuth, rd_live_, or legacy JWT -> 200 MCP
+curl -X POST https://reedrich-mcp.lutfidmz.workers.dev/mcp \
+  -H "Authorization: Bearer <oauth_access_token>" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"manage_wallet","arguments":{"action":"list"}}}'
+# Also: Authorization: Bearer rd_live_...  or  Bearer <legacy reedrich-mcp JWT>
+```
+
+`resource_metadata` reflects the request `Host` (`https://<host>/.well-known/oauth-protected-resource`), enabling custom domains and `workers.dev` without config.
+
+### Cryptographic Invariants
+
+- **Zero Storage:** No `oauth_*` D1 tables, no KV/DO/R2, no new migrations. All codes/tokens are HMAC-SHA256 JWTs (`hono/jwt` + Web Crypto).
+- **Lifetimes:** `T_code=300s` (5m), `T_access=900s` (15m), `T_refresh=2592000s` (30d), `CLOCK_SKEW=60s`.
+- **PKCE:** `code_challenge = BASE64URL(SHA256(ASCII(verifier)))`, `43 ≤ len ≤ 128`, alphabet `A-Za-z0-9-._~`, constant-time compare.
+- **Client Secret:** `HMAC-SHA256(JWT_SECRET, "oauth:client-secret:"+clientId)` → base64url (43 chars, 256-bit); verified via re-derivation.
+
+---
+
 ## 🛠️ Project Setup & Local Development
 
 ### 1. Install Dependencies
