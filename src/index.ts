@@ -83,6 +83,59 @@ app.get('/', (c) => {
 
 app.get('/health', (c) => c.text('OK'));
 
+// OpenAPI 3.0 specification for ChatGPT Actions compatibility
+function generateOpenApiSpec(origin: string): Record<string, unknown> {
+  return {
+    openapi: "3.0.0",
+    info: {
+      title: "Reedrich Financial Intelligence API",
+      version: "1.0.0",
+      description: "Mathematical Intelligence & Personal Financial Planning Engine for AI Assistants and Custom GPT Actions.",
+      contact: { name: "Reedrich Support", url: "https://github.com/lutfi-zain/reedrich-mcp" },
+    },
+    servers: [{ url: origin, description: "Cloudflare Workers Edge Server" }],
+    components: {
+      securitySchemes: {
+        bearerAuth: {
+          type: "http",
+          scheme: "bearer",
+          bearerFormat: "JWT",
+          description: "Enter your 15-minute JWT session token or persistent API key (rd_live_...)",
+        },
+      },
+      schemas: {
+        ErrorResponse: { type: "object", properties: { error: { type: "string" }, message: { type: "string" } }, required: ["error"] },
+      },
+    },
+    security: [{ bearerAuth: [] }],
+    paths: {
+      "/api/v1/summary": {
+        get: {
+          summary: "Get Financial Summary & Net Worth",
+          operationId: "getFinancialSummary",
+          security: [{ bearerAuth: [] }],
+          responses: { "200": { description: "Financial summary" }, "401": { description: "Unauthorized" } },
+        },
+      },
+    },
+    "x-oauth": { scopes_supported: [...OAUTH_SCOPES] },
+  };
+}
+
+app.get('/openapi.json', (c) => {
+  const origin = new URL(c.req.url).origin;
+  c.header('Access-Control-Allow-Origin', '*');
+  c.header('Cache-Control', 'public, max-age=3600');
+  return c.json(generateOpenApiSpec(origin));
+});
+
+app.get('/privacy', (c) => {
+  c.header('Content-Type', 'text/html; charset=utf-8');
+  c.header('Access-Control-Allow-Origin', '*');
+  return c.html(`<!DOCTYPE html>
+<html lang="id"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Kebijakan Privasi — Reedrich</title><style>body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#0d1117;color:#c9d1d9;line-height:1.6;margin:0;padding:40px 20px}.container{max-width:800px;margin:0 auto;background:#161b22;border:1px solid #30363d;border-radius:12px;padding:40px}</style></head><body><div class="container"><h1>Kebijakan Privasi Reedrich</h1><p><em>Terakhir diperbarui: 23 Agustus 2026</em></p><p>Selamat datang di <strong>Reedrich</strong> — Mathematical Intelligence &amp; Financial Planning Engine. Kami menghormati dan berkomitmen untuk melindungi privasi data keuangan Anda.</p><h2>1. Data yang Kami Kumpulkan</h2><ul><li>Informasi Akun: Nama, email, WhatsApp</li><li>Hash SHA-256 dari API Key (plaintext tidak disimpan)</li><li>Data Finansial: dompet, transaksi, anggaran, hutang/piutang</li></ul><h2>2. Penggunaan Data</h2><p>Data digunakan secara eksklusif untuk layanan perencanaan keuangan.</p><h2>3. Keamanan</h2><p>Semua token ditandatangani HMAC-SHA256, stateless, tanpa penyimpanan OAuth di D1.</p><p><a href="/">Kembali ke Reedrich MCP</a></p></div></body></html>`);
+});
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
