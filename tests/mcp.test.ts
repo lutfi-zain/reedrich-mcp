@@ -1339,9 +1339,8 @@ describe('Eve Finance MCP Server — Complete Test Suite', () => {
     });
     assert.equal(txFailRes.isError, true);
     const txFailData = JSON.parse(txFailRes.content[0].text);
-    assert.ok(txFailData.error.includes('No wallets found'));
-    assert.equal(txFailData.suggestion, 'onboarding_assistant');
-
+    assert.ok(txFailData.error.includes('Dompet belum tersedia') || txFailData.error.includes('No wallets found'));
+    assert.equal(txFailData.actionRequired, 'auto_create_wallet');
     const transferFailRes = await callTool(authServer, 'transfer_funds', {
       sourceWalletId: 'd3b07384-d113-4567-8901-123456789abc',
       targetWalletId: 'e3b07384-d113-4567-8901-123456789abc',
@@ -1836,10 +1835,24 @@ describe('Stateless OAuth Perplexity Engine — Discovery, DCR, PKCE, Token, Gat
     const locState = resState.headers.get('Location') || '';
     assert.ok(locState.includes(`state=${stateEnc}`), 'state should be echoed verbatim');
 
-    // 19.5 Unauthenticated -> 401 login_required
+    // 19.5 Unauthenticated -> HTML consent page (browser) or 401 JSON for API clients with Accept: application/json
     const resNoAuth = await app.request(url, {}, env);
-    assert.equal(resNoAuth.status, 401);
-    assert.equal((await resNoAuth.json() as any).error, 'login_required');
+    assert.equal(resNoAuth.status, 200);
+    assert.ok((resNoAuth.headers.get('Content-Type') || '').includes('text/html'), 'should be HTML consent page');
+    const htmlNoAuth = await resNoAuth.text();
+    assert.ok(htmlNoAuth.includes('Masuk dengan API Key'), 'should contain developer drawer');
+    assert.ok(htmlNoAuth.includes('Lanjutkan dengan Akun Google'), 'should contain google button');
+    assert.ok(htmlNoAuth.includes('name="client_id"'), 'hidden client_id');
+    assert.ok(htmlNoAuth.includes('name="redirect_uri"'), 'hidden redirect_uri');
+    assert.ok(htmlNoAuth.includes('name="response_type"'), 'hidden response_type');
+    assert.ok(htmlNoAuth.includes('name="state"'), 'hidden state');
+    assert.ok(htmlNoAuth.includes('name="code_challenge"'), 'hidden code_challenge');
+    assert.ok(htmlNoAuth.includes('name="code_challenge_method"'), 'hidden code_challenge_method');
+    assert.ok(htmlNoAuth.includes('name="scope"'), 'hidden scope');
+    // API client explicitly requesting JSON should still get 401 login_required
+    const resNoAuthJson = await app.request(url, { headers: { Accept: 'application/json' } }, env);
+    assert.equal(resNoAuthJson.status, 401);
+    assert.equal((await resNoAuthJson.json() as any).error, 'login_required');
 
     // 19.6 Rejects response_type=token
     const urlToken = `https://example.workers.dev/oauth/authorize?response_type=token&client_id=${clientId}&redirect_uri=https://perplexity.ai/oauth/callback&code_challenge=${challenge}&code_challenge_method=S256`;

@@ -4,8 +4,9 @@ import { drizzle, type DrizzleD1Database } from 'drizzle-orm/d1';
 import { eq } from 'drizzle-orm';
 import * as schema from './db/schema';
 import { createMCPServer } from './mcp';
-import { verifyUserToken, hashApiKey } from './utils/token';
+import { verifyUserToken, hashApiKey, isValidEmail, isValidWhatsApp, generateApiKey, generateUserId } from './utils/token';
 import { isValidVerifier, computeS256Challenge, verifyS256Challenge } from './utils/pkce';
+import { currentIsoTimestamp } from './utils/date';
 import {
   OAUTH_SCOPES,
   generateAuthorizationCode,
@@ -18,6 +19,10 @@ import {
   deriveClientSecret,
   verifyClientSecret,
   buildIssuerOrigin,
+  DEFAULT_GOOGLE_CLIENT_ID,
+  DEFAULT_GOOGLE_CLIENT_SECRET,
+  generateGoogleOAuthState,
+  verifyGoogleOAuthState,
 } from './utils/oauth';
 
 type Bindings = {
@@ -25,6 +30,8 @@ type Bindings = {
   JWT_SECRET: string;
   GITHUB_TOKEN?: string;
   GITHUB_REPO?: string;
+  GOOGLE_CLIENT_ID?: string;
+  GOOGLE_CLIENT_SECRET?: string;
 };
 
 const app = new Hono<{ Bindings: Bindings }>();
@@ -261,6 +268,428 @@ async function extractAuthenticatedUserId(
     return null;
   }
 }
+// ---------------------------------------------------------------------------
+// OAuth Consent Helpers — loginUser / registerUser + HTML rendering
+// ---------------------------------------------------------------------------
+
+function escapeHtml(str: string): string {
+  return str
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+export async function loginUser(
+  db: DrizzleD1Database<typeof schema>,
+  secret: string,
+  apiKey: string
+): Promise<string> {
+  if (!apiKey || typeof apiKey !== 'string' || apiKey.trim() === '') {
+    throw new Error('API Key diperlukan');
+  }
+  const clean = apiKey.trim();
+  const keyHash = await hashApiKey(clean);
+  const user = await db.select({ userId: schema.users.userId }).from(schema.users).where(eq(schema.users.userApiKeyHash, keyHash)).get();
+  if (!user) {
+    throw new Error('API Key tidak valid. Pastikan Anda menyalin rd_live_... dengan benar atau daftar akun baru.');
+  }
+  return user.userId;
+}
+
+export async function registerUser(
+  db: DrizzleD1Database<typeof schema>,
+  secret: string,
+  params: { firstName: string; lastName: string; email: string; whatsappNumber: string }
+): Promise<string> {
+  const { firstName, lastName, email, whatsappNumber } = params;
+  if (!firstName || typeof firstName !== 'string' || firstName.trim().length === 0 || firstName.trim().length > 100) {
+    throw new Error('Nama depan wajib diisi (1-100 karakter)');
+  }
+  if (!lastName || typeof lastName !== 'string' || lastName.trim().length === 0 || lastName.trim().length > 100) {
+    throw new Error('Nama belakang wajib diisi (1-100 karakter)');
+  }
+  if (!isValidEmail(email) || (typeof email === 'string' && email.length > 255)) {
+    throw new Error('Format email tidak valid. Contoh: user@example.com');
+  }
+  if (!isValidWhatsApp(whatsappNumber)) {
+    throw new Error('Format WhatsApp tidak valid. Harus diawali + kode negara, 6-14 digit (contoh: +6281234567890)');
+  }
+  const normalizedEmail = email.trim().toLowerCase();
+  const existing = await db.select().from(schema.users).where(eq(schema.users.userEmail, normalizedEmail)).get();
+  if (existing) {
+    throw new Error(`Email '${normalizedEmail}' sudah terdaftar. Silakan masuk dengan API Key.`);
+  }
+  const newUserId = generateUserId();
+  const apiKey = generateApiKey();
+  const apiKeyHash = await hashApiKey(apiKey);
+  const nowIso = currentIsoTimestamp();
+  await db.insert(schema.users).values({
+    userId: newUserId,
+    userFirstName: firstName.trim(),
+    userLastName: lastName.trim(),
+    userEmail: normalizedEmail,
+    userWhatsappNumber: whatsappNumber.trim(),
+    userApiKeyHash: apiKeyHash,
+    userCreatedAt: nowIso,
+  });
+  return newUserId;
+}
+
+function renderConsentHtml(
+  params: {
+    client_id: string;
+    redirect_uri: string;
+    response_type: string;
+    state?: string;
+    code_challenge: string;
+    code_challenge_method: string;
+    scope: string;
+  },
+  errorMsg?: string | null
+): string {
+  const e = escapeHtml;
+  const googleStartParams = new URLSearchParams({
+    client_id: params.client_id,
+    redirect_uri: params.redirect_uri,
+    response_type: params.response_type,
+    state: params.state ?? '',
+    code_challenge: params.code_challenge,
+    code_challenge_method: params.code_challenge_method,
+    scope: params.scope,
+  });
+  const googleStartUrl = `/oauth/google/start?${googleStartParams.toString()}`;
+
+  const hiddenFields = `
+    <input type="hidden" name="client_id" value="${e(params.client_id)}" />
+    <input type="hidden" name="redirect_uri" value="${e(params.redirect_uri)}" />
+    <input type="hidden" name="response_type" value="${e(params.response_type)}" />
+    <input type="hidden" name="state" value="${e(params.state ?? '')}" />
+    <input type="hidden" name="code_challenge" value="${e(params.code_challenge)}" />
+    <input type="hidden" name="code_challenge_method" value="${e(params.code_challenge_method)}" />
+    <input type="hidden" name="scope" value="${e(params.scope)}" />
+  `;
+  const errorBlock = errorMsg
+    ? `<div class="error-banner"><span class="error-icon">⚠️</span><span>${e(errorMsg)}</span></div>`
+    : '';
+  const redirectDisplay = e(params.redirect_uri);
+  const clientDisplay = e(params.client_id.slice(0, 12) + '…' + params.client_id.slice(-6));
+  const scopeDisplay = e(params.scope);
+  return `<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Otorisasi - Reedrich</title>
+<meta name="color-scheme" content="dark" />
+<style>
+:root {
+  --bg: #0d1117;
+  --card: #161b22;
+  --card-border: rgba(255, 255, 255, 0.08);
+  --card-glass: rgba(22, 27, 34, 0.85);
+  --text: #c9d1d9;
+  --text-bright: #f0f6fc;
+  --muted: #8b949e;
+  --accent: #58a6ff;
+  --accent-hover: #4493f8;
+  --danger-bg: rgba(248, 81, 73, 0.12);
+  --danger-border: rgba(248, 81, 73, 0.35);
+  --danger-text: #ffa198;
+  --input-bg: #0b0f14;
+  --input-border: rgba(255, 255, 255, 0.12);
+  --radius: 14px;
+}
+* { box-sizing: border-box; }
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Geist", Helvetica, Arial, sans-serif;
+  line-height: 1.5;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.container {
+  width: 100%;
+  max-width: 460px;
+  margin: 32px auto;
+  padding: 0 16px;
+}
+.card {
+  background: var(--card);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  backdrop-filter: blur(12px);
+}
+.header {
+  padding: 28px 24px 20px;
+  text-align: center;
+  border-bottom: 1px solid var(--card-border);
+}
+.logo-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, rgba(88, 166, 255, 0.2), rgba(31, 111, 235, 0.1));
+  border: 1px solid rgba(88, 166, 255, 0.3);
+  margin-bottom: 14px;
+  font-size: 20px;
+}
+.header h1 {
+  margin: 0 0 6px;
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--text-bright);
+}
+.header .subtitle {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+.header .client-meta {
+  margin-top: 14px;
+  display: flex;
+  gap: 6px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+.pill {
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--card-border);
+  background: rgba(13, 17, 23, 0.6);
+  color: var(--muted);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pill strong { color: var(--text-bright); }
+.error-banner {
+  margin: 16px 20px 0;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: var(--danger-bg);
+  border: 1px solid var(--danger-border);
+  color: var(--danger-text);
+  font-size: 13px;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+.error-icon { flex-shrink: 0; font-size: 15px; }
+.hero-section {
+  padding: 24px 20px 16px;
+  text-align: center;
+}
+.btn-google {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  width: 100%;
+  padding: 14px 18px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: #ffffff;
+  color: #1a1a1a;
+  font-size: 15px;
+  font-weight: 600;
+  text-decoration: none;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25), 0 0 0 1px rgba(255, 255, 255, 0.1);
+  transition: transform 0.15s ease, box-shadow 0.15s ease, background-color 0.15s ease;
+  cursor: pointer;
+}
+.btn-google:hover {
+  background: #f4f6f8;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 14px rgba(66, 133, 244, 0.25), 0 0 0 1px rgba(66, 133, 244, 0.4);
+}
+.btn-google:active {
+  transform: translateY(0);
+}
+.google-icon {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+}
+.hero-caption {
+  margin: 10px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+.dev-section {
+  padding: 0 20px 20px;
+}
+.dev-drawer {
+  margin-top: 12px;
+  border-top: 1px solid var(--card-border);
+  padding-top: 14px;
+}
+.dev-drawer summary {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+  padding: 6px 0;
+  transition: color 0.15s ease;
+  list-style-position: inside;
+}
+.dev-drawer summary:hover {
+  color: var(--text-bright);
+}
+.dev-drawer-content {
+  margin-top: 14px;
+  padding: 14px;
+  border-radius: 8px;
+  background: rgba(13, 17, 23, 0.7);
+  border: 1px solid var(--card-border);
+}
+.field { margin-bottom: 12px; }
+.field label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 6px;
+  color: var(--text);
+}
+.field input {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--input-border);
+  background: var(--input-bg);
+  color: var(--text-bright);
+  font-size: 13px;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.field input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.18);
+}
+.field input::placeholder { color: #484f58; }
+.hint {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 4px;
+  line-height: 1.4;
+}
+.hint code {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  color: var(--accent);
+  background: rgba(88, 166, 255, 0.1);
+  padding: 1px 4px;
+  border-radius: 4px;
+}
+.btn-dev {
+  width: 100%;
+  padding: 10px 14px;
+  border-radius: 8px;
+  border: 1px solid rgba(88, 166, 255, 0.3);
+  background: rgba(88, 166, 255, 0.15);
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+.btn-dev:hover {
+  background: var(--accent);
+  color: #0d1117;
+  border-color: var(--accent);
+}
+.footer {
+  padding: 14px 20px;
+  border-top: 1px solid var(--card-border);
+  text-align: center;
+  color: var(--muted);
+  font-size: 11px;
+  background: rgba(13, 17, 23, 0.3);
+}
+.footer a {
+  color: var(--accent);
+  text-decoration: none;
+  transition: color 0.15s ease;
+}
+.footer a:hover { text-decoration: underline; color: var(--accent-hover); }
+@media (max-width: 480px) {
+  .container { margin: 16px auto; padding: 0 12px; }
+  .header { padding: 22px 18px 16px; }
+  .hero-section { padding: 20px 16px 14px; }
+  .dev-section { padding: 0 16px 16px; }
+}
+</style>
+</head>
+<body>
+<div class="container">
+<div class="card">
+  <div class="header">
+    <div class="logo-badge">🔐</div>
+    <h1>Otorisasi Akses Reedrich</h1>
+    <p class="subtitle">Aplikasi ingin mengakses data keuangan Anda secara aman</p>
+    <div class="client-meta">
+      <span class="pill"><strong>Client:</strong> ${clientDisplay}</span>
+      <span class="pill"><strong>Scope:</strong> ${scopeDisplay}</span>
+    </div>
+    <div class="pill" style="margin:10px auto 0; max-width:100%; word-break:break-all; white-space:normal; display:inline-block;">↳ ${redirectDisplay}</div>
+  </div>
+  ${errorBlock}
+  <div class="hero-section">
+    <a href="${e(googleStartUrl)}" class="btn-google">
+      <svg class="google-icon" viewBox="0 0 24 24">
+        <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+        <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+        <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"/>
+        <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/>
+      </svg>
+      <span>Lanjutkan dengan Akun Google</span>
+    </a>
+    <p class="hero-caption">Masuk atau daftar otomatis dalam 1 detik tanpa perlu API key</p>
+  </div>
+  <div class="dev-section">
+    <details class="dev-drawer"${errorMsg ? ' open' : ''}>
+      <summary>⚙️ Opsi Pengembang (Masuk dengan API Key)</summary>
+      <div class="dev-drawer-content">
+        <form method="POST" action="/oauth/authorize" autocomplete="off">
+          ${hiddenFields}
+          <input type="hidden" name="auth_method" value="login" />
+          <div class="field">
+            <label for="api_key">API Key</label>
+            <input id="api_key" name="api_key" type="password" required placeholder="rd_live_..." autocomplete="off" />
+            <div class="hint">Tempel API Key yang diawali <code>rd_live_</code> atau <code>fp_live_</code>.</div>
+          </div>
+          <button type="submit" class="btn-dev">Izinkan via API Key</button>
+          <div class="hint" style="text-align:center; margin-top:8px;">Akan dialihkan ke <strong>${redirectDisplay}</strong></div>
+        </form>
+      </div>
+    </details>
+  </div>
+  <div class="footer">
+    Aman dengan PKCE S256 • Reedrich Financial Intelligence<br/>
+    <a href="/privacy" target="_blank" rel="noopener">Kebijakan Privasi</a> • <a href="/" target="_blank" rel="noopener">Beranda</a>
+  </div>
+</div>
+</div>
+</body>
+</html>`;
+}
+
 
 // In-memory registry for stateless DCR redirect_uri validation (zero D1, per-isolate)
 // Stores client_id -> redirect_uris to enable strict redirect_uri matching in authorize step
@@ -589,10 +1018,32 @@ app.get('/oauth/authorize', async (c) => {
   const db = drizzle(c.env.DB, { schema });
   const userId = await extractAuthenticatedUserId(c, db);
   if (!userId) {
+    // Browser flow: render interactive HTML Consent / Login UI (dark theme #0d1117)
+    // This is required for Perplexity/ChatGPT which open /oauth/authorize in a browser without Bearer headers.
+    // Check Accept header: if client explicitly expects JSON and not HTML, return 401 JSON for API compatibility.
+    // Otherwise, return HTML. For live curl verification and browser, HTML is expected.
+    const accept = c.req.header('Accept') || '';
+    const wantsJson = accept.includes('application/json') && !accept.includes('text/html');
+    if (wantsJson) {
+      c.header('Cache-Control', 'no-store');
+      c.header('Pragma', 'no-cache');
+      return c.json({ error: 'login_required', error_description: 'User authentication required. Provide Authorization: Bearer <rd_live_... or JWT> or ?token=' }, 401);
+    }
+    const html = renderConsentHtml(
+      {
+        client_id: clientId,
+        redirect_uri: redirectUri,
+        response_type: responseType,
+        state: state || '',
+        code_challenge: codeChallenge,
+        code_challenge_method: codeChallengeMethod,
+        scope,
+      }
+    );
     c.header('Cache-Control', 'no-store');
     c.header('Pragma', 'no-cache');
-    // Return 401 login_required (not redirect to avoid open redirect)
-    return c.json({ error: 'login_required', error_description: 'User authentication required. Provide Authorization: Bearer <rd_live_... or JWT> or ?token=' }, 401);
+    c.header('Content-Type', 'text/html; charset=utf-8');
+    return c.html(html, 200);
   }
 
   // Issue authorization code JWT (5m, bind challenge)
@@ -622,49 +1073,325 @@ app.get('/oauth/authorize', async (c) => {
   return new Response(null, { status: 302, headers });
 });
 
-// Also support POST /oauth/authorize for form-based flows (same logic, reading body)
+// ---------------------------------------------------------------------------
+// Google OAuth 2.0 Federation — GET /oauth/google/start & GET /oauth/google/callback
+// ---------------------------------------------------------------------------
+
+app.get('/oauth/google/start', async (c) => {
+  const secret = c.env?.JWT_SECRET;
+  if (!secret) {
+    return c.json({ error: 'server_error', error_description: 'JWT_SECRET missing' }, 500);
+  }
+
+  const clientId = c.req.query('client_id');
+  const redirectUri = c.req.query('redirect_uri');
+  const state = c.req.query('state') || '';
+  const codeChallenge = c.req.query('code_challenge');
+  const codeChallengeMethod = c.req.query('code_challenge_method') || 'S256';
+  const scope = c.req.query('scope') || 'mcp';
+
+  if (!clientId || !redirectUri || !codeChallenge) {
+    return c.json({ error: 'invalid_request', error_description: 'client_id, redirect_uri, and code_challenge are required' }, 400);
+  }
+
+  const origin = buildIssuerOrigin(c);
+  const signedState = await generateGoogleOAuthState(
+    {
+      client_id: clientId,
+      redirect_uri: redirectUri,
+      state,
+      code_challenge: codeChallenge,
+      code_challenge_method: codeChallengeMethod,
+      scope,
+    },
+    secret,
+    origin
+  );
+
+  const googleClientId = c.env?.GOOGLE_CLIENT_ID || DEFAULT_GOOGLE_CLIENT_ID;
+  const googleCallbackUrl = `${origin}/oauth/google/callback`;
+
+  const googleAuthUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
+  googleAuthUrl.searchParams.set('client_id', googleClientId);
+  googleAuthUrl.searchParams.set('redirect_uri', googleCallbackUrl);
+  googleAuthUrl.searchParams.set('response_type', 'code');
+  googleAuthUrl.searchParams.set('scope', 'openid email profile');
+  googleAuthUrl.searchParams.set('state', signedState);
+  googleAuthUrl.searchParams.set('prompt', 'select_account');
+
+  return new Response(null, {
+    status: 302,
+    headers: {
+      Location: googleAuthUrl.toString(),
+      'Cache-Control': 'no-store',
+      Pragma: 'no-cache',
+    },
+  });
+});
+
+app.get('/oauth/google/callback', async (c) => {
+  const secret = c.env?.JWT_SECRET;
+  if (!secret) {
+    return c.json({ error: 'server_error', error_description: 'JWT_SECRET missing' }, 500);
+  }
+  if (!c.env?.DB) {
+    return c.json({ error: 'server_error', error_description: 'DB missing' }, 500);
+  }
+
+  const code = c.req.query('code');
+  const stateJwt = c.req.query('state');
+  const errorParam = c.req.query('error');
+  const errorDesc = c.req.query('error_description');
+
+  if (!stateJwt) {
+    return c.json({ error: 'invalid_request', error_description: 'state parameter is missing' }, 400);
+  }
+
+  const statePayload = await verifyGoogleOAuthState(stateJwt, secret);
+  if (!statePayload) {
+    return c.json({ error: 'invalid_request', error_description: 'state token is invalid or expired' }, 400);
+  }
+
+  const { client_id: downstreamClientId, redirect_uri: downstreamRedirectUri, state: downstreamState, code_challenge, code_challenge_method, scope } = statePayload;
+
+  if (errorParam) {
+    const redirectUrl = new URL(downstreamRedirectUri);
+    redirectUrl.searchParams.set('error', errorParam);
+    if (errorDesc) redirectUrl.searchParams.set('error_description', errorDesc);
+    if (downstreamState) redirectUrl.searchParams.set('state', downstreamState);
+    return new Response(null, {
+      status: 302,
+      headers: { Location: redirectUrl.toString(), 'Cache-Control': 'no-store', Pragma: 'no-cache' },
+    });
+  }
+
+  if (!code) {
+    const redirectUrl = new URL(downstreamRedirectUri);
+    redirectUrl.searchParams.set('error', 'invalid_request');
+    redirectUrl.searchParams.set('error_description', 'code parameter missing from Google callback');
+    if (downstreamState) redirectUrl.searchParams.set('state', downstreamState);
+    return new Response(null, {
+      status: 302,
+      headers: { Location: redirectUrl.toString(), 'Cache-Control': 'no-store', Pragma: 'no-cache' },
+    });
+  }
+
+  const origin = buildIssuerOrigin(c);
+  const googleClientId = c.env?.GOOGLE_CLIENT_ID || DEFAULT_GOOGLE_CLIENT_ID;
+  const googleClientSecret = c.env?.GOOGLE_CLIENT_SECRET || DEFAULT_GOOGLE_CLIENT_SECRET;
+  const googleCallbackUrl = `${origin}/oauth/google/callback`;
+
+  // Exchange code for tokens with Google
+  let tokenData: { access_token?: string; id_token?: string; error_description?: string } = {};
+  try {
+    const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        code,
+        client_id: googleClientId,
+        client_secret: googleClientSecret,
+        redirect_uri: googleCallbackUrl,
+        grant_type: 'authorization_code',
+      }).toString(),
+    });
+    tokenData = (await tokenRes.json()) as { access_token?: string; id_token?: string; error_description?: string };
+    if (!tokenRes.ok || !tokenData.access_token) {
+      const redirectUrl = new URL(downstreamRedirectUri);
+      redirectUrl.searchParams.set('error', 'access_denied');
+      redirectUrl.searchParams.set('error_description', tokenData.error_description || 'Failed to exchange Google code');
+      if (downstreamState) redirectUrl.searchParams.set('state', downstreamState);
+      return new Response(null, {
+        status: 302,
+        headers: { Location: redirectUrl.toString(), 'Cache-Control': 'no-store', Pragma: 'no-cache' },
+      });
+    }
+  } catch (err: unknown) {
+    const redirectUrl = new URL(downstreamRedirectUri);
+    redirectUrl.searchParams.set('error', 'server_error');
+    redirectUrl.searchParams.set('error_description', 'Network error contacting Google: ' + (err instanceof Error ? err.message : String(err)));
+    if (downstreamState) redirectUrl.searchParams.set('state', downstreamState);
+    return new Response(null, {
+      status: 302,
+      headers: { Location: redirectUrl.toString(), 'Cache-Control': 'no-store', Pragma: 'no-cache' },
+    });
+  }
+
+  // Fetch Google User Profile
+  let email = '';
+  let givenName = '';
+  let familyName = '';
+  let name = '';
+
+  try {
+    const userinfoRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+      headers: { Authorization: `Bearer ${tokenData.access_token}` },
+    });
+    if (userinfoRes.ok) {
+      const userinfo = (await userinfoRes.json()) as { email?: string; given_name?: string; family_name?: string; name?: string };
+      email = userinfo.email || '';
+      givenName = userinfo.given_name || '';
+      familyName = userinfo.family_name || '';
+      name = userinfo.name || '';
+    } else if (tokenData.id_token) {
+      // Fallback decode id_token payload
+      const parts = tokenData.id_token.split('.');
+      if (parts.length === 3) {
+        const payloadStr = atob(parts[1].replace(/-/g, '+').replace(/_/g, '/'));
+        const parsed = JSON.parse(payloadStr) as { email?: string; given_name?: string; family_name?: string; name?: string };
+        email = parsed.email || '';
+        givenName = parsed.given_name || '';
+        familyName = parsed.family_name || '';
+        name = parsed.name || '';
+      }
+    }
+  } catch {
+    // If profile fetch fails, attempt id_token parse
+    if (tokenData.id_token) {
+      try {
+        const parts = tokenData.id_token.split('.');
+        if (parts.length === 3) {
+          const payloadStr = atob(parts[1].replace(/-/g, '+').replace(/_/g, '/'));
+          const parsed = JSON.parse(payloadStr) as { email?: string; given_name?: string; family_name?: string; name?: string };
+          email = parsed.email || '';
+          givenName = parsed.given_name || '';
+          familyName = parsed.family_name || '';
+          name = parsed.name || '';
+        }
+      } catch {}
+    }
+  }
+
+  if (!email || !isValidEmail(email)) {
+    const redirectUrl = new URL(downstreamRedirectUri);
+    redirectUrl.searchParams.set('error', 'server_error');
+    redirectUrl.searchParams.set('error_description', 'Could not obtain a valid email from Google profile');
+    if (downstreamState) redirectUrl.searchParams.set('state', downstreamState);
+    return new Response(null, {
+      status: 302,
+      headers: { Location: redirectUrl.toString(), 'Cache-Control': 'no-store', Pragma: 'no-cache' },
+    });
+  }
+
+  // Database Upsert in D1
+  const db = drizzle(c.env.DB, { schema });
+  const normalizedEmail = email.trim().toLowerCase();
+  let userId: string;
+
+  const existing = await db.select({ userId: schema.users.userId }).from(schema.users).where(eq(schema.users.userEmail, normalizedEmail)).get();
+  if (existing) {
+    userId = existing.userId;
+  } else {
+    userId = generateUserId();
+    const autoApiKey = generateApiKey();
+    const apiKeyHash = await hashApiKey(autoApiKey);
+    const nowIso = currentIsoTimestamp();
+    await db.insert(schema.users).values({
+      userId,
+      userFirstName: (givenName || name || 'Google').trim().slice(0, 100),
+      userLastName: (familyName || (name ? '' : 'User') || 'User').trim().slice(0, 100) || 'User',
+      userEmail: normalizedEmail,
+      userWhatsappNumber: '+0',
+      userApiKeyHash: apiKeyHash,
+      userCreatedAt: nowIso,
+    });
+  }
+
+  // Issue downstream Authorization Code JWT
+  const authCode = await generateAuthorizationCode(
+    {
+      sub: userId,
+      client_id: downstreamClientId,
+      redirect_uri: downstreamRedirectUri,
+      scope,
+      code_challenge,
+      code_challenge_method: (code_challenge_method as 'S256') || 'S256',
+    },
+    secret,
+    origin
+  );
+
+  // 302 redirect back to downstream consumer
+  const finalRedirectUrl = new URL(downstreamRedirectUri);
+  finalRedirectUrl.searchParams.set('code', authCode);
+  if (downstreamState) finalRedirectUrl.searchParams.set('state', downstreamState);
+
+  return new Response(null, {
+    status: 302,
+    headers: {
+      Location: finalRedirectUrl.toString(),
+      'Cache-Control': 'no-store',
+      Pragma: 'no-cache',
+    },
+  });
+});
+
 app.post('/oauth/authorize', async (c) => {
-  // For POST, accept x-www-form-urlencoded or json; delegate to GET logic by merging query + body
-  // Try to parse body to extract same params if not in query
+  const secret = c.env?.JWT_SECRET;
+  if (!secret) {
+    return c.json({ error: 'server_error', error_description: 'JWT_SECRET missing' }, 500);
+  }
+  const origin = buildIssuerOrigin(c);
+
+  // Parse body leniently — support x-www-form-urlencoded, multipart/form-data, or JSON
   let bodyParams: Record<string, string> = {};
   const ct = c.req.header('content-type') || '';
   try {
     if (ct.includes('application/json')) {
       const json = (await c.req.json()) as Record<string, unknown>;
-      for (const [k, v] of Object.entries(json)) if (typeof v === 'string') bodyParams[k] = v;
-    } else if (ct.includes('application/x-www-form-urlencoded')) {
+      for (const [k, v] of Object.entries(json)) {
+        if (typeof v === 'string') bodyParams[k] = v;
+        else if (typeof v === 'number') bodyParams[k] = String(v);
+        else if (v !== null && v !== undefined) bodyParams[k] = String(v);
+      }
+    } else if (ct.includes('application/x-www-form-urlencoded') || ct.includes('multipart/form-data')) {
       const form = await c.req.parseBody();
-      for (const [k, v] of Object.entries(form)) if (typeof v === 'string') bodyParams[k] = v;
+      for (const [k, v] of Object.entries(form)) {
+        if (typeof v === 'string') bodyParams[k] = v;
+        else if (v instanceof File) bodyParams[k] = await v.text();
+        else bodyParams[k] = String(v);
+      }
     } else {
-      // Try json leniently
+      // Lenient: try parseBody first, then text -> json or URLSearchParams
+      let hasForm = false;
       try {
+        const form = await c.req.parseBody();
+        for (const [k, v] of Object.entries(form)) {
+          if (typeof v === 'string') { bodyParams[k] = v; hasForm = true; }
+          else if (v instanceof File) { bodyParams[k] = await v.text(); hasForm = true; }
+        }
+      } catch {}
+      if (!hasForm) {
         const txt = await c.req.text();
         if (txt) {
-          const j = JSON.parse(txt) as Record<string, unknown>;
-          for (const [k, v] of Object.entries(j)) if (typeof v === 'string') bodyParams[k] = v;
+          try {
+            const j = JSON.parse(txt) as Record<string, unknown>;
+            for (const [k, v] of Object.entries(j)) {
+              if (typeof v === 'string') bodyParams[k] = v;
+              else if (typeof v === 'number') bodyParams[k] = String(v);
+              else if (v !== null && v !== undefined) bodyParams[k] = String(v);
+            }
+          } catch {
+            const params = new URLSearchParams(txt);
+            for (const [k, v] of params.entries()) bodyParams[k] = v;
+          }
         }
-      } catch {
-        // ignore
       }
     }
   } catch {
-    // ignore
+    // ignore parse errors
   }
 
-  // Merge query + body (query takes precedence? Body overrides)
   const getParam = (key: string): string | undefined => {
+    const b = bodyParams[key];
+    if (b !== undefined && b !== '') return b;
     const q = c.req.query(key);
-    if (q !== undefined) return q;
-    return bodyParams[key];
+    if (q !== undefined && q !== '') return q;
+    // fallback to body even if empty string?
+    if (b !== undefined) return b;
+    return q;
   };
 
-  // Reuse GET logic by constructing a surrogate c with query?
-  // Instead, duplicate validation quickly by forwarding to GET handler via manual call
-  // Simpler: set query via URL manipulation? We'll just run same logic inline
-  const secret = c.env?.JWT_SECRET;
-  if (!secret) {
-    return c.json({ error: 'server_error', error_description: 'JWT_SECRET missing' }, 500);
-  }
   const responseType = getParam('response_type');
   const clientId = getParam('client_id');
   const redirectUri = getParam('redirect_uri');
@@ -672,7 +1399,6 @@ app.post('/oauth/authorize', async (c) => {
   const state = getParam('state');
   const codeChallenge = getParam('code_challenge');
   const codeChallengeMethod = getParam('code_challenge_method');
-  const origin = buildIssuerOrigin(c);
 
   const errorRedirectOrJson = (error: string, description: string): Response | null => {
     if (redirectUri && isValidRedirectUri(redirectUri)) {
@@ -737,13 +1463,102 @@ app.post('/oauth/authorize', async (c) => {
     return c.json({ error: 'invalid_request', error_description: desc }, 400);
   }
   if (!c.env?.DB) return c.json({ error: 'server_error', error_description: 'DB missing' }, 500);
-  const db = drizzle(c.env.DB, { schema });
-  const userId = await extractAuthenticatedUserId(c, db);
+
+  // Try to authenticate via Bearer/query token first (for already-logged-in users)
+  let userId: string | null = null;
+  let authError: string | null = null;
+  try {
+    const dbForBearer = drizzle(c.env.DB, { schema });
+    const bearerUser = await extractAuthenticatedUserId(c, dbForBearer);
+    if (bearerUser) userId = bearerUser;
+  } catch {}
+
+  // If not authenticated via Bearer, handle form-based auth_method
   if (!userId) {
+    const authMethodRaw = (bodyParams.auth_method ?? bodyParams.authMethod ?? '').trim();
+    const authMethod = authMethodRaw.toLowerCase();
+    const db = drizzle(c.env.DB, { schema });
+
+    if (authMethod === 'login') {
+      const apiKey = (bodyParams.api_key ?? bodyParams.apiKey ?? bodyParams['apiKey'] ?? '').trim();
+      if (!apiKey) {
+        authError = 'API Key diperlukan. Masukkan rd_live_... Anda.';
+      } else {
+        try {
+          userId = await loginUser(db, secret, apiKey);
+        } catch (e) {
+          authError = e instanceof Error ? e.message : String(e);
+        }
+        if (!userId && !authError) authError = 'API Key tidak valid';
+      }
+    } else if (authMethod === 'signup') {
+      const firstName = (bodyParams.firstName ?? bodyParams.first_name ?? '').trim();
+      const lastName = (bodyParams.lastName ?? bodyParams.last_name ?? '').trim();
+      const email = (bodyParams.email ?? '').trim();
+      const whatsappNumber = (bodyParams.whatsappNumber ?? bodyParams.whatsapp_number ?? bodyParams.whatsapp ?? '').trim();
+      try {
+        userId = await registerUser(db, secret, { firstName, lastName, email, whatsappNumber });
+      } catch (e) {
+        authError = e instanceof Error ? e.message : String(e);
+      }
+    } else if (authMethod === '' || authMethod === undefined) {
+      // No explicit auth_method — try to infer from present fields for backward compatibility
+      const maybeApiKey = (bodyParams.api_key ?? bodyParams.apiKey ?? '').trim();
+      const hasSignupFields = (bodyParams.firstName ?? bodyParams.email ?? '') !== '';
+      if (maybeApiKey && !hasSignupFields) {
+        try {
+          userId = await loginUser(db, secret, maybeApiKey);
+        } catch (e) {
+          authError = e instanceof Error ? e.message : String(e);
+        }
+        if (!userId && !authError) authError = 'API Key tidak valid';
+      } else if (hasSignupFields) {
+        const firstName = (bodyParams.firstName ?? bodyParams.first_name ?? '').trim();
+        const lastName = (bodyParams.lastName ?? bodyParams.last_name ?? '').trim();
+        const email = (bodyParams.email ?? '').trim();
+        const whatsappNumber = (bodyParams.whatsappNumber ?? bodyParams.whatsapp_number ?? '').trim();
+        try {
+          userId = await registerUser(db, secret, { firstName, lastName, email, whatsappNumber });
+        } catch (e) {
+          authError = e instanceof Error ? e.message : String(e);
+        }
+      } else {
+        authError = 'Silakan pilih metode login atau daftar';
+      }
+    } else {
+      authError = 'Metode autentikasi tidak dikenal: ' + authMethodRaw;
+    }
+  }
+
+  if (!userId) {
+    const accept = c.req.header('Accept') || '';
+    const isJsonRequest = ct.includes('application/json') || (accept.includes('application/json') && !accept.includes('text/html'));
+    // If client explicitly expects JSON, return JSON error
+    if (isJsonRequest) {
+      c.header('Cache-Control', 'no-store');
+      c.header('Pragma', 'no-cache');
+      return c.json({ error: 'login_required', error_description: authError || 'User authentication required' }, 401);
+    }
+    // Otherwise re-render consent page with error (preserve OAuth params)
+    const html = renderConsentHtml(
+      {
+        client_id: clientId,
+        redirect_uri: redirectUri,
+        response_type: responseType,
+        state: state || '',
+        code_challenge: codeChallenge,
+        code_challenge_method: codeChallengeMethod,
+        scope,
+      },
+      authError || 'Autentikasi gagal. Periksa kembali data Anda.'
+    );
     c.header('Cache-Control', 'no-store');
     c.header('Pragma', 'no-cache');
-    return c.json({ error: 'login_required', error_description: 'User authentication required' }, 401);
+    c.header('Content-Type', 'text/html; charset=utf-8');
+    return c.html(html, 401);
   }
+
+  // Issue 5-minute Authorization Code JWT
   const code = await generateAuthorizationCode(
     { sub: userId, client_id: clientId, redirect_uri: redirectUri, scope, code_challenge: codeChallenge, code_challenge_method: 'S256' },
     secret,

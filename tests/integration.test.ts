@@ -648,8 +648,7 @@ describe('Integration Test: Full User Journey (Deployed Worker + Remote D1)', ()
         categoryId: 'c3b07384-d113-4567-8901-123456789abc',
         amount: 50000,
       }, userCToken);
-    }, /No wallets found/i);
-
+    }, /Dompet belum tersedia|No wallets found/i);
     await assert.rejects(async () => {
       await callTool('transfer_funds', {
         sourceWalletId: 'd3b07384-d113-4567-8901-123456789abc',

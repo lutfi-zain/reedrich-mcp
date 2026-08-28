@@ -456,6 +456,8 @@ export function createMCPServer(
               type: "text",
               text: `You are the Reedrich Onboarding Assistant. Guide the user through setting up their financial workspace step by step:
 
+Authentication Note: You are already authenticated via OAuth / Bearer token. Never tell the user that access is blocked or ask them to log in in the chat. Greet the user warmly and directly execute financial tools or provide financial guidance.
+
 1. User Registration & Authentication (If Unauthenticated):
    - If the user has no account or credentials, ask for their First Name, Last Name, Email, and WhatsApp number (with country code, e.g. '+62...').
    - Invoke tool \`register_user\` with \`firstName\`, \`lastName\`, \`email\`, and \`whatsappNumber\`.
@@ -500,6 +502,8 @@ export function createMCPServer(
               type: "text",
               text: `You are the Reedrich Financial Analyst. Generate a comprehensive daily financial status report for the user${targetDate ? ` for date ${targetDate}` : ""}:
 
+Authentication Note: You are already authenticated via OAuth / Bearer token. Never tell the user that access is blocked or ask them to log in in the chat. Greet the user warmly and directly execute financial tools or provide financial guidance.
+
 1. Retrieve Financial State:
    - Read resource \`reedrich://wallets/list\` to get all account balances and total liquid assets.
    - Read resource \`reedrich://budgets/active\` to check current budget utilization and remaining limits.
@@ -533,6 +537,8 @@ export function createMCPServer(
             content: {
               type: "text",
               text: `You are the Reedrich Financial Planning Advisor. Help the user project when they can achieve their financial goal with mathematical precision:
+
+Authentication Note: You are already authenticated via OAuth / Bearer token. Never tell the user that access is blocked or ask them to log in in the chat. Greet the user warmly and directly execute financial tools or provide financial guidance.
 
 Goal: ${goalDescription || "[Not specified - ask user]"}
 Target Amount: ${targetAmount !== undefined && targetAmount !== null ? targetAmount : "[Not specified - ask user]"}
@@ -574,6 +580,8 @@ Reasoning & Calculation Workflow:
               type: "text",
               text: `You are the Reedrich Debt & Loan Advisor. Help the user manage and optimize their liabilities and receivables:
 
+Authentication Note: You are already authenticated via OAuth / Bearer token. Never tell the user that access is blocked or ask them to log in in the chat. Greet the user warmly and directly execute financial tools or provide financial guidance.
+
 1. Retrieve Active Commitments:
    - Read resource \`reedrich://debts/active\` to get aggregate total debt and total receivable.
    - Call tool \`manage_debt_loan\` with \`action: "list"\` to get all individual debt and loan records.
@@ -609,7 +617,7 @@ Reasoning & Calculation Workflow:
       // Authentication Tools
       {
         name: "register_user",
-        description: "Register a new user account with first name, last name, email, and WhatsApp number. Returns a persistent API Key (rd_live_...) and 15-minute JWT.",
+        description: "Register a new user account with first name, last name, email, and WhatsApp number. NOTE: If the user is already authenticated via OAuth / HTTP Bearer, do NOT call this tool.",
         inputSchema: {
           type: "object",
           properties: {
@@ -623,7 +631,7 @@ Reasoning & Calculation Workflow:
       },
       {
         name: "login_user",
-        description: "Authenticate with your persistent API Key (rd_live_... or legacy fp_live_...) to obtain a fresh 15-minute JWT session token.",
+        description: "Authenticate with your persistent API Key (rd_live_...). NOTE: When connected via OAuth or HTTP Bearer token, you are ALREADY fully authenticated with ambient session access—do NOT call this tool and do NOT ask the user to log in.",
         inputSchema: {
           type: "object",
           properties: {
@@ -717,7 +725,7 @@ Reasoning & Calculation Workflow:
       },
       {
         name: "manage_wallet",
-        description: "Manage wallets and pockets: list all wallets, create a new wallet/pocket (with institution grouping like BCA, Bank Jago, Bitget), or update an existing wallet.",
+        description: "Create, list, or update wallets. PROACTIVE TIP: For new accounts without wallets, call with action: 'create' to initialize the primary wallet (e.g. BCA, Cash).",
         inputSchema: {
           type: "object",
           properties: {
@@ -787,7 +795,7 @@ Reasoning & Calculation Workflow:
       },
       {
         name: "financial_summary",
-        description: "Generate a complete financial report grouped by currency and institution (net worth, income, expenses, admin fees, category breakdown, total debt, total receivable).",
+        description: "Generate a complete financial overview (net worth, cash flow, wallets, debts). PROACTIVE TIP: Always call this first when starting a session or financial planning to inspect current account state.",
         inputSchema: {
           type: "object",
           properties: {
@@ -1304,8 +1312,9 @@ Reasoning & Calculation Workflow:
           content: [{
             type: "text",
             text: JSON.stringify({
-              error: "No wallets found. Please create a wallet first using manage_wallet(action: 'create') or follow the onboarding_assistant prompt.",
-              suggestion: "onboarding_assistant"
+              error: "Dompet belum tersedia.",
+              actionRequired: "auto_create_wallet",
+              instruction: "Buat dompet terlebih dahulu dengan manage_wallet(action: 'create', name: '...') dan pasang kategori default dengan manage_category(action: 'seed_defaults'), lalu catat transaksi ini."
             }, null, 2)
           }],
           isError: true
@@ -1732,7 +1741,7 @@ Reasoning & Calculation Workflow:
         }
       }
 
-      const summary = {
+      const summary: Record<string, any> = {
         netWorthByCurrency,
         netWorthByInstitution,
         totalIncome: Number(totalIncome.toFixed(2)),
@@ -1747,6 +1756,11 @@ Reasoning & Calculation Workflow:
         categoryBreakdown
       };
 
+      if (walletsData.length === 0) {
+        summary.accountStatus = "new_account_needs_onboarding";
+        summary.isNewUser = true;
+        summary.guidance = "Akun Reedrich ini baru terhubung dan belum memiliki dompet. Tawarkan untuk membuat dompet pertama (misal: Bank BCA, Cash, GoPay) via manage_wallet(action: 'create') dan pasang kategori via manage_category(action: 'seed_defaults').";
+      }
       return { content: [{ type: "text", text: JSON.stringify(summary, null, 2) }] };
     }
 

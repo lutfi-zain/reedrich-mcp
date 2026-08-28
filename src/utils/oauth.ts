@@ -5,6 +5,9 @@ export const OAUTH_ACCESS_EXPIRY = 900; // 15 minutes
 export const OAUTH_REFRESH_EXPIRY = 2592000; // 30 days
 export const CLOCK_SKEW = 60; // seconds
 export const OAUTH_SCOPES = ['mcp'] as const;
+export const GOOGLE_STATE_EXPIRY = 600; // 10 minutes
+export const DEFAULT_GOOGLE_CLIENT_ID = 'mock-google-client-id.apps.googleusercontent.com';
+export const DEFAULT_GOOGLE_CLIENT_SECRET = 'mock-google-client-secret';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -262,5 +265,86 @@ export function buildIssuerOrigin(c: { req: { url: string } }): string {
     return new URL(c.req.url).origin;
   } catch {
     return 'https://localhost';
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Google OAuth Relay State JWT (10m)
+// ---------------------------------------------------------------------------
+
+export interface GoogleOAuthStatePayload {
+  type: 'google_state';
+  client_id: string;
+  redirect_uri: string;
+  state?: string;
+  code_challenge: string;
+  code_challenge_method: string;
+  scope: string;
+  iss: string;
+  aud: string;
+  iat: number;
+  exp: number;
+  jti: string;
+}
+
+export async function generateGoogleOAuthState(
+  params: {
+    client_id: string;
+    redirect_uri: string;
+    state?: string;
+    code_challenge: string;
+    code_challenge_method?: string;
+    scope: string;
+  },
+  secret: string,
+  origin: string
+): Promise<string> {
+  if (!secret || typeof secret !== 'string' || secret.trim() === '') throw new Error('JWT_SECRET required');
+  const iat = nowSeconds();
+  const payload: GoogleOAuthStatePayload = {
+    type: 'google_state',
+    client_id: params.client_id,
+    redirect_uri: params.redirect_uri,
+    state: params.state,
+    code_challenge: params.code_challenge,
+    code_challenge_method: params.code_challenge_method || 'S256',
+    scope: params.scope,
+    iss: origin,
+    aud: origin,
+    iat,
+    exp: iat + GOOGLE_STATE_EXPIRY,
+    jti: crypto.randomUUID(),
+  };
+  return sign(payload as unknown as Record<string, unknown>, secret, 'HS256');
+}
+
+export async function verifyGoogleOAuthState(
+  stateToken: string,
+  secret: string,
+  nowSec?: number
+): Promise<GoogleOAuthStatePayload | null> {
+  if (!stateToken || typeof stateToken !== 'string' || !secret || typeof secret !== 'string') return null;
+  try {
+    const payload = (await verify(stateToken.trim(), secret, { alg: 'HS256', exp: false, iat: false, nbf: false })) as unknown as GoogleOAuthStatePayload;
+    if (
+      !payload ||
+      payload.type !== 'google_state' ||
+      typeof payload.client_id !== 'string' ||
+      typeof payload.redirect_uri !== 'string' ||
+      typeof payload.code_challenge !== 'string' ||
+      typeof payload.scope !== 'string' ||
+      typeof payload.iss !== 'string' ||
+      typeof payload.aud !== 'string' ||
+      typeof payload.iat !== 'number' ||
+      typeof payload.exp !== 'number'
+    ) {
+      return null;
+    }
+    const now = nowSec !== undefined ? nowSec : nowSeconds();
+    if (payload.exp + CLOCK_SKEW < now) return null;
+    if (payload.iat - CLOCK_SKEW > now) return null;
+    return payload;
+  } catch {
+    return null;
   }
 }
