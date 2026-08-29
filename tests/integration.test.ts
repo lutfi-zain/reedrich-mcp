@@ -738,4 +738,23 @@ describe('Integration Test: Full User Journey (Deployed Worker + Remote D1)', ()
 
     console.log(`    ✓ Prompts: prompts/list and prompts/get verified for 4 workflow playbooks`);
   });
+
+  // -------------------------------------------------------------------------
+  // Step 30: Feedback Submission to Internal D1
+  // -------------------------------------------------------------------------
+  it('Step 30: Feedback Submission to Internal D1', async () => {
+    const feedbackRes = await callTool('submit_feedback', {
+      title: 'E2E Test Feedback Submission',
+      content: 'Testing internal feedback storage persistence across the worker.',
+      type: 'feature_request',
+    }, state.userA.token);
+
+    assert.equal(feedbackRes.success, true);
+    assert.equal(feedbackRes.type, 'feature_request');
+    assert.equal(feedbackRes.status, 'new');
+    assert.equal(feedbackRes.submitter.userId, state.userA.userId);
+    assert.ok(feedbackRes.feedbackId);
+
+    console.log(`    ✓ Feedback: submit_feedback internal D1 persistence verified`);
+  });
 });

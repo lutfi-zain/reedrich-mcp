@@ -90,7 +90,7 @@ If you are extending this project into a standalone MCP server (or integrating w
 ---
 
 ### 2.12. `submit_feedback`
-**Description**: Submit user feedback, bug reports, or feature requests directly to GitHub Issues on `lutfi-zain/reedrich-mcp`.
+**Description**: Submit user feedback, bug reports, questions, or feature requests directly to the internal database with automatic submitter profile resolution.
 
 ---
 

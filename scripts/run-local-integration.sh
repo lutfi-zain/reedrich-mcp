@@ -15,6 +15,7 @@ echo ""
 echo "📦 Migrating local D1 database..."
 npx wrangler d1 execute finance_db --local --file=./drizzle/0002_table_prefixed_schema_and_tz.sql > /dev/null 2>&1 || true
 npx wrangler d1 execute finance_db --local --file=./drizzle/0003_add_debts_loans.sql > /dev/null 2>&1 || true
+npx wrangler d1 execute finance_db --local --file=./drizzle/0004_add_feedbacks_table.sql > /dev/null 2>&1 || true
 echo "✅ Local D1 database ready."
 echo ""
 

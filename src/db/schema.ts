@@ -119,3 +119,23 @@ export const debtsLoans = sqliteTable("debts_loans", {
   index("debts_loans_user_due_date_idx").on(table.debtLoanUserId, table.debtLoanDueDate),
   index("debts_loans_wallet_id_idx").on(table.debtLoanWalletId),
 ]);
+
+export const feedbacks = sqliteTable("feedbacks", {
+  feedbackId: text("feedback_id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+  feedbackUserId: text("feedback_user_id")
+    .references(() => users.userId, { onDelete: "set null" }),
+  feedbackTitle: text("feedback_title").notNull(),
+  feedbackContent: text("feedback_content").notNull(),
+  feedbackType: text("feedback_type").notNull().default("feedback"),
+  feedbackSubmitterName: text("feedback_submitter_name").notNull(),
+  feedbackSubmitterEmail: text("feedback_submitter_email").notNull(),
+  feedbackStatus: text("feedback_status").notNull().default("new"),
+  feedbackCreatedAt: text("feedback_created_at")
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  index("feedbacks_user_id_idx").on(table.feedbackUserId),
+  index("feedbacks_type_idx").on(table.feedbackType),
+  index("feedbacks_status_idx").on(table.feedbackStatus),
+  index("feedbacks_created_at_idx").on(table.feedbackCreatedAt),
+]);

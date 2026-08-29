@@ -28,8 +28,6 @@ import {
 type Bindings = {
   DB: D1Database;
   JWT_SECRET: string;
-  GITHUB_TOKEN?: string;
-  GITHUB_REPO?: string;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
 };
@@ -112,6 +110,37 @@ function generateOpenApiSpec(origin: string): Record<string, unknown> {
       },
       schemas: {
         ErrorResponse: { type: "object", properties: { error: { type: "string" }, message: { type: "string" } }, required: ["error"] },
+        FeedbackRequest: {
+          type: "object",
+          properties: {
+            title: { type: "string", description: "Short summary of feedback or issue (5-200 characters)" },
+            content: { type: "string", description: "Detailed feedback description (10-4000 characters)" },
+            feedback: { type: "string", description: "Alias for content (10-4000 characters)" },
+            type: { type: "string", enum: ["feedback", "bug", "feature_request", "question"], default: "feedback" },
+            name: { type: "string", description: "Submitter name (auto-resolved if authenticated)" },
+            email: { type: "string", description: "Submitter email (auto-resolved if authenticated)" },
+          },
+          required: ["title"]
+        },
+        FeedbackResponse: {
+          type: "object",
+          properties: {
+            success: { type: "boolean" },
+            message: { type: "string" },
+            feedbackId: { type: "string" },
+            type: { type: "string" },
+            status: { type: "string" },
+            submitter: {
+              type: "object",
+              properties: {
+                name: { type: "string" },
+                email: { type: "string" },
+                userId: { type: "string", nullable: true }
+              }
+            },
+            submittedAt: { type: "string" }
+          }
+        }
       },
     },
     security: [{ bearerAuth: [] }],
@@ -124,6 +153,39 @@ function generateOpenApiSpec(origin: string): Record<string, unknown> {
           responses: { "200": { description: "Financial summary" }, "401": { description: "Unauthorized" } },
         },
       },
+      "/api/v1/feedback": {
+        post: {
+          summary: "Submit User Feedback, Bug Report, or Feature Request",
+          operationId: "submitFeedback",
+          security: [{ bearerAuth: [] }, {}],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: { "$ref": "#/components/schemas/FeedbackRequest" }
+              }
+            }
+          },
+          responses: {
+            "201": {
+              description: "Feedback recorded successfully",
+              content: {
+                "application/json": {
+                  schema: { "$ref": "#/components/schemas/FeedbackResponse" }
+                }
+              }
+            },
+            "400": {
+              description: "Validation Error",
+              content: {
+                "application/json": {
+                  schema: { "$ref": "#/components/schemas/ErrorResponse" }
+                }
+              }
+            }
+          }
+        }
+      }
     },
     "x-oauth": { scopes_supported: [...OAUTH_SCOPES] },
   };
@@ -141,6 +203,115 @@ app.get('/privacy', (c) => {
   c.header('Access-Control-Allow-Origin', '*');
   return c.html(`<!DOCTYPE html>
 <html lang="id"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Kebijakan Privasi — Reedrich</title><style>body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#0d1117;color:#c9d1d9;line-height:1.6;margin:0;padding:40px 20px}.container{max-width:800px;margin:0 auto;background:#161b22;border:1px solid #30363d;border-radius:12px;padding:40px}</style></head><body><div class="container"><h1>Kebijakan Privasi Reedrich</h1><p><em>Terakhir diperbarui: 23 Agustus 2026</em></p><p>Selamat datang di <strong>Reedrich</strong> — Mathematical Intelligence &amp; Financial Planning Engine. Kami menghormati dan berkomitmen untuk melindungi privasi data keuangan Anda.</p><h2>1. Data yang Kami Kumpulkan</h2><ul><li>Informasi Akun: Nama, email, WhatsApp</li><li>Hash SHA-256 dari API Key (plaintext tidak disimpan)</li><li>Data Finansial: dompet, transaksi, anggaran, hutang/piutang</li></ul><h2>2. Penggunaan Data</h2><p>Data digunakan secara eksklusif untuk layanan perencanaan keuangan.</p><h2>3. Keamanan</h2><p>Semua token ditandatangani HMAC-SHA256, stateless, tanpa penyimpanan OAuth di D1.</p><p><a href="/">Kembali ke Reedrich MCP</a></p></div></body></html>`);
+});
+
+// REST API: POST /api/v1/feedback
+app.post('/api/v1/feedback', async (c) => {
+  const secret = c.env?.JWT_SECRET;
+  const db = drizzle(c.env.DB, { schema });
+
+  let body: Record<string, unknown> = {};
+  try {
+    body = (await c.req.json()) as Record<string, unknown>;
+  } catch {
+    return c.json({ error: 'invalid_request', message: 'Malformed JSON payload' }, 400);
+  }
+
+  const title = typeof body.title === 'string' ? body.title : undefined;
+  const feedback = typeof body.feedback === 'string' ? body.feedback : undefined;
+  const content = typeof body.content === 'string' ? body.content : undefined;
+  const type = typeof body.type === 'string' ? body.type : 'feedback';
+  const submitterName = typeof body.name === 'string' ? body.name : undefined;
+  const submitterEmail = typeof body.email === 'string' ? body.email : undefined;
+  const feedbackContent = content || feedback;
+
+  if (!title || title.trim().length < 5 || title.trim().length > 200) {
+    return c.json({ error: 'validation_error', message: "Validation Error: 'title' is required (5-200 characters)" }, 400);
+  }
+  if (!feedbackContent || feedbackContent.trim().length < 10 || feedbackContent.trim().length > 4000) {
+    return c.json({ error: 'validation_error', message: "Validation Error: 'content' or 'feedback' is required (10-4000 characters)" }, 400);
+  }
+
+  const validTypes = ['feedback', 'bug', 'feature_request', 'question'];
+  if (!validTypes.includes(type)) {
+    return c.json({ error: 'validation_error', message: `Validation Error: 'type' must be one of: ${validTypes.join(', ')}` }, 400);
+  }
+
+  // Resolve authentication if token / API key is present
+  let foundUserId: string | null = null;
+  let userName = submitterName && submitterName.trim().length > 0 ? submitterName.trim() : null;
+  let userEmail = submitterEmail && submitterEmail.trim().length > 0 ? submitterEmail.trim().toLowerCase() : null;
+
+  const authHeader = c.req.header('Authorization') || c.req.header('X-API-Key') || '';
+  const token = authHeader.startsWith('Bearer ') ? authHeader.substring(7).trim() : authHeader.trim();
+
+  if (token) {
+    if (token.startsWith('rd_live_') || token.startsWith('fp_live_')) {
+      try {
+        const hash = await hashApiKey(token);
+        const user = await db.select().from(schema.users).where(eq(schema.users.userApiKeyHash, hash)).get();
+        if (user) {
+          foundUserId = user.userId;
+          if (!userName) userName = `${user.userFirstName} ${user.userLastName}`.trim();
+          if (!userEmail) userEmail = user.userEmail;
+        }
+      } catch {
+        // Continue to unauthenticated checks
+      }
+    } else if (secret) {
+      try {
+        const oauthPayload = await verifyOAuthAccessToken(token, secret);
+        const jwtPayload = oauthPayload ? null : await verifyUserToken(token, secret);
+        const resolvedId = oauthPayload?.sub || jwtPayload?.userId;
+        if (resolvedId) {
+          const user = await db.select().from(schema.users).where(eq(schema.users.userId, resolvedId)).get();
+          if (user) {
+            foundUserId = user.userId;
+            if (!userName) userName = `${user.userFirstName} ${user.userLastName}`.trim();
+            if (!userEmail) userEmail = user.userEmail;
+          }
+        }
+      } catch {
+        // Continue to unauthenticated checks
+      }
+    }
+  }
+
+  if (!userName) {
+    return c.json({ error: 'validation_error', message: "Validation Error: Submitter 'name' is required when unauthenticated. Please provide 'name' in request body or authenticate with your API key / Bearer token." }, 400);
+  }
+  if (!userEmail || !isValidEmail(userEmail)) {
+    return c.json({ error: 'validation_error', message: `Validation Error: A valid 'email' is required. Received: '${userEmail || ''}'. Please provide a valid email or authenticate with your API key / Bearer token.` }, 400);
+  }
+
+  const newFeedbackId = crypto.randomUUID();
+  const now = currentIsoTimestamp();
+
+  await db.insert(schema.feedbacks).values({
+    feedbackId: newFeedbackId,
+    feedbackUserId: foundUserId,
+    feedbackTitle: title.trim(),
+    feedbackContent: feedbackContent.trim(),
+    feedbackType: type,
+    feedbackSubmitterName: userName,
+    feedbackSubmitterEmail: userEmail,
+    feedbackStatus: 'new',
+    feedbackCreatedAt: now,
+  }).run();
+
+  return c.json({
+    success: true,
+    message: 'Feedback submitted successfully and saved to internal database!',
+    feedbackId: newFeedbackId,
+    type,
+    status: 'new',
+    submitter: {
+      name: userName,
+      email: userEmail,
+      userId: foundUserId,
+    },
+    submittedAt: now,
+  }, 201);
 });
 
 // ---------------------------------------------------------------------------
@@ -1947,10 +2118,7 @@ async function handleMcpRequest(c: Context<{ Bindings: Bindings }>) {
     enableJsonResponse: true,
   });
 
-  const mcpServer = createMCPServer(db, userId, secret, {
-    githubToken: c.env?.GITHUB_TOKEN,
-    githubRepo: c.env?.GITHUB_REPO || 'lutfi-zain/reedrich-mcp',
-  });
+  const mcpServer = createMCPServer(db, userId, secret);
   await mcpServer.connect(transport);
 
   // Normalize Request headers for maximum compatibility across various MCP clients

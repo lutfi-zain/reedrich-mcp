@@ -103,7 +103,7 @@ class MockD1PreparedStatement {
 function createTestDB() {
   const sqlite = new DatabaseSync(':memory:');
   sqlite.exec('PRAGMA foreign_keys = ON;');
-  const migrationFiles = ['0002_table_prefixed_schema_and_tz.sql', '0003_add_debts_loans.sql'];
+  const migrationFiles = ['0002_table_prefixed_schema_and_tz.sql', '0003_add_debts_loans.sql', '0004_add_feedbacks_table.sql'];
   for (const file of migrationFiles) {
     const ddlPath = join(__dirname, `../drizzle/${file}`);
     const ddl = readFileSync(ddlPath, 'utf-8');
@@ -863,23 +863,8 @@ describe('Eve Finance MCP Server — Complete Test Suite', () => {
     assert.equal(legacyWallet.walletUserId, legacyUserId);
   });
 
-  it('11. Submit Feedback to GitHub Issues with Auto Submitter Details', async () => {
-    const { db } = createTestDB();
-
-    // Mock fetch to simulate GitHub API
-    let capturedRequest: any = null;
-    const mockFetch = async (url: any, init?: any) => {
-      capturedRequest = { url, ...init, body: JSON.parse(init?.body || '{}') };
-      return new Response(
-        JSON.stringify({
-          html_url: 'https://github.com/lutfi-zain/reedrich-mcp/issues/42',
-          number: 42,
-          state: 'open',
-          title: capturedRequest.body.title,
-        }),
-        { status: 201, headers: { 'Content-Type': 'application/json' } }
-      );
-    };
+  it('11. Submit Feedback to Internal D1 Database with Auto Submitter Details and REST endpoint', async () => {
+    const { d1, db } = createTestDB();
 
     // 1. Authenticated User Feedback Submission (Auto-resolves Name & Email from DB)
     const publicServer = createMCPServer(db, null, TEST_JWT_SECRET);
@@ -891,11 +876,7 @@ describe('Eve Finance MCP Server — Complete Test Suite', () => {
     });
     const { userId, apiKey } = JSON.parse(regRes.content[0].text);
 
-    const authServer = createMCPServer(db, userId, TEST_JWT_SECRET, {
-      githubToken: 'ghp_mock_token_12345',
-      githubRepo: 'lutfi-zain/reedrich-mcp',
-      fetchFn: mockFetch as any,
-    });
+    const authServer = createMCPServer(db, userId, TEST_JWT_SECRET);
 
     const authFeedbackRes = await callTool(authServer, 'submit_feedback', {
       title: 'Tolong tambahkan export CSV',
@@ -905,36 +886,44 @@ describe('Eve Finance MCP Server — Complete Test Suite', () => {
 
     const authFeedback = JSON.parse(authFeedbackRes.content[0].text);
     assert.equal(authFeedback.success, true);
-    assert.equal(authFeedback.issueUrl, 'https://github.com/lutfi-zain/reedrich-mcp/issues/42');
-    assert.equal(authFeedback.issueNumber, 42);
+    assert.equal(authFeedback.type, 'feature_request');
+    assert.equal(authFeedback.status, 'new');
     assert.equal(authFeedback.submitter.name, 'Budi Santoso');
     assert.equal(authFeedback.submitter.email, 'budi.santoso@example.com');
     assert.equal(authFeedback.submitter.userId, userId);
+    assert.ok(authFeedback.feedbackId);
+    assert.ok(authFeedback.submittedAt);
 
-    assert.equal(capturedRequest.url, 'https://api.github.com/repos/lutfi-zain/reedrich-mcp/issues');
-    assert.equal(capturedRequest.headers.Authorization, 'Bearer ghp_mock_token_12345');
-    assert.ok(capturedRequest.body.title.includes('[FEATURE REQUEST] Tolong tambahkan export CSV'));
-    assert.ok(capturedRequest.body.body.includes('Budi Santoso'));
-    assert.ok(capturedRequest.body.body.includes('budi.santoso@example.com'));
-    assert.ok(capturedRequest.body.body.includes(userId));
+    // Verify in D1 database
+    const savedAuthFeedback = await db.select().from(schema.feedbacks).where(eq(schema.feedbacks.feedbackId, authFeedback.feedbackId)).get();
+    assert.ok(savedAuthFeedback);
+    assert.equal(savedAuthFeedback.feedbackUserId, userId);
+    assert.equal(savedAuthFeedback.feedbackTitle, 'Tolong tambahkan export CSV');
+    assert.equal(savedAuthFeedback.feedbackContent, 'Aplikasi ini sangat bagus. Mohon tambahkan fitur export riwayat transaksi ke CSV atau Excel.');
+    assert.equal(savedAuthFeedback.feedbackType, 'feature_request');
+    assert.equal(savedAuthFeedback.feedbackSubmitterName, 'Budi Santoso');
+    assert.equal(savedAuthFeedback.feedbackSubmitterEmail, 'budi.santoso@example.com');
+    assert.equal(savedAuthFeedback.feedbackStatus, 'new');
 
     // 2. In-Tool Auth Submission (Passing apiKey in arguments)
-    const unauthServer = createMCPServer(db, null, TEST_JWT_SECRET, {
-      githubToken: 'ghp_mock_token_12345',
-      githubRepo: 'lutfi-zain/reedrich-mcp',
-      fetchFn: mockFetch as any,
-    });
+    const unauthServer = createMCPServer(db, null, TEST_JWT_SECRET);
 
     const inToolFeedbackRes = await callTool(unauthServer, 'submit_feedback', {
       title: 'Bug: Transaksi ganda di UI',
-      feedback: 'Saya menemukan duplikasi tampilan transaksi saat jaringan lambat.',
+      content: 'Saya menemukan duplikasi tampilan transaksi saat jaringan lambat.',
       type: 'bug',
       apiKey,
     });
     const inToolFeedback = JSON.parse(inToolFeedbackRes.content[0].text);
     assert.equal(inToolFeedback.success, true);
+    assert.equal(inToolFeedback.type, 'bug');
     assert.equal(inToolFeedback.submitter.name, 'Budi Santoso');
     assert.equal(inToolFeedback.submitter.email, 'budi.santoso@example.com');
+    assert.equal(inToolFeedback.submitter.userId, userId);
+
+    const savedInToolFeedback = await db.select().from(schema.feedbacks).where(eq(schema.feedbacks.feedbackId, inToolFeedback.feedbackId)).get();
+    assert.ok(savedInToolFeedback);
+    assert.equal(savedInToolFeedback.feedbackType, 'bug');
 
     // 3. Unauthenticated Guest Feedback with Explicit Name & Email
     const guestFeedbackRes = await callTool(unauthServer, 'submit_feedback', {
@@ -946,9 +935,16 @@ describe('Eve Finance MCP Server — Complete Test Suite', () => {
     });
     const guestFeedback = JSON.parse(guestFeedbackRes.content[0].text);
     assert.equal(guestFeedback.success, true);
+    assert.equal(guestFeedback.type, 'question');
     assert.equal(guestFeedback.submitter.name, 'Guest Inquirer');
     assert.equal(guestFeedback.submitter.email, 'guest@example.com');
     assert.equal(guestFeedback.submitter.userId, null);
+
+    const savedGuestFeedback = await db.select().from(schema.feedbacks).where(eq(schema.feedbacks.feedbackId, guestFeedback.feedbackId)).get();
+    assert.ok(savedGuestFeedback);
+    assert.equal(savedGuestFeedback.feedbackUserId, null);
+    assert.equal(savedGuestFeedback.feedbackSubmitterName, 'Guest Inquirer');
+    assert.equal(savedGuestFeedback.feedbackSubmitterEmail, 'guest@example.com');
 
     // 4. Unauthenticated without Name/Email -> Throws Validation Error
     await assert.rejects(async () => {
@@ -958,16 +954,85 @@ describe('Eve Finance MCP Server — Complete Test Suite', () => {
       });
     }, /Submitter 'name' is required when unauthenticated/i);
 
-    // 5. Missing GitHub Token -> Throws Server Error
-    const noTokenServer = createMCPServer(db, userId, TEST_JWT_SECRET, {
-      fetchFn: mockFetch as any,
-    });
+    // 5. Validation failures on title, content, and type
     await assert.rejects(async () => {
-      await callTool(noTokenServer, 'submit_feedback', {
-        title: 'Harusnya gagal token',
-        feedback: 'Server tidak memiliki token github.',
+      await callTool(authServer, 'submit_feedback', {
+        title: 'abc', // < 5 chars
+        feedback: 'Valid feedback content here.',
       });
-    }, /Missing GITHUB_TOKEN environment secret/i);
+    }, /'title' is required \(5-200 characters\)/i);
+
+    await assert.rejects(async () => {
+      await callTool(authServer, 'submit_feedback', {
+        title: 'Valid Title Here',
+        feedback: 'Short', // < 10 chars
+      });
+    }, /'content' or 'feedback' is required \(10-4000 characters\)/i);
+
+    await assert.rejects(async () => {
+      await callTool(authServer, 'submit_feedback', {
+        title: 'Valid Title Here',
+        feedback: 'Valid feedback content here.',
+        type: 'invalid_type',
+      });
+    }, /'type' must be one of/i);
+
+    // 6. REST API Endpoint: POST /api/v1/feedback
+    const env = { DB: d1, JWT_SECRET: TEST_JWT_SECRET };
+
+    // 6a. Authenticated via Bearer API Key
+    const restAuthReq = new Request('http://localhost/api/v1/feedback', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        title: 'Fitur dark mode di mobile',
+        content: 'Tolong tambahkan opsi tema gelap otomatis mengikuti sistem.',
+        type: 'feature_request',
+      }),
+    });
+    const restAuthRes = await app.fetch(restAuthReq, env);
+    assert.equal(restAuthRes.status, 201);
+    const restAuthData = await restAuthRes.json() as Record<string, unknown>;
+    assert.equal(restAuthData.success, true);
+    assert.equal(restAuthData.type, 'feature_request');
+    const restAuthSubmitter = restAuthData.submitter as Record<string, unknown>;
+    assert.equal(restAuthSubmitter.name, 'Budi Santoso');
+    assert.equal(restAuthSubmitter.email, 'budi.santoso@example.com');
+    assert.equal(restAuthSubmitter.userId, userId);
+
+    // 6b. Anonymous POST /api/v1/feedback
+    const restGuestReq = new Request('http://localhost/api/v1/feedback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: 'Pertanyaan integrasi API',
+        content: 'Bagaimana cara menghubungkan reedrich-mcp ke Cursor?',
+        type: 'question',
+        name: 'Developer Guest',
+        email: 'dev@example.com',
+      }),
+    });
+    const restGuestRes = await app.fetch(restGuestReq, env);
+    assert.equal(restGuestRes.status, 201);
+    const restGuestData = await restGuestRes.json() as Record<string, unknown>;
+    assert.equal(restGuestData.success, true);
+    const restGuestSubmitter = restGuestData.submitter as Record<string, unknown>;
+    assert.equal(restGuestSubmitter.userId, null);
+    assert.equal(restGuestSubmitter.name, 'Developer Guest');
+
+    // 6c. Missing required fields in REST API
+    const restInvalidReq = new Request('http://localhost/api/v1/feedback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: 'No Content',
+      }),
+    });
+    const restInvalidRes = await app.fetch(restInvalidReq, env);
+    assert.equal(restInvalidRes.status, 400);
   });
 
   it('12. Transaction Enrichment: Wallet Transfers, Admin Fees, and Atomic Updates', async () => {

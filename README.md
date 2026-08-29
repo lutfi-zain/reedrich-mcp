@@ -13,7 +13,7 @@ Stateless Model Context Protocol (MCP) server for personal finance & determinist
 - **12 MCP Tools**:
   - `register_user`: Register with `firstName`, `lastName`, `email`, and `whatsappNumber` (with country code `+...`) → returns persistent `apiKey` (`rd_live_...`), 15-minute JWT, and dynamic `onboarding` status.
   - `login_user`: Authenticate with `apiKey` → returns fresh 15-minute JWT and dynamic `onboarding` status.
-  - `submit_feedback`: Submit user feedback, bug reports, or feature requests → automatically creates a formatted GitHub Issue on `lutfi-zain/reedrich-mcp`.
+  - `submit_feedback`: Submit user feedback, bug reports, questions, or feature requests → directly recorded in Cloudflare D1 internal database with submitter tracking.
   - `manage_wallet`: Create, list, update wallets.
   - `manage_category`: Create, list, and bulk-seed standard expense and income categories (`action: "seed_defaults"`).
   - `manage_budget`: Create, list, and compute real-time budget utilization status.

@@ -81,7 +81,7 @@ class MockD1PreparedStatement {
 function createTestDB() {
   const sqlite = new DatabaseSync(':memory:');
   sqlite.exec('PRAGMA foreign_keys = ON;');
-  const migrationFiles = ['0002_table_prefixed_schema_and_tz.sql', '0003_add_debts_loans.sql'];
+  const migrationFiles = ['0002_table_prefixed_schema_and_tz.sql', '0003_add_debts_loans.sql', '0004_add_feedbacks_table.sql'];
   for (const file of migrationFiles) {
     const ddlPath = join(__dirname, `../drizzle/${file}`);
     const ddl = readFileSync(ddlPath, 'utf-8');
