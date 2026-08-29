@@ -1,6 +1,6 @@
 {
   "name": "reedrich-mcp",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Reedrich MCP Server — Mathematical Intelligence & Financial Planning Engine for AI Agents on Cloudflare Workers",
   "main": "src/index.ts",
   "scripts": {
