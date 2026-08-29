@@ -1,8 +1,12 @@
 import { Hono, type Context } from 'hono';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import { drizzle, type DrizzleD1Database } from 'drizzle-orm/d1';
-import { eq } from 'drizzle-orm';
+import { eq, and, desc, gte, lte, sql } from 'drizzle-orm';
 import * as schema from './db/schema';
+import { getExchangeRates, convertCurrency } from './utils/fx';
+import { calculateGoalPacing } from './utils/goals';
+import { calculateNextRunDate, projectRecurringCashflow } from './utils/recurring';
+import { normalizeToIsoTimestamp, isValidIsoDateOrTimestamp } from './utils/date';
 import { createMCPServer } from './mcp';
 import { verifyUserToken, hashApiKey, isValidEmail, isValidWhatsApp, generateApiKey, generateUserId } from './utils/token';
 import { isValidVerifier, computeS256Challenge, verifyS256Challenge } from './utils/pkce';
@@ -140,53 +144,150 @@ function generateOpenApiSpec(origin: string): Record<string, unknown> {
             },
             submittedAt: { type: "string" }
           }
-        }
+        },
+        GoalRequest: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "Goal name (1-100 characters)" },
+          targetAmount: { type: "number", minimum: 0.01, description: "Target savings amount" },
+          currentAmount: { type: "number", minimum: 0, default: 0, description: "Current amount already saved" },
+          currency: { type: "string", default: "IDR", description: "Currency code (e.g. IDR, USD)" },
+          targetDate: { type: "string", description: "Target deadline (YYYY-MM-DD)" },
+          walletId: { type: "string", description: "Optional linked wallet UUID" },
+          categoryId: { type: "string", description: "Optional category UUID" },
+          status: { type: "string", enum: ["in_progress", "completed", "cancelled"], default: "in_progress" },
+          notes: { type: "string", description: "Optional notes (max 500 characters)" }
+        },
+        required: ["name", "targetAmount"]
+      },
+      RecurringTemplateRequest: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "Template name/title (1-100 characters)" },
+          walletId: { type: "string", description: "Source wallet UUID" },
+          targetWalletId: { type: "string", description: "Target wallet UUID (for transfer type)" },
+          categoryId: { type: "string", description: "Category UUID" },
+          amount: { type: "number", minimum: 0.01, description: "Transaction amount per occurrence" },
+          adminFee: { type: "number", minimum: 0, default: 0, description: "Admin fee per occurrence" },
+          type: { type: "string", enum: ["expense", "income", "transfer"], default: "expense" },
+          frequency: { type: "string", enum: ["daily", "weekly", "monthly", "yearly"], default: "monthly" },
+          interval: { type: "integer", minimum: 1, default: 1, description: "Recurrence interval" },
+          startDate: { type: "string", description: "Start date (YYYY-MM-DD)" },
+          nextRunDate: { type: "string", description: "Next scheduled execution date (YYYY-MM-DD)" },
+          endDate: { type: "string", description: "Optional end date (YYYY-MM-DD)" },
+          isActive: { type: "boolean", default: true },
+          notes: { type: "string", description: "Optional notes (max 500 characters)" }
+        },
+        required: ["name", "walletId", "amount", "startDate"]
+      }
+    },
+  },
+  security: [{ bearerAuth: [] }],
+  paths: {
+    "/api/v1/summary": {
+      get: {
+        summary: "Get Consolidated Financial Summary, Net Worth, Goal Pacing & Cashflow Projections",
+        operationId: "getFinancialSummary",
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          { name: "startDate", in: "query", schema: { type: "string" }, description: "Start ISO date filter" },
+          { name: "endDate", in: "query", schema: { type: "string" }, description: "End ISO date filter" },
+          { name: "baseCurrency", in: "query", schema: { type: "string" }, description: "Base currency override (e.g. IDR, USD, EUR, SGD)" }
+        ],
+        responses: { "200": { description: "Consolidated Financial summary" }, "401": { description: "Unauthorized" } },
       },
     },
-    security: [{ bearerAuth: [] }],
-    paths: {
-      "/api/v1/summary": {
-        get: {
-          summary: "Get Financial Summary & Net Worth",
-          operationId: "getFinancialSummary",
-          security: [{ bearerAuth: [] }],
-          responses: { "200": { description: "Financial summary" }, "401": { description: "Unauthorized" } },
-        },
+    "/api/v1/goals": {
+      get: {
+        summary: "List Personal Financial Goals with Pacing Calculations",
+        operationId: "listGoals",
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          { name: "status", in: "query", schema: { type: "string", enum: ["in_progress", "completed", "cancelled"] }, description: "Status filter" }
+        ],
+        responses: { "200": { description: "List of goals" }, "401": { description: "Unauthorized" } },
       },
-      "/api/v1/feedback": {
-        post: {
-          summary: "Submit User Feedback, Bug Report, or Feature Request",
-          operationId: "submitFeedback",
-          security: [{ bearerAuth: [] }, {}],
-          requestBody: {
-            required: true,
+      post: {
+        summary: "Create a New Financial Goal",
+        operationId: "createGoal",
+        security: [{ bearerAuth: [] }],
+        requestBody: {
+          required: true,
+          content: { "application/json": { schema: { "$ref": "#/components/schemas/GoalRequest" } } }
+        },
+        responses: { "201": { description: "Goal created successfully" }, "400": { description: "Validation error" }, "401": { description: "Unauthorized" } }
+      }
+    },
+    "/api/v1/recurring-templates": {
+      get: {
+        summary: "List Recurring Transaction Templates",
+        operationId: "listRecurringTemplates",
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          { name: "isActive", in: "query", schema: { type: "boolean" }, description: "Filter active templates" }
+        ],
+        responses: { "200": { description: "List of recurring templates" }, "401": { description: "Unauthorized" } }
+      },
+      post: {
+        summary: "Create a Recurring Transaction Template",
+        operationId: "createRecurringTemplate",
+        security: [{ bearerAuth: [] }],
+        requestBody: {
+          required: true,
+          content: { "application/json": { schema: { "$ref": "#/components/schemas/RecurringTemplateRequest" } } }
+        },
+        responses: { "201": { description: "Recurring template created successfully" }, "400": { description: "Validation error" }, "401": { description: "Unauthorized" } }
+      }
+    },
+    "/api/v1/recurring-templates/{templateId}/apply": {
+      post: {
+        summary: "Apply Recurring Template to Generate Live Transaction",
+        operationId: "applyRecurringTemplate",
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          { name: "templateId", in: "path", required: true, schema: { type: "string" }, description: "Template UUID" }
+        ],
+        requestBody: {
+          required: false,
+          content: { "application/json": { schema: { type: "object", properties: { executionDate: { type: "string" } } } } }
+        },
+        responses: { "200": { description: "Template applied successfully" }, "404": { description: "Template not found" }, "401": { description: "Unauthorized" } }
+      }
+    },
+    "/api/v1/feedback": {
+      post: {
+        summary: "Submit User Feedback, Bug Report, or Feature Request",
+        operationId: "submitFeedback",
+        security: [{ bearerAuth: [] }, {}],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: { "$ref": "#/components/schemas/FeedbackRequest" }
+            }
+          }
+        },
+        responses: {
+          "201": {
+            description: "Feedback recorded successfully",
             content: {
               "application/json": {
-                schema: { "$ref": "#/components/schemas/FeedbackRequest" }
+                schema: { "$ref": "#/components/schemas/FeedbackResponse" }
               }
             }
           },
-          responses: {
-            "201": {
-              description: "Feedback recorded successfully",
-              content: {
-                "application/json": {
-                  schema: { "$ref": "#/components/schemas/FeedbackResponse" }
-                }
-              }
-            },
-            "400": {
-              description: "Validation Error",
-              content: {
-                "application/json": {
-                  schema: { "$ref": "#/components/schemas/ErrorResponse" }
-                }
+          "400": {
+            description: "Validation Error",
+            content: {
+              "application/json": {
+                schema: { "$ref": "#/components/schemas/ErrorResponse" }
               }
             }
           }
         }
       }
-    },
+    }
+  },
     "x-oauth": { scopes_supported: [...OAUTH_SCOPES] },
   };
 }
@@ -203,6 +304,471 @@ app.get('/privacy', (c) => {
   c.header('Access-Control-Allow-Origin', '*');
   return c.html(`<!DOCTYPE html>
 <html lang="id"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Kebijakan Privasi — Reedrich</title><style>body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#0d1117;color:#c9d1d9;line-height:1.6;margin:0;padding:40px 20px}.container{max-width:800px;margin:0 auto;background:#161b22;border:1px solid #30363d;border-radius:12px;padding:40px}</style></head><body><div class="container"><h1>Kebijakan Privasi Reedrich</h1><p><em>Terakhir diperbarui: 23 Agustus 2026</em></p><p>Selamat datang di <strong>Reedrich</strong> — Mathematical Intelligence &amp; Financial Planning Engine. Kami menghormati dan berkomitmen untuk melindungi privasi data keuangan Anda.</p><h2>1. Data yang Kami Kumpulkan</h2><ul><li>Informasi Akun: Nama, email, WhatsApp</li><li>Hash SHA-256 dari API Key (plaintext tidak disimpan)</li><li>Data Finansial: dompet, transaksi, anggaran, hutang/piutang</li></ul><h2>2. Penggunaan Data</h2><p>Data digunakan secara eksklusif untuk layanan perencanaan keuangan.</p><h2>3. Keamanan</h2><p>Semua token ditandatangani HMAC-SHA256, stateless, tanpa penyimpanan OAuth di D1.</p><p><a href="/">Kembali ke Reedrich MCP</a></p></div></body></html>`);
+});
+
+// REST API Auth Helper
+async function authenticateRestUser(c: Context<{ Bindings: Bindings }>): Promise<string | null> {
+  const secret = c.env?.JWT_SECRET;
+  const db = drizzle(c.env.DB, { schema });
+  const authHeader = c.req.header('Authorization') || c.req.header('X-API-Key') || '';
+  const token = authHeader.startsWith('Bearer ') ? authHeader.substring(7).trim() : authHeader.trim();
+
+  if (!token) return null;
+
+  if (token.startsWith('rd_live_') || token.startsWith('fp_live_')) {
+    try {
+      const hash = await hashApiKey(token);
+      const user = await db.select().from(schema.users).where(eq(schema.users.userApiKeyHash, hash)).get();
+      return user ? user.userId : null;
+    } catch {
+      return null;
+    }
+  }
+
+  if (secret) {
+    try {
+      const oauthPayload = await verifyOAuthAccessToken(token, secret);
+      const jwtPayload = oauthPayload ? null : await verifyUserToken(token, secret);
+      const resolvedId = oauthPayload?.sub || jwtPayload?.userId;
+      if (resolvedId) {
+        const user = await db.select().from(schema.users).where(eq(schema.users.userId, resolvedId)).get();
+        return user ? user.userId : null;
+      }
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
+}
+
+// REST API: GET /api/v1/summary
+app.get('/api/v1/summary', async (c) => {
+  const userId = await authenticateRestUser(c);
+  if (!userId) {
+    return c.json({ error: 'unauthorized', message: 'Authentication required via Bearer token or API key' }, 401);
+  }
+
+  const db = drizzle(c.env.DB, { schema });
+  const startDate = c.req.query('startDate');
+  const endDate = c.req.query('endDate');
+  const baseCurrency = c.req.query('baseCurrency');
+
+  if (startDate !== undefined && !isValidIsoDateOrTimestamp(startDate)) {
+    return c.json({ error: 'validation_error', message: "Validation Error: 'startDate' must be a valid ISO date or timestamp" }, 400);
+  }
+  if (endDate !== undefined && !isValidIsoDateOrTimestamp(endDate)) {
+    return c.json({ error: 'validation_error', message: "Validation Error: 'endDate' must be a valid ISO date or timestamp" }, 400);
+  }
+
+  // 1. Group net worth by currency and institution
+  const walletsData = await db.select().from(schema.wallets).where(eq(schema.wallets.walletUserId, userId));
+  const netWorthByCurrency: Record<string, number> = {};
+  const netWorthByInstitution: Record<string, number> = {};
+  const currencyCounts: Record<string, number> = {};
+
+  for (const w of walletsData) {
+    const curr = (w.walletCurrency || "IDR").toUpperCase();
+    netWorthByCurrency[w.walletCurrency] = Number(((netWorthByCurrency[w.walletCurrency] || 0) + w.walletBalance).toFixed(2));
+    netWorthByInstitution[w.walletInstitution] = Number(((netWorthByInstitution[w.walletInstitution] || 0) + w.walletBalance).toFixed(2));
+    currencyCounts[curr] = (currencyCounts[curr] || 0) + 1;
+  }
+
+  let resolvedBaseCurrency = "IDR";
+  if (baseCurrency && typeof baseCurrency === "string" && baseCurrency.trim().length > 0) {
+    resolvedBaseCurrency = baseCurrency.trim().toUpperCase();
+  } else {
+    let maxCount = 0;
+    for (const [curr, count] of Object.entries(currencyCounts)) {
+      if (count > maxCount) {
+        maxCount = count;
+        resolvedBaseCurrency = curr;
+      }
+    }
+  }
+
+  const fxRates = await getExchangeRates(fetch);
+  let consolidatedEstimatedTotal = 0;
+  const isEstimated = Object.keys(netWorthByCurrency).some(curr => curr.toUpperCase() !== resolvedBaseCurrency);
+
+  for (const [curr, balance] of Object.entries(netWorthByCurrency)) {
+    const converted = convertCurrency(balance, curr, resolvedBaseCurrency, fxRates.rates);
+    consolidatedEstimatedTotal += converted;
+  }
+
+  const consolidatedNetWorth = {
+    baseCurrency: resolvedBaseCurrency,
+    estimatedTotal: Number(consolidatedEstimatedTotal.toFixed(2)),
+    isEstimated,
+    exchangeRatesSource: fxRates.source,
+  };
+
+  // 2. Query transactions
+  const conditions = [
+    eq(schema.transactions.transactionUserId, userId),
+    eq(schema.transactions.transactionIsPlanned, 0)
+  ];
+  if (startDate !== undefined) conditions.push(gte(schema.transactions.transactionDate, normalizeToIsoTimestamp(startDate)));
+  if (endDate !== undefined) {
+    const cleanEndDate = /^\d{4}-\d{2}-\d{2}$/.test(endDate.trim())
+      ? `${endDate.trim()}T23:59:59.999Z`
+      : normalizeToIsoTimestamp(endDate);
+    conditions.push(lte(schema.transactions.transactionDate, cleanEndDate));
+  }
+
+  const txs = await db.select().from(schema.transactions).where(and(...conditions));
+  const categoriesData = await db.select().from(schema.categories).where(eq(schema.categories.categoryUserId, userId));
+  const categoryMap = new Map(categoriesData.map(cat => [cat.categoryId, cat.categoryName]));
+
+  let totalIncome = 0;
+  let totalExpense = 0;
+  let totalAdminFees = 0;
+  let transfersCount = 0;
+  const categoryBreakdown: Record<string, number> = {};
+
+  for (const tx of txs) {
+    const fee = tx.transactionAdminFee || 0;
+    totalAdminFees += fee;
+    if (tx.transactionType === "income") {
+      totalIncome += (tx.transactionAmount - fee);
+    } else if (tx.transactionType === "expense") {
+      const totalCost = tx.transactionAmount + fee;
+      totalExpense += totalCost;
+      const catName = tx.transactionCategoryId ? (categoryMap.get(tx.transactionCategoryId) || `Category #${tx.transactionCategoryId}`) : "Uncategorized";
+      categoryBreakdown[catName] = Number(((categoryBreakdown[catName] || 0) + totalCost).toFixed(2));
+    } else if (tx.transactionType === "transfer") {
+      transfersCount += 1;
+      if (fee > 0) {
+        totalExpense += fee;
+        const catName = tx.transactionCategoryId ? (categoryMap.get(tx.transactionCategoryId) || `Category #${tx.transactionCategoryId}`) : "Transfer Fees";
+        categoryBreakdown[catName] = Number(((categoryBreakdown[catName] || 0) + fee).toFixed(2));
+      }
+    }
+  }
+
+  // 3. Debts & Loans
+  const activeDebtsLoans = await db.select().from(schema.debtsLoans)
+    .where(and(eq(schema.debtsLoans.debtLoanUserId, userId), sql`debt_loan_status != 'paid'`));
+  let totalDebt = 0;
+  let totalReceivable = 0;
+  for (const dl of activeDebtsLoans) {
+    if (dl.debtLoanType === "debt") totalDebt += dl.debtLoanRemainingAmount;
+    else if (dl.debtLoanType === "loan") totalReceivable += dl.debtLoanRemainingAmount;
+  }
+
+  // 4. Goals & Pacing
+  const goalsData = await db.select().from(schema.goals)
+    .where(and(eq(schema.goals.goalUserId, userId), sql`goal_status != 'cancelled'`));
+  const activeGoals = goalsData.map(g => ({
+    goalId: g.goalId,
+    name: g.goalName,
+    currency: g.goalCurrency,
+    walletId: g.goalWalletId,
+    categoryId: g.goalCategoryId,
+    ...calculateGoalPacing(g.goalTargetAmount, g.goalCurrentAmount, g.goalTargetDate, g.goalStatus)
+  }));
+
+  // 5. Recurring Templates Cashflow Projection
+  const templatesData = await db.select().from(schema.recurringTemplates)
+    .where(and(eq(schema.recurringTemplates.templateUserId, userId), eq(schema.recurringTemplates.templateIsActive, 1)));
+  const cashflowProjections = projectRecurringCashflow(
+    templatesData.map(t => ({
+      templateId: t.templateId,
+      templateName: t.templateName,
+      templateWalletId: t.templateWalletId,
+      templateTargetWalletId: t.templateTargetWalletId,
+      templateCategoryId: t.templateCategoryId,
+      templateAmount: t.templateAmount,
+      templateAdminFee: t.templateAdminFee,
+      templateType: t.templateType as 'expense' | 'income' | 'transfer',
+      templateFrequency: t.templateFrequency as 'daily' | 'weekly' | 'monthly' | 'yearly',
+      templateInterval: t.templateInterval,
+      templateStartDate: t.templateStartDate,
+      templateNextRunDate: t.templateNextRunDate,
+      templateEndDate: t.templateEndDate,
+      templateIsActive: t.templateIsActive,
+      templateNotes: t.templateNotes,
+    })),
+    30
+  );
+
+  return c.json({
+    netWorthByCurrency,
+    netWorthByInstitution,
+    consolidatedNetWorth,
+    totalIncome: Number(totalIncome.toFixed(2)),
+    totalExpense: Number(totalExpense.toFixed(2)),
+    totalAdminFees: Number(totalAdminFees.toFixed(2)),
+    netSavings: Number((totalIncome - totalExpense).toFixed(2)),
+    totalDebt: Number(totalDebt.toFixed(2)),
+    totalReceivable: Number(totalReceivable.toFixed(2)),
+    activeGoals,
+    cashflowProjections,
+    walletsCount: walletsData.length,
+    transactionsCount: txs.length,
+    transfersCount,
+    categoryBreakdown
+  });
+});
+
+// REST API: GET /api/v1/goals
+app.get('/api/v1/goals', async (c) => {
+  const userId = await authenticateRestUser(c);
+  if (!userId) {
+    return c.json({ error: 'unauthorized', message: 'Authentication required' }, 401);
+  }
+  const db = drizzle(c.env.DB, { schema });
+  const status = c.req.query('status');
+
+  const conditions = [eq(schema.goals.goalUserId, userId)];
+  if (status && ['in_progress', 'completed', 'cancelled'].includes(status)) {
+    conditions.push(eq(schema.goals.goalStatus, status));
+  }
+
+  const goalsList = await db.select().from(schema.goals)
+    .where(and(...conditions))
+    .orderBy(desc(schema.goals.goalCreatedAt));
+
+  const enriched = goalsList.map(g => ({
+    ...g,
+    pacing: calculateGoalPacing(g.goalTargetAmount, g.goalCurrentAmount, g.goalTargetDate, g.goalStatus),
+  }));
+
+  return c.json(enriched);
+});
+
+// REST API: POST /api/v1/goals
+app.post('/api/v1/goals', async (c) => {
+  const userId = await authenticateRestUser(c);
+  if (!userId) {
+    return c.json({ error: 'unauthorized', message: 'Authentication required' }, 401);
+  }
+  const db = drizzle(c.env.DB, { schema });
+
+  let body: Record<string, unknown> = {};
+  try {
+    body = (await c.req.json()) as Record<string, unknown>;
+  } catch {
+    return c.json({ error: 'invalid_request', message: 'Malformed JSON payload' }, 400);
+  }
+
+  const name = typeof body.name === 'string' ? body.name.trim() : '';
+  const targetAmount = typeof body.targetAmount === 'number' ? body.targetAmount : 0;
+  const currentAmount = typeof body.currentAmount === 'number' ? body.currentAmount : 0;
+  const currency = typeof body.currency === 'string' && body.currency.trim().length > 0 ? body.currency.trim().toUpperCase() : 'IDR';
+  const targetDate = typeof body.targetDate === 'string' ? body.targetDate.trim() : null;
+  const walletId = typeof body.walletId === 'string' ? body.walletId.trim() : null;
+  const categoryId = typeof body.categoryId === 'string' ? body.categoryId.trim() : null;
+  const notes = typeof body.notes === 'string' ? body.notes.trim() : null;
+
+  if (!name || name.length > 100) {
+    return c.json({ error: 'validation_error', message: "Validation Error: 'name' is required (1-100 characters)" }, 400);
+  }
+  if (targetAmount <= 0 || !Number.isFinite(targetAmount)) {
+    return c.json({ error: 'validation_error', message: "Validation Error: 'targetAmount' must be > 0" }, 400);
+  }
+  if (currentAmount < 0 || !Number.isFinite(currentAmount)) {
+    return c.json({ error: 'validation_error', message: "Validation Error: 'currentAmount' must be >= 0" }, 400);
+  }
+
+  let cleanWalletId: string | null = null;
+  if (walletId) {
+    const w = await db.select().from(schema.wallets).where(and(eq(schema.wallets.walletId, walletId), eq(schema.wallets.walletUserId, userId))).get();
+    if (!w) return c.json({ error: 'not_found', message: 'Wallet not found or unauthorized' }, 404);
+    cleanWalletId = walletId;
+  }
+
+  let cleanCategoryId: string | null = null;
+  if (categoryId) {
+    const cat = await db.select().from(schema.categories).where(and(eq(schema.categories.categoryId, categoryId), eq(schema.categories.categoryUserId, userId))).get();
+    if (!cat) return c.json({ error: 'not_found', message: 'Category not found or unauthorized' }, 404);
+    cleanCategoryId = categoryId;
+  }
+
+  const status = currentAmount >= targetAmount ? 'completed' : 'in_progress';
+
+  const newGoal = await db.insert(schema.goals).values({
+    goalUserId: userId,
+    goalName: name,
+    goalTargetAmount: targetAmount,
+    goalCurrentAmount: currentAmount,
+    goalCurrency: currency,
+    goalTargetDate: targetDate ? targetDate.split('T')[0] : null,
+    goalWalletId: cleanWalletId,
+    goalCategoryId: cleanCategoryId,
+    goalStatus: status,
+    goalNotes: notes,
+  }).returning();
+
+  const pacing = calculateGoalPacing(newGoal[0].goalTargetAmount, newGoal[0].goalCurrentAmount, newGoal[0].goalTargetDate, newGoal[0].goalStatus);
+  return c.json({ ...newGoal[0], pacing }, 201);
+});
+
+// REST API: GET /api/v1/recurring-templates
+app.get('/api/v1/recurring-templates', async (c) => {
+  const userId = await authenticateRestUser(c);
+  if (!userId) {
+    return c.json({ error: 'unauthorized', message: 'Authentication required' }, 401);
+  }
+  const db = drizzle(c.env.DB, { schema });
+  const isActiveParam = c.req.query('isActive');
+
+  const conditions = [eq(schema.recurringTemplates.templateUserId, userId)];
+  if (isActiveParam !== undefined) {
+    conditions.push(eq(schema.recurringTemplates.templateIsActive, isActiveParam === 'true' || isActiveParam === '1' ? 1 : 0));
+  }
+
+  const list = await db.select().from(schema.recurringTemplates)
+    .where(and(...conditions))
+    .orderBy(desc(schema.recurringTemplates.templateCreatedAt));
+
+  return c.json(list);
+});
+
+// REST API: POST /api/v1/recurring-templates
+app.post('/api/v1/recurring-templates', async (c) => {
+  const userId = await authenticateRestUser(c);
+  if (!userId) {
+    return c.json({ error: 'unauthorized', message: 'Authentication required' }, 401);
+  }
+  const db = drizzle(c.env.DB, { schema });
+
+  let body: Record<string, unknown> = {};
+  try {
+    body = (await c.req.json()) as Record<string, unknown>;
+  } catch {
+    return c.json({ error: 'invalid_request', message: 'Malformed JSON payload' }, 400);
+  }
+
+  const name = typeof body.name === 'string' ? body.name.trim() : '';
+  const walletId = typeof body.walletId === 'string' ? body.walletId.trim() : '';
+  const targetWalletId = typeof body.targetWalletId === 'string' ? body.targetWalletId.trim() : null;
+  const categoryId = typeof body.categoryId === 'string' ? body.categoryId.trim() : null;
+  const amount = typeof body.amount === 'number' ? body.amount : 0;
+  const adminFee = typeof body.adminFee === 'number' ? body.adminFee : 0;
+  const type = typeof body.type === 'string' && ['expense', 'income', 'transfer'].includes(body.type) ? body.type : 'expense';
+  const frequency = typeof body.frequency === 'string' && ['daily', 'weekly', 'monthly', 'yearly'].includes(body.frequency) ? body.frequency : 'monthly';
+  const interval = typeof body.interval === 'number' && body.interval >= 1 ? Math.floor(body.interval) : 1;
+  const startDate = typeof body.startDate === 'string' ? body.startDate.trim() : '';
+  const nextRunDate = typeof body.nextRunDate === 'string' ? body.nextRunDate.trim() : startDate;
+  const endDate = typeof body.endDate === 'string' ? body.endDate.trim() : null;
+  const isActive = body.isActive === false ? 0 : 1;
+  const notes = typeof body.notes === 'string' ? body.notes.trim() : null;
+
+  if (!name || name.length > 100) return c.json({ error: 'validation_error', message: "Validation Error: 'name' is required (1-100 characters)" }, 400);
+  if (!walletId) return c.json({ error: 'validation_error', message: "Validation Error: 'walletId' is required" }, 400);
+  if (amount <= 0 || !Number.isFinite(amount)) return c.json({ error: 'validation_error', message: "Validation Error: 'amount' must be > 0" }, 400);
+  if (!startDate || !isValidIsoDateOrTimestamp(startDate)) return c.json({ error: 'validation_error', message: "Validation Error: 'startDate' must be valid ISO format" }, 400);
+
+  const sourceWallet = await db.select().from(schema.wallets).where(and(eq(schema.wallets.walletId, walletId), eq(schema.wallets.walletUserId, userId))).get();
+  if (!sourceWallet) return c.json({ error: 'not_found', message: 'Source wallet not found or unauthorized' }, 404);
+
+  let cleanTargetWalletId: string | null = null;
+  if (type === 'transfer') {
+    if (!targetWalletId) return c.json({ error: 'validation_error', message: "Validation Error: 'targetWalletId' is required for transfer" }, 400);
+    const tw = await db.select().from(schema.wallets).where(and(eq(schema.wallets.walletId, targetWalletId), eq(schema.wallets.walletUserId, userId))).get();
+    if (!tw) return c.json({ error: 'not_found', message: 'Target wallet not found or unauthorized' }, 404);
+    cleanTargetWalletId = targetWalletId;
+  }
+
+  const newTemplate = await db.insert(schema.recurringTemplates).values({
+    templateUserId: userId,
+    templateName: name,
+    templateWalletId: walletId,
+    templateTargetWalletId: cleanTargetWalletId,
+    templateCategoryId: categoryId,
+    templateAmount: amount,
+    templateAdminFee: adminFee,
+    templateType: type,
+    templateFrequency: frequency,
+    templateInterval: interval,
+    templateStartDate: startDate.split('T')[0],
+    templateNextRunDate: nextRunDate ? nextRunDate.split('T')[0] : startDate.split('T')[0],
+    templateEndDate: endDate ? endDate.split('T')[0] : null,
+    templateIsActive: isActive,
+    templateNotes: notes,
+  }).returning();
+
+  return c.json(newTemplate[0], 201);
+});
+
+// REST API: POST /api/v1/recurring-templates/:templateId/apply
+app.post('/api/v1/recurring-templates/:templateId/apply', async (c) => {
+  const userId = await authenticateRestUser(c);
+  if (!userId) {
+    return c.json({ error: 'unauthorized', message: 'Authentication required' }, 401);
+  }
+  const db = drizzle(c.env.DB, { schema });
+  const templateId = c.req.param('templateId');
+
+  const template = await db.select().from(schema.recurringTemplates)
+    .where(and(eq(schema.recurringTemplates.templateId, templateId), eq(schema.recurringTemplates.templateUserId, userId)))
+    .get();
+  if (!template) {
+    return c.json({ error: 'not_found', message: 'Recurring template not found' }, 404);
+  }
+
+  let body: Record<string, unknown> = {};
+  try {
+    body = (await c.req.json()) as Record<string, unknown>;
+  } catch {
+    // body is optional
+  }
+
+  const executionDate = typeof body.executionDate === 'string' ? body.executionDate.trim() : null;
+  const txDate = executionDate ? normalizeToIsoTimestamp(executionDate) : `${template.templateNextRunDate}T12:00:00.000Z`;
+
+  const fee = template.templateAdminFee || 0.0;
+  const amt = template.templateAmount;
+  const totalOutflow = amt + fee;
+
+  const newTx = await db.insert(schema.transactions).values({
+    transactionUserId: userId,
+    transactionWalletId: template.templateWalletId,
+    transactionTargetWalletId: template.templateTargetWalletId,
+    transactionCategoryId: template.templateCategoryId,
+    transactionAmount: amt,
+    transactionAdminFee: fee,
+    transactionType: template.templateType,
+    transactionDescription: `[Recurring] ${template.templateName}`,
+    transactionIsPlanned: 0,
+    transactionDate: txDate,
+  }).returning();
+
+  if (template.templateType === 'expense') {
+    await db.update(schema.wallets)
+      .set({ walletBalance: sql`wallet_balance - ${totalOutflow}` })
+      .where(and(eq(schema.wallets.walletId, template.templateWalletId), eq(schema.wallets.walletUserId, userId)));
+  } else if (template.templateType === 'income') {
+    const netIncome = amt - fee;
+    await db.update(schema.wallets)
+      .set({ walletBalance: sql`wallet_balance + ${netIncome}` })
+      .where(and(eq(schema.wallets.walletId, template.templateWalletId), eq(schema.wallets.walletUserId, userId)));
+  } else if (template.templateType === 'transfer' && template.templateTargetWalletId) {
+    await db.update(schema.wallets)
+      .set({ walletBalance: sql`wallet_balance - ${totalOutflow}` })
+      .where(and(eq(schema.wallets.walletId, template.templateWalletId), eq(schema.wallets.walletUserId, userId)));
+    await db.update(schema.wallets)
+      .set({ walletBalance: sql`wallet_balance + ${amt}` })
+      .where(and(eq(schema.wallets.walletId, template.templateTargetWalletId), eq(schema.wallets.walletUserId, userId)));
+  }
+
+  const nextDate = calculateNextRunDate(
+    template.templateNextRunDate,
+    template.templateFrequency as 'daily' | 'weekly' | 'monthly' | 'yearly',
+    template.templateInterval
+  );
+
+  const updatedTemplate = await db.update(schema.recurringTemplates)
+    .set({ templateNextRunDate: nextDate })
+    .where(and(eq(schema.recurringTemplates.templateId, templateId), eq(schema.recurringTemplates.templateUserId, userId)))
+    .returning();
+
+  return c.json({
+    message: 'Recurring template successfully applied',
+    transaction: newTx[0],
+    template: updatedTemplate[0],
+  });
 });
 
 // REST API: POST /api/v1/feedback

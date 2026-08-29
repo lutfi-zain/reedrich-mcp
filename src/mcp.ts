@@ -25,7 +25,13 @@ import {
   normalizeToIsoTimestamp,
   currentIsoTimestamp,
 } from "./utils/date";
-
+import { getExchangeRates, convertCurrency } from "./utils/fx";
+import { calculateGoalPacing } from "./utils/goals";
+import {
+  calculateNextRunDate,
+  projectRecurringCashflow,
+  type RecurringTemplateInput,
+} from "./utils/recurring";
 // Helper validators
 function isValidPositiveNumber(val: any): boolean {
   return typeof val === "number" && Number.isFinite(val) && val > 0;
@@ -214,6 +220,18 @@ export function createMCPServer(
             "debt_loan_id (PK UUID)", "debt_loan_user_id (FK CASCADE)", "debt_loan_person_name", "debt_loan_type (debt|loan)",
             "debt_loan_amount", "debt_loan_remaining_amount", "debt_loan_wallet_id (FK SET NULL)", "debt_loan_due_date",
             "debt_loan_status (unpaid|partially_paid|paid)", "debt_loan_notes", "debt_loan_created_at"
+          ],
+          goals: [
+            "goal_id (PK UUID)", "goal_user_id (FK CASCADE)", "goal_name", "goal_target_amount", "goal_current_amount",
+            "goal_currency", "goal_target_date", "goal_wallet_id (FK SET NULL)", "goal_category_id (FK SET NULL)",
+            "goal_status (in_progress|completed|cancelled)", "goal_notes", "goal_created_at"
+          ],
+          recurring_templates: [
+            "template_id (PK UUID)", "template_user_id (FK CASCADE)", "template_name", "template_wallet_id (FK CASCADE)",
+            "template_target_wallet_id (FK SET NULL)", "template_category_id (FK SET NULL)", "template_amount",
+            "template_admin_fee", "template_type (expense|income|transfer)", "template_frequency (daily|weekly|monthly|yearly)",
+            "template_interval", "template_start_date", "template_next_run_date", "template_end_date",
+            "template_is_active", "template_notes", "template_created_at"
           ]
         },
         indexes: {
@@ -227,6 +245,12 @@ export function createMCPServer(
           ],
           debts_loans: [
             "debts_loans_user_status_idx", "debts_loans_user_due_date_idx", "debts_loans_wallet_id_idx"
+          ],
+          goals: [
+            "goals_user_status_idx", "goals_user_target_date_idx", "goals_wallet_id_idx"
+          ],
+          recurring_templates: [
+            "recurring_templates_user_active_idx", "recurring_templates_next_run_idx", "recurring_templates_wallet_id_idx"
           ]
         }
       };
@@ -755,13 +779,14 @@ Authentication Note: You are already authenticated via OAuth / Bearer token. Nev
       },
       {
         name: "financial_summary",
-        description: "Generate a complete financial overview (net worth, cash flow, wallets, debts). PROACTIVE TIP: Always call this first when starting a session or financial planning to inspect current account state.",
+        description: "Generate a complete financial overview (net worth by currency, consolidated net worth, cash flow, active goals pacing, recurring cashflow projections, wallets, debts). PROACTIVE TIP: Always call this first when starting a session or financial planning to inspect current account state.",
         inputSchema: {
           type: "object",
           properties: {
             startDate: { type: "string", description: "Start date filter" },
             endDate: { type: "string", description: "End date filter" },
-            apiKey: { type: "string", description: "Optional: Your persistent API Key (fp_live_...) if not set in headers" }
+            baseCurrency: { type: "string", description: "Optional base currency override for consolidated net worth (e.g. IDR, USD, EUR, SGD)" },
+            apiKey: { type: "string", description: "Optional: Your persistent API Key (rd_live_...) if not set in headers" }
           }
         }
       },
@@ -781,9 +806,73 @@ Authentication Note: You are already authenticated via OAuth / Bearer token. Nev
             notes: { type: "string", description: "Optional notes/description (max 500 chars)" },
             status: { type: "string", enum: ["unpaid", "partially_paid", "paid"], description: "Status filter for list action" },
             adjustWalletBalance: { type: "boolean", default: true, description: "Whether to update wallet balance on create/repay (default true)" },
-            apiKey: { type: "string", description: "Optional: Your persistent API Key (fp_live_...) if not set in headers" }
+            apiKey: { type: "string", description: "Optional: Your persistent API Key (rd_live_...) if not set in headers" }
           },
           required: ["action"]
+        }
+      },
+      {
+        name: "manage_goal",
+        description: "Manage personal financial goals: create, list, update, contribute funds, or delete goals with automated pacing calculations.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            action: { type: "string", enum: ["create", "list", "update", "contribute", "delete"], description: "Action to perform" },
+            goalId: { type: "string", description: "Goal UUID (required for update, contribute, and delete)" },
+            name: { type: "string", description: "Goal name (1-100 characters, required for create)" },
+            targetAmount: { type: "number", minimum: 0.01, description: "Target savings amount (positive finite number)" },
+            currentAmount: { type: "number", minimum: 0, description: "Initial or updated current amount saved" },
+            currency: { type: "string", default: "IDR", description: "Currency code (e.g. IDR, USD)" },
+            targetDate: { type: "string", description: "Target completion date (YYYY-MM-DD)" },
+            walletId: { type: "string", description: "Optional linked wallet UUID" },
+            categoryId: { type: "string", description: "Optional category UUID" },
+            status: { type: "string", enum: ["in_progress", "completed", "cancelled"], description: "Goal status" },
+            notes: { type: "string", description: "Optional notes (max 500 chars)" },
+            amount: { type: "number", minimum: 0.01, description: "Contribution amount (required for contribute action)" },
+            adjustWalletBalance: { type: "boolean", default: false, description: "Whether to deduct contribution amount from linked/provided wallet (default false)" },
+            apiKey: { type: "string", description: "Optional: Your persistent API Key (rd_live_...) if not set in headers" }
+          },
+          required: ["action"]
+        }
+      },
+      {
+        name: "manage_recurring_template",
+        description: "Manage recurring transaction templates: create, list, update, or deactivate recurring schedules for expenses, incomes, or transfers.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            action: { type: "string", enum: ["create", "list", "update", "delete"], description: "Action to perform" },
+            templateId: { type: "string", description: "Template UUID (required for update and delete)" },
+            name: { type: "string", description: "Template title/name (1-100 chars, required for create)" },
+            walletId: { type: "string", description: "Source wallet UUID (required for create)" },
+            targetWalletId: { type: "string", description: "Target wallet UUID (required for transfer type)" },
+            categoryId: { type: "string", description: "Category UUID" },
+            amount: { type: "number", minimum: 0.01, description: "Transaction amount per occurrence" },
+            adminFee: { type: "number", minimum: 0, description: "Admin fee per occurrence (default 0)" },
+            type: { type: "string", enum: ["expense", "income", "transfer"], default: "expense", description: "Transaction type" },
+            frequency: { type: "string", enum: ["daily", "weekly", "monthly", "yearly"], default: "monthly", description: "Recurrence frequency" },
+            interval: { type: "integer", minimum: 1, default: 1, description: "Recurrence interval (e.g. 1 = every month, 2 = every 2 months)" },
+            startDate: { type: "string", description: "Start date (YYYY-MM-DD, required for create)" },
+            nextRunDate: { type: "string", description: "Next scheduled execution date (YYYY-MM-DD)" },
+            endDate: { type: "string", description: "Optional expiration end date (YYYY-MM-DD)" },
+            isActive: { type: "boolean", default: true, description: "Whether the template is active" },
+            notes: { type: "string", description: "Optional notes/description (max 500 chars)" },
+            apiKey: { type: "string", description: "Optional: Your persistent API Key (rd_live_...) if not set in headers" }
+          },
+          required: ["action"]
+        }
+      },
+      {
+        name: "apply_recurring_template",
+        description: "Apply a recurring template to immediately instantiate an actual transaction, atomically adjust wallet balance, and advance the next run date.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            templateId: { type: "string", description: "Template UUID to apply" },
+            executionDate: { type: "string", description: "Optional transaction date override (defaults to template nextRunDate)" },
+            apiKey: { type: "string", description: "Optional: Your persistent API Key (rd_live_...) if not set in headers" }
+          },
+          required: ["templateId"]
         }
       }
     ]
@@ -1609,7 +1698,7 @@ Authentication Note: You are already authenticated via OAuth / Bearer token. Nev
 
     // --- Tool: financial_summary ---
     if (name === "financial_summary") {
-      const { startDate, endDate } = (args || {}) as any;
+      const { startDate, endDate, baseCurrency } = (args || {}) as any;
       
       if (startDate !== undefined && !isValidIsoDateOrTimestamp(startDate)) throw new Error("Validation Error: 'startDate' must be a valid ISO date or timestamp");
       if (endDate !== undefined && !isValidIsoDateOrTimestamp(endDate)) throw new Error("Validation Error: 'endDate' must be a valid ISO date or timestamp");
@@ -1618,10 +1707,45 @@ Authentication Note: You are already authenticated via OAuth / Bearer token. Nev
       const walletsData = await db.select().from(schema.wallets).where(eq(schema.wallets.walletUserId, effectiveUserId));
       const netWorthByCurrency: Record<string, number> = {};
       const netWorthByInstitution: Record<string, number> = {};
+      const currencyCounts: Record<string, number> = {};
+
       for (const w of walletsData) {
+        const curr = (w.walletCurrency || "IDR").toUpperCase();
         netWorthByCurrency[w.walletCurrency] = Number(((netWorthByCurrency[w.walletCurrency] || 0) + w.walletBalance).toFixed(2));
         netWorthByInstitution[w.walletInstitution] = Number(((netWorthByInstitution[w.walletInstitution] || 0) + w.walletBalance).toFixed(2));
+        currencyCounts[curr] = (currencyCounts[curr] || 0) + 1;
       }
+
+      // Base currency resolution: explicit override or auto-detection from wallet frequency / default IDR
+      let resolvedBaseCurrency = "IDR";
+      if (baseCurrency && typeof baseCurrency === "string" && baseCurrency.trim().length > 0) {
+        resolvedBaseCurrency = baseCurrency.trim().toUpperCase();
+      } else {
+        let maxCount = 0;
+        for (const [curr, count] of Object.entries(currencyCounts)) {
+          if (count > maxCount) {
+            maxCount = count;
+            resolvedBaseCurrency = curr;
+          }
+        }
+      }
+
+      // Fetch exchange rates (with 3s timeout & fallback)
+      const fxRates = await getExchangeRates(options?.fetchFn);
+      let consolidatedEstimatedTotal = 0;
+      const isEstimated = Object.keys(netWorthByCurrency).some(curr => curr.toUpperCase() !== resolvedBaseCurrency);
+
+      for (const [curr, balance] of Object.entries(netWorthByCurrency)) {
+        const converted = convertCurrency(balance, curr, resolvedBaseCurrency, fxRates.rates);
+        consolidatedEstimatedTotal += converted;
+      }
+
+      const consolidatedNetWorth = {
+        baseCurrency: resolvedBaseCurrency,
+        estimatedTotal: Number(consolidatedEstimatedTotal.toFixed(2)),
+        isEstimated,
+        exchangeRatesSource: fxRates.source,
+      };
 
       // 2. Query non-planned transactions
       const conditions = [
@@ -1688,15 +1812,74 @@ Authentication Note: You are already authenticated via OAuth / Bearer token. Nev
         }
       }
 
+      // 5. Query active goals and compute pacing
+      const goalsData = await db.select().from(schema.goals)
+        .where(
+          and(
+            eq(schema.goals.goalUserId, effectiveUserId),
+            sql`goal_status != 'cancelled'`
+          )
+        );
+
+      const activeGoals = goalsData.map(g => {
+        const pacing = calculateGoalPacing(
+          g.goalTargetAmount,
+          g.goalCurrentAmount,
+          g.goalTargetDate,
+          g.goalStatus
+        );
+        return {
+          goalId: g.goalId,
+          name: g.goalName,
+          currency: g.goalCurrency,
+          walletId: g.goalWalletId,
+          categoryId: g.goalCategoryId,
+          ...pacing,
+        };
+      });
+
+      // 6. Query recurring templates & forward 30-day cashflow projection
+      const templatesData = await db.select().from(schema.recurringTemplates)
+        .where(
+          and(
+            eq(schema.recurringTemplates.templateUserId, effectiveUserId),
+            eq(schema.recurringTemplates.templateIsActive, 1)
+          )
+        );
+
+      const cashflowProjections = projectRecurringCashflow(
+        templatesData.map(t => ({
+          templateId: t.templateId,
+          templateName: t.templateName,
+          templateWalletId: t.templateWalletId,
+          templateTargetWalletId: t.templateTargetWalletId,
+          templateCategoryId: t.templateCategoryId,
+          templateAmount: t.templateAmount,
+          templateAdminFee: t.templateAdminFee,
+          templateType: t.templateType as 'expense' | 'income' | 'transfer',
+          templateFrequency: t.templateFrequency as 'daily' | 'weekly' | 'monthly' | 'yearly',
+          templateInterval: t.templateInterval,
+          templateStartDate: t.templateStartDate,
+          templateNextRunDate: t.templateNextRunDate,
+          templateEndDate: t.templateEndDate,
+          templateIsActive: t.templateIsActive,
+          templateNotes: t.templateNotes,
+        })),
+        30
+      );
+
       const summary: Record<string, any> = {
         netWorthByCurrency,
         netWorthByInstitution,
+        consolidatedNetWorth,
         totalIncome: Number(totalIncome.toFixed(2)),
         totalExpense: Number(totalExpense.toFixed(2)),
         totalAdminFees: Number(totalAdminFees.toFixed(2)),
         netSavings: Number((totalIncome - totalExpense).toFixed(2)),
         totalDebt: Number(totalDebt.toFixed(2)),
         totalReceivable: Number(totalReceivable.toFixed(2)),
+        activeGoals,
+        cashflowProjections,
         walletsCount: walletsData.length,
         transactionsCount: txs.length,
         transfersCount,
@@ -1934,6 +2117,686 @@ Authentication Note: You are already authenticated via OAuth / Bearer token. Nev
       }
 
       throw new Error(`Invalid action '${action}' for manage_debt_loan. Valid actions: create, list, repay, update`);
+    }
+
+    // --- Tool: manage_goal ---
+    if (name === "manage_goal") {
+      const {
+        action,
+        goalId,
+        name: goalNameInput,
+        targetAmount,
+        currentAmount,
+        currency,
+        targetDate,
+        walletId,
+        categoryId,
+        status: goalStatusInput,
+        notes,
+        amount,
+        adjustWalletBalance,
+      } = (args || {}) as any;
+
+      if (!action || typeof action !== "string") {
+        throw new Error("Validation Error: 'action' is required for manage_goal. Valid actions: create, list, update, contribute, delete");
+      }
+
+      // 1. Action: create
+      if (action === "create") {
+        if (!goalNameInput || typeof goalNameInput !== "string" || goalNameInput.trim().length === 0 || goalNameInput.trim().length > 100) {
+          throw new Error("Validation Error: 'name' is required (1-100 characters)");
+        }
+        if (!isValidPositiveNumber(targetAmount)) {
+          throw new Error("Validation Error: 'targetAmount' must be a positive finite number greater than 0");
+        }
+        const initialCurrent = currentAmount !== undefined ? (isValidFiniteNumber(currentAmount) && currentAmount >= 0 ? currentAmount : null) : 0.0;
+        if (initialCurrent === null) {
+          throw new Error("Validation Error: 'currentAmount' must be a non-negative finite number");
+        }
+
+        let cleanWalletId: string | null = null;
+        if (walletId) {
+          if (!isValidUUID(walletId)) throw new Error("Validation Error: 'walletId' must be a valid UUID string");
+          const w = await db.select().from(schema.wallets)
+            .where(and(eq(schema.wallets.walletId, walletId.trim()), eq(schema.wallets.walletUserId, effectiveUserId)))
+            .get();
+          if (!w) throw new Error(`Wallet ID ${walletId.trim()} not found or unauthorized`);
+          cleanWalletId = walletId.trim();
+        }
+
+        let cleanCategoryId: string | null = null;
+        if (categoryId) {
+          if (!isValidUUID(categoryId)) throw new Error("Validation Error: 'categoryId' must be a valid UUID string");
+          const cat = await db.select().from(schema.categories)
+            .where(and(eq(schema.categories.categoryId, categoryId.trim()), eq(schema.categories.categoryUserId, effectiveUserId)))
+            .get();
+          if (!cat) throw new Error(`Category ID ${categoryId.trim()} not found or unauthorized`);
+          cleanCategoryId = categoryId.trim();
+        }
+
+        if (targetDate && !isValidIsoDateOrTimestamp(targetDate)) {
+          throw new Error("Validation Error: 'targetDate' must be in valid ISO format (e.g. YYYY-MM-DD)");
+        }
+        if (notes && (typeof notes !== "string" || notes.length > 500)) {
+          throw new Error("Validation Error: 'notes' cannot exceed 500 characters");
+        }
+
+        const cleanCurrency = currency && typeof currency === "string" && currency.trim().length > 0 ? currency.trim().toUpperCase() : "IDR";
+        const isAutoCompleted = initialCurrent >= targetAmount;
+        const finalStatus = isAutoCompleted ? "completed" : (goalStatusInput === "completed" || goalStatusInput === "cancelled" ? goalStatusInput : "in_progress");
+
+        const newGoal = await db.insert(schema.goals).values({
+          goalUserId: effectiveUserId,
+          goalName: goalNameInput.trim(),
+          goalTargetAmount: targetAmount,
+          goalCurrentAmount: initialCurrent,
+          goalCurrency: cleanCurrency,
+          goalTargetDate: targetDate ? targetDate.trim().split("T")[0] : null,
+          goalWalletId: cleanWalletId,
+          goalCategoryId: cleanCategoryId,
+          goalStatus: finalStatus,
+          goalNotes: notes ? notes.trim() : null,
+        }).returning();
+
+        const pacing = calculateGoalPacing(
+          newGoal[0].goalTargetAmount,
+          newGoal[0].goalCurrentAmount,
+          newGoal[0].goalTargetDate,
+          newGoal[0].goalStatus
+        );
+
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify({ ...newGoal[0], pacing }, null, 2)
+          }]
+        };
+      }
+
+      // 2. Action: list
+      if (action === "list") {
+        const conditions = [eq(schema.goals.goalUserId, effectiveUserId)];
+        if (goalStatusInput && ["in_progress", "completed", "cancelled"].includes(goalStatusInput)) {
+          conditions.push(eq(schema.goals.goalStatus, goalStatusInput));
+        }
+
+        const goalsList = await db.select().from(schema.goals)
+          .where(and(...conditions))
+          .orderBy(desc(schema.goals.goalCreatedAt));
+
+        const enrichedGoals = goalsList.map(g => {
+          const pacing = calculateGoalPacing(
+            g.goalTargetAmount,
+            g.goalCurrentAmount,
+            g.goalTargetDate,
+            g.goalStatus
+          );
+          return { ...g, pacing };
+        });
+
+        return { content: [{ type: "text", text: JSON.stringify(enrichedGoals, null, 2) }] };
+      }
+
+      // 3. Action: contribute
+      if (action === "contribute") {
+        if (!isValidUUID(goalId)) {
+          throw new Error("Validation Error: Valid string 'goalId' (UUID) is required for contribute");
+        }
+        if (!isValidPositiveNumber(amount)) {
+          throw new Error("Validation Error: Contribution 'amount' must be a positive finite number greater than 0");
+        }
+
+        const cleanGoalId = (goalId as string).trim();
+        const existingGoal = await db.select().from(schema.goals)
+          .where(and(eq(schema.goals.goalId, cleanGoalId), eq(schema.goals.goalUserId, effectiveUserId)))
+          .get();
+
+        if (!existingGoal) {
+          throw new Error(`Goal ID ${cleanGoalId} not found or unauthorized`);
+        }
+
+        const newCurrent = Number((existingGoal.goalCurrentAmount + amount).toFixed(2));
+        const newStatus = newCurrent >= existingGoal.goalTargetAmount ? "completed" : existingGoal.goalStatus;
+
+        const updated = await db.update(schema.goals)
+          .set({
+            goalCurrentAmount: newCurrent,
+            goalStatus: newStatus,
+          })
+          .where(and(eq(schema.goals.goalId, cleanGoalId), eq(schema.goals.goalUserId, effectiveUserId)))
+          .returning();
+
+        // Optional: adjust wallet balance
+        const shouldAdjust = adjustWalletBalance === true;
+        const targetWalletId = walletId ? walletId.trim() : existingGoal.goalWalletId;
+
+        if (shouldAdjust && targetWalletId) {
+          const w = await db.select().from(schema.wallets)
+            .where(and(eq(schema.wallets.walletId, targetWalletId), eq(schema.wallets.walletUserId, effectiveUserId)))
+            .get();
+          if (w) {
+            await db.update(schema.wallets)
+              .set({ walletBalance: sql`wallet_balance - ${amount}` })
+              .where(and(eq(schema.wallets.walletId, targetWalletId), eq(schema.wallets.walletUserId, effectiveUserId)));
+
+            // Record transaction
+            await db.insert(schema.transactions).values({
+              transactionUserId: effectiveUserId,
+              transactionWalletId: targetWalletId,
+              transactionCategoryId: existingGoal.goalCategoryId,
+              transactionAmount: amount,
+              transactionAdminFee: 0.0,
+              transactionType: "expense",
+              transactionDescription: `Goal contribution: ${existingGoal.goalName}`,
+              transactionIsPlanned: 0,
+              transactionDate: currentIsoTimestamp(),
+            });
+          }
+        }
+
+        const pacing = calculateGoalPacing(
+          updated[0].goalTargetAmount,
+          updated[0].goalCurrentAmount,
+          updated[0].goalTargetDate,
+          updated[0].goalStatus
+        );
+
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify({ ...updated[0], pacing }, null, 2)
+          }]
+        };
+      }
+
+      // 4. Action: update
+      if (action === "update") {
+        if (!isValidUUID(goalId)) {
+          throw new Error("Validation Error: Valid string 'goalId' (UUID) is required for update");
+        }
+        const cleanGoalId = (goalId as string).trim();
+        const existingGoal = await db.select().from(schema.goals)
+          .where(and(eq(schema.goals.goalId, cleanGoalId), eq(schema.goals.goalUserId, effectiveUserId)))
+          .get();
+
+        if (!existingGoal) {
+          throw new Error(`Goal ID ${cleanGoalId} not found or unauthorized`);
+        }
+
+        const updateData: Partial<typeof schema.goals.$inferInsert> = {};
+        if (goalNameInput !== undefined) {
+          if (typeof goalNameInput !== "string" || goalNameInput.trim().length === 0 || goalNameInput.trim().length > 100) {
+            throw new Error("Validation Error: 'name' must be 1-100 characters");
+          }
+          updateData.goalName = goalNameInput.trim();
+        }
+        if (targetAmount !== undefined) {
+          if (!isValidPositiveNumber(targetAmount)) {
+            throw new Error("Validation Error: 'targetAmount' must be a positive finite number greater than 0");
+          }
+          updateData.goalTargetAmount = targetAmount;
+        }
+        if (currentAmount !== undefined) {
+          if (!isValidFiniteNumber(currentAmount) || currentAmount < 0) {
+            throw new Error("Validation Error: 'currentAmount' must be a non-negative finite number");
+          }
+          updateData.goalCurrentAmount = currentAmount;
+        }
+        if (currency !== undefined) {
+          if (typeof currency !== "string" || currency.trim().length === 0) {
+            throw new Error("Validation Error: 'currency' must be a valid currency string");
+          }
+          updateData.goalCurrency = currency.trim().toUpperCase();
+        }
+        if (targetDate !== undefined) {
+          if (targetDate && !isValidIsoDateOrTimestamp(targetDate)) {
+            throw new Error("Validation Error: 'targetDate' must be in valid ISO format");
+          }
+          updateData.goalTargetDate = targetDate ? targetDate.trim().split("T")[0] : null;
+        }
+        if (walletId !== undefined) {
+          if (walletId) {
+            if (!isValidUUID(walletId)) throw new Error("Validation Error: 'walletId' must be a valid UUID string");
+            const w = await db.select().from(schema.wallets)
+              .where(and(eq(schema.wallets.walletId, walletId.trim()), eq(schema.wallets.walletUserId, effectiveUserId)))
+              .get();
+            if (!w) throw new Error(`Wallet ID ${walletId.trim()} not found or unauthorized`);
+            updateData.goalWalletId = walletId.trim();
+          } else {
+            updateData.goalWalletId = null;
+          }
+        }
+        if (categoryId !== undefined) {
+          if (categoryId) {
+            if (!isValidUUID(categoryId)) throw new Error("Validation Error: 'categoryId' must be a valid UUID string");
+            const cat = await db.select().from(schema.categories)
+              .where(and(eq(schema.categories.categoryId, categoryId.trim()), eq(schema.categories.categoryUserId, effectiveUserId)))
+              .get();
+            if (!cat) throw new Error(`Category ID ${categoryId.trim()} not found or unauthorized`);
+            updateData.goalCategoryId = categoryId.trim();
+          } else {
+            updateData.goalCategoryId = null;
+          }
+        }
+        if (goalStatusInput !== undefined) {
+          if (!["in_progress", "completed", "cancelled"].includes(goalStatusInput)) {
+            throw new Error("Validation Error: 'status' must be 'in_progress', 'completed', or 'cancelled'");
+          }
+          updateData.goalStatus = goalStatusInput;
+        }
+        if (notes !== undefined) {
+          if (notes && (typeof notes !== "string" || notes.length > 500)) {
+            throw new Error("Validation Error: 'notes' cannot exceed 500 characters");
+          }
+          updateData.goalNotes = notes ? notes.trim() : null;
+        }
+
+        if (Object.keys(updateData).length === 0) {
+          const pacing = calculateGoalPacing(
+            existingGoal.goalTargetAmount,
+            existingGoal.goalCurrentAmount,
+            existingGoal.goalTargetDate,
+            existingGoal.goalStatus
+          );
+          return { content: [{ type: "text", text: JSON.stringify({ ...existingGoal, pacing }, null, 2) }] };
+        }
+
+        const updated = await db.update(schema.goals)
+          .set(updateData)
+          .where(and(eq(schema.goals.goalId, cleanGoalId), eq(schema.goals.goalUserId, effectiveUserId)))
+          .returning();
+
+        const pacing = calculateGoalPacing(
+          updated[0].goalTargetAmount,
+          updated[0].goalCurrentAmount,
+          updated[0].goalTargetDate,
+          updated[0].goalStatus
+        );
+
+        return { content: [{ type: "text", text: JSON.stringify({ ...updated[0], pacing }, null, 2) }] };
+      }
+
+      // 5. Action: delete
+      if (action === "delete") {
+        if (!isValidUUID(goalId)) {
+          throw new Error("Validation Error: Valid string 'goalId' (UUID) is required for delete");
+        }
+        const cleanGoalId = (goalId as string).trim();
+        const deleted = await db.delete(schema.goals)
+          .where(and(eq(schema.goals.goalId, cleanGoalId), eq(schema.goals.goalUserId, effectiveUserId)))
+          .returning();
+
+        if (deleted.length === 0) {
+          throw new Error(`Goal ID ${cleanGoalId} not found or unauthorized`);
+        }
+
+        return { content: [{ type: "text", text: JSON.stringify({ message: "Goal deleted successfully", goal: deleted[0] }, null, 2) }] };
+      }
+
+      throw new Error(`Invalid action '${action}' for manage_goal. Valid actions: create, list, update, contribute, delete`);
+    }
+
+    // --- Tool: manage_recurring_template ---
+    if (name === "manage_recurring_template") {
+      const {
+        action,
+        templateId,
+        name: templateNameInput,
+        walletId,
+        targetWalletId,
+        categoryId,
+        amount,
+        adminFee,
+        type: templateTypeInput,
+        frequency,
+        interval,
+        startDate,
+        nextRunDate,
+        endDate,
+        isActive,
+        notes,
+      } = (args || {}) as any;
+
+      if (!action || typeof action !== "string") {
+        throw new Error("Validation Error: 'action' is required for manage_recurring_template. Valid actions: create, list, update, delete");
+      }
+
+      // 1. Action: create
+      if (action === "create") {
+        if (!templateNameInput || typeof templateNameInput !== "string" || templateNameInput.trim().length === 0 || templateNameInput.trim().length > 100) {
+          throw new Error("Validation Error: 'name' is required (1-100 characters)");
+        }
+        if (!isValidUUID(walletId)) {
+          throw new Error("Validation Error: 'walletId' is required and must be a valid UUID string");
+        }
+        const sourceWallet = await db.select().from(schema.wallets)
+          .where(and(eq(schema.wallets.walletId, walletId.trim()), eq(schema.wallets.walletUserId, effectiveUserId)))
+          .get();
+        if (!sourceWallet) {
+          throw new Error(`Wallet ID ${walletId.trim()} not found or unauthorized`);
+        }
+
+        const cleanType = (templateTypeInput === "income" || templateTypeInput === "transfer") ? templateTypeInput : "expense";
+
+        let cleanTargetWalletId: string | null = null;
+        if (cleanType === "transfer") {
+          if (!isValidUUID(targetWalletId)) {
+            throw new Error("Validation Error: 'targetWalletId' is required for transfer recurring templates");
+          }
+          if (targetWalletId.trim() === walletId.trim()) {
+            throw new Error("Validation Error: 'walletId' and 'targetWalletId' cannot be identical for transfers");
+          }
+          const destWallet = await db.select().from(schema.wallets)
+            .where(and(eq(schema.wallets.walletId, targetWalletId.trim()), eq(schema.wallets.walletUserId, effectiveUserId)))
+            .get();
+          if (!destWallet) {
+            throw new Error(`Target Wallet ID ${targetWalletId.trim()} not found or unauthorized`);
+          }
+          cleanTargetWalletId = targetWalletId.trim();
+        }
+
+        let cleanCategoryId: string | null = null;
+        if (categoryId) {
+          if (!isValidUUID(categoryId)) throw new Error("Validation Error: 'categoryId' must be a valid UUID string");
+          const cat = await db.select().from(schema.categories)
+            .where(and(eq(schema.categories.categoryId, categoryId.trim()), eq(schema.categories.categoryUserId, effectiveUserId)))
+            .get();
+          if (!cat) throw new Error(`Category ID ${categoryId.trim()} not found or unauthorized`);
+          cleanCategoryId = categoryId.trim();
+        }
+
+        if (!isValidPositiveNumber(amount)) {
+          throw new Error("Validation Error: 'amount' must be a positive finite number greater than 0");
+        }
+
+        const cleanAdminFee = adminFee !== undefined ? (isValidFiniteNumber(adminFee) && adminFee >= 0 ? adminFee : null) : 0.0;
+        if (cleanAdminFee === null) {
+          throw new Error("Validation Error: 'adminFee' must be a non-negative finite number");
+        }
+
+        const cleanFrequency = ["daily", "weekly", "monthly", "yearly"].includes(frequency) ? frequency : "monthly";
+        const cleanInterval = interval !== undefined ? (Number.isInteger(interval) && interval >= 1 ? interval : null) : 1;
+        if (cleanInterval === null) {
+          throw new Error("Validation Error: 'interval' must be an integer greater than or equal to 1");
+        }
+
+        if (!startDate || !isValidIsoDateOrTimestamp(startDate)) {
+          throw new Error("Validation Error: 'startDate' is required in valid ISO format (e.g. YYYY-MM-DD)");
+        }
+        const cleanStartDate = startDate.trim().split("T")[0];
+
+        const cleanNextRunDate = nextRunDate && isValidIsoDateOrTimestamp(nextRunDate)
+          ? nextRunDate.trim().split("T")[0]
+          : cleanStartDate;
+
+        if (endDate && !isValidIsoDateOrTimestamp(endDate)) {
+          throw new Error("Validation Error: 'endDate' must be in valid ISO format (e.g. YYYY-MM-DD)");
+        }
+        const cleanEndDate = endDate ? endDate.trim().split("T")[0] : null;
+
+        if (notes && (typeof notes !== "string" || notes.length > 500)) {
+          throw new Error("Validation Error: 'notes' cannot exceed 500 characters");
+        }
+
+        const activeFlag = isActive === false ? 0 : 1;
+
+        const newTemplate = await db.insert(schema.recurringTemplates).values({
+          templateUserId: effectiveUserId,
+          templateName: templateNameInput.trim(),
+          templateWalletId: walletId.trim(),
+          templateTargetWalletId: cleanTargetWalletId,
+          templateCategoryId: cleanCategoryId,
+          templateAmount: amount,
+          templateAdminFee: cleanAdminFee,
+          templateType: cleanType,
+          templateFrequency: cleanFrequency,
+          templateInterval: cleanInterval,
+          templateStartDate: cleanStartDate,
+          templateNextRunDate: cleanNextRunDate,
+          templateEndDate: cleanEndDate,
+          templateIsActive: activeFlag,
+          templateNotes: notes ? notes.trim() : null,
+        }).returning();
+
+        return { content: [{ type: "text", text: JSON.stringify(newTemplate[0], null, 2) }] };
+      }
+
+      // 2. Action: list
+      if (action === "list") {
+        const conditions = [eq(schema.recurringTemplates.templateUserId, effectiveUserId)];
+        if (isActive !== undefined) {
+          conditions.push(eq(schema.recurringTemplates.templateIsActive, isActive ? 1 : 0));
+        }
+
+        const list = await db.select().from(schema.recurringTemplates)
+          .where(and(...conditions))
+          .orderBy(desc(schema.recurringTemplates.templateCreatedAt));
+
+        return { content: [{ type: "text", text: JSON.stringify(list, null, 2) }] };
+      }
+
+      // 3. Action: update
+      if (action === "update") {
+        if (!isValidUUID(templateId)) {
+          throw new Error("Validation Error: Valid string 'templateId' (UUID) is required for update");
+        }
+        const cleanTemplateId = (templateId as string).trim();
+        const existingTemplate = await db.select().from(schema.recurringTemplates)
+          .where(and(eq(schema.recurringTemplates.templateId, cleanTemplateId), eq(schema.recurringTemplates.templateUserId, effectiveUserId)))
+          .get();
+
+        if (!existingTemplate) {
+          throw new Error(`Recurring Template ID ${cleanTemplateId} not found or unauthorized`);
+        }
+
+        const updateData: Partial<typeof schema.recurringTemplates.$inferInsert> = {};
+        if (templateNameInput !== undefined) {
+          if (typeof templateNameInput !== "string" || templateNameInput.trim().length === 0 || templateNameInput.trim().length > 100) {
+            throw new Error("Validation Error: 'name' must be 1-100 characters");
+          }
+          updateData.templateName = templateNameInput.trim();
+        }
+        if (walletId !== undefined) {
+          if (!isValidUUID(walletId)) throw new Error("Validation Error: 'walletId' must be a valid UUID string");
+          const w = await db.select().from(schema.wallets)
+            .where(and(eq(schema.wallets.walletId, walletId.trim()), eq(schema.wallets.walletUserId, effectiveUserId)))
+            .get();
+          if (!w) throw new Error(`Wallet ID ${walletId.trim()} not found or unauthorized`);
+          updateData.templateWalletId = walletId.trim();
+        }
+        if (targetWalletId !== undefined) {
+          if (targetWalletId) {
+            if (!isValidUUID(targetWalletId)) throw new Error("Validation Error: 'targetWalletId' must be a valid UUID string");
+            const tw = await db.select().from(schema.wallets)
+              .where(and(eq(schema.wallets.walletId, targetWalletId.trim()), eq(schema.wallets.walletUserId, effectiveUserId)))
+              .get();
+            if (!tw) throw new Error(`Target Wallet ID ${targetWalletId.trim()} not found or unauthorized`);
+            updateData.templateTargetWalletId = targetWalletId.trim();
+          } else {
+            updateData.templateTargetWalletId = null;
+          }
+        }
+        if (categoryId !== undefined) {
+          if (categoryId) {
+            if (!isValidUUID(categoryId)) throw new Error("Validation Error: 'categoryId' must be a valid UUID string");
+            const cat = await db.select().from(schema.categories)
+              .where(and(eq(schema.categories.categoryId, categoryId.trim()), eq(schema.categories.categoryUserId, effectiveUserId)))
+              .get();
+            if (!cat) throw new Error(`Category ID ${categoryId.trim()} not found or unauthorized`);
+            updateData.templateCategoryId = categoryId.trim();
+          } else {
+            updateData.templateCategoryId = null;
+          }
+        }
+        if (amount !== undefined) {
+          if (!isValidPositiveNumber(amount)) throw new Error("Validation Error: 'amount' must be a positive finite number greater than 0");
+          updateData.templateAmount = amount;
+        }
+        if (adminFee !== undefined) {
+          if (!isValidFiniteNumber(adminFee) || adminFee < 0) throw new Error("Validation Error: 'adminFee' must be a non-negative finite number");
+          updateData.templateAdminFee = adminFee;
+        }
+        if (templateTypeInput !== undefined) {
+          if (!["expense", "income", "transfer"].includes(templateTypeInput)) {
+            throw new Error("Validation Error: 'type' must be 'expense', 'income', or 'transfer'");
+          }
+          updateData.templateType = templateTypeInput;
+        }
+        if (frequency !== undefined) {
+          if (!["daily", "weekly", "monthly", "yearly"].includes(frequency)) {
+            throw new Error("Validation Error: 'frequency' must be 'daily', 'weekly', 'monthly', or 'yearly'");
+          }
+          updateData.templateFrequency = frequency;
+        }
+        if (interval !== undefined) {
+          if (!Number.isInteger(interval) || interval < 1) {
+            throw new Error("Validation Error: 'interval' must be an integer >= 1");
+          }
+          updateData.templateInterval = interval;
+        }
+        if (startDate !== undefined) {
+          if (!isValidIsoDateOrTimestamp(startDate)) throw new Error("Validation Error: 'startDate' must be in valid ISO format");
+          updateData.templateStartDate = startDate.trim().split("T")[0];
+        }
+        if (nextRunDate !== undefined) {
+          if (!isValidIsoDateOrTimestamp(nextRunDate)) throw new Error("Validation Error: 'nextRunDate' must be in valid ISO format");
+          updateData.templateNextRunDate = nextRunDate.trim().split("T")[0];
+        }
+        if (endDate !== undefined) {
+          if (endDate && !isValidIsoDateOrTimestamp(endDate)) throw new Error("Validation Error: 'endDate' must be in valid ISO format");
+          updateData.templateEndDate = endDate ? endDate.trim().split("T")[0] : null;
+        }
+        if (isActive !== undefined) {
+          updateData.templateIsActive = isActive ? 1 : 0;
+        }
+        if (notes !== undefined) {
+          if (notes && (typeof notes !== "string" || notes.length > 500)) {
+            throw new Error("Validation Error: 'notes' cannot exceed 500 characters");
+          }
+          updateData.templateNotes = notes ? notes.trim() : null;
+        }
+
+        if (Object.keys(updateData).length === 0) {
+          return { content: [{ type: "text", text: JSON.stringify(existingTemplate, null, 2) }] };
+        }
+
+        const updated = await db.update(schema.recurringTemplates)
+          .set(updateData)
+          .where(and(eq(schema.recurringTemplates.templateId, cleanTemplateId), eq(schema.recurringTemplates.templateUserId, effectiveUserId)))
+          .returning();
+
+        return { content: [{ type: "text", text: JSON.stringify(updated[0], null, 2) }] };
+      }
+
+      // 4. Action: delete
+      if (action === "delete") {
+        if (!isValidUUID(templateId)) {
+          throw new Error("Validation Error: Valid string 'templateId' (UUID) is required for delete");
+        }
+        const cleanTemplateId = (templateId as string).trim();
+        const deleted = await db.delete(schema.recurringTemplates)
+          .where(and(eq(schema.recurringTemplates.templateId, cleanTemplateId), eq(schema.recurringTemplates.templateUserId, effectiveUserId)))
+          .returning();
+
+        if (deleted.length === 0) {
+          throw new Error(`Recurring Template ID ${cleanTemplateId} not found or unauthorized`);
+        }
+
+        return { content: [{ type: "text", text: JSON.stringify({ message: "Recurring template deleted successfully", template: deleted[0] }, null, 2) }] };
+      }
+
+      throw new Error(`Invalid action '${action}' for manage_recurring_template. Valid actions: create, list, update, delete`);
+    }
+
+    // --- Tool: apply_recurring_template ---
+    if (name === "apply_recurring_template") {
+      const { templateId, executionDate } = (args || {}) as any;
+
+      if (!isValidUUID(templateId)) {
+        throw new Error("Validation Error: Valid string 'templateId' (UUID) is required for apply_recurring_template");
+      }
+      const cleanTemplateId = (templateId as string).trim();
+      const template = await db.select().from(schema.recurringTemplates)
+        .where(and(eq(schema.recurringTemplates.templateId, cleanTemplateId), eq(schema.recurringTemplates.templateUserId, effectiveUserId)))
+        .get();
+
+      if (!template) {
+        throw new Error(`Recurring Template ID ${cleanTemplateId} not found or unauthorized`);
+      }
+
+      if (executionDate !== undefined && !isValidIsoDateOrTimestamp(executionDate)) {
+        throw new Error("Validation Error: 'executionDate' must be in valid ISO format");
+      }
+      const txDate = executionDate ? normalizeToIsoTimestamp(executionDate) : `${template.templateNextRunDate}T12:00:00.000Z`;
+
+      const fee = template.templateAdminFee || 0.0;
+      const amt = template.templateAmount;
+      const totalOutflow = amt + fee;
+
+      // Check wallet existence
+      const sourceWallet = await db.select().from(schema.wallets)
+        .where(and(eq(schema.wallets.walletId, template.templateWalletId), eq(schema.wallets.walletUserId, effectiveUserId)))
+        .get();
+      if (!sourceWallet) {
+        throw new Error(`Source wallet ID ${template.templateWalletId} not found or unauthorized`);
+      }
+
+      // Execute atomic transaction creation
+      const newTx = await db.insert(schema.transactions).values({
+        transactionUserId: effectiveUserId,
+        transactionWalletId: template.templateWalletId,
+        transactionTargetWalletId: template.templateTargetWalletId,
+        transactionCategoryId: template.templateCategoryId,
+        transactionAmount: amt,
+        transactionAdminFee: fee,
+        transactionType: template.templateType,
+        transactionDescription: `[Recurring] ${template.templateName}`,
+        transactionIsPlanned: 0,
+        transactionDate: txDate,
+      }).returning();
+
+      // Reconcile wallet balance atomically
+      if (template.templateType === "expense") {
+        await db.update(schema.wallets)
+          .set({ walletBalance: sql`wallet_balance - ${totalOutflow}` })
+          .where(and(eq(schema.wallets.walletId, template.templateWalletId), eq(schema.wallets.walletUserId, effectiveUserId)));
+      } else if (template.templateType === "income") {
+        const netIncome = amt - fee;
+        await db.update(schema.wallets)
+          .set({ walletBalance: sql`wallet_balance + ${netIncome}` })
+          .where(and(eq(schema.wallets.walletId, template.templateWalletId), eq(schema.wallets.walletUserId, effectiveUserId)));
+      } else if (template.templateType === "transfer" && template.templateTargetWalletId) {
+        await db.update(schema.wallets)
+          .set({ walletBalance: sql`wallet_balance - ${totalOutflow}` })
+          .where(and(eq(schema.wallets.walletId, template.templateWalletId), eq(schema.wallets.walletUserId, effectiveUserId)));
+
+        await db.update(schema.wallets)
+          .set({ walletBalance: sql`wallet_balance + ${amt}` })
+          .where(and(eq(schema.wallets.walletId, template.templateTargetWalletId), eq(schema.wallets.walletUserId, effectiveUserId)));
+      }
+
+      // Advance template nextRunDate
+      const nextDate = calculateNextRunDate(
+        template.templateNextRunDate,
+        template.templateFrequency as 'daily' | 'weekly' | 'monthly' | 'yearly',
+        template.templateInterval
+      );
+
+      const updatedTemplate = await db.update(schema.recurringTemplates)
+        .set({ templateNextRunDate: nextDate })
+        .where(and(eq(schema.recurringTemplates.templateId, cleanTemplateId), eq(schema.recurringTemplates.templateUserId, effectiveUserId)))
+        .returning();
+
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            message: "Recurring template successfully applied",
+            transaction: newTx[0],
+            template: updatedTemplate[0],
+          }, null, 2)
+        }]
+      };
     }
 
     throw new Error(`Tool not found: ${name}`);

@@ -139,3 +139,58 @@ export const feedbacks = sqliteTable("feedbacks", {
   index("feedbacks_status_idx").on(table.feedbackStatus),
   index("feedbacks_created_at_idx").on(table.feedbackCreatedAt),
 ]);
+
+export const goals = sqliteTable("goals", {
+  goalId: text("goal_id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+  goalUserId: text("goal_user_id")
+    .notNull()
+    .references(() => users.userId, { onDelete: "cascade" }),
+  goalName: text("goal_name").notNull(),
+  goalTargetAmount: real("goal_target_amount").notNull(),
+  goalCurrentAmount: real("goal_current_amount").notNull().default(0.0),
+  goalCurrency: text("goal_currency").notNull().default("IDR"),
+  goalTargetDate: text("goal_target_date"), // YYYY-MM-DD
+  goalWalletId: text("goal_wallet_id").references(() => wallets.walletId, { onDelete: "set null" }),
+  goalCategoryId: text("goal_category_id").references(() => categories.categoryId, { onDelete: "set null" }),
+  goalStatus: text("goal_status").notNull().default("in_progress"), // "in_progress" | "completed" | "cancelled"
+  goalNotes: text("goal_notes"),
+  goalCreatedAt: text("goal_created_at")
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  index("goals_user_status_idx").on(table.goalUserId, table.goalStatus),
+  index("goals_user_target_date_idx").on(table.goalUserId, table.goalTargetDate),
+  index("goals_wallet_id_idx").on(table.goalWalletId),
+]);
+
+export const recurringTemplates = sqliteTable("recurring_templates", {
+  templateId: text("template_id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+  templateUserId: text("template_user_id")
+    .notNull()
+    .references(() => users.userId, { onDelete: "cascade" }),
+  templateName: text("template_name").notNull(),
+  templateWalletId: text("template_wallet_id")
+    .notNull()
+    .references(() => wallets.walletId, { onDelete: "cascade" }),
+  templateTargetWalletId: text("template_target_wallet_id")
+    .references(() => wallets.walletId, { onDelete: "set null" }),
+  templateCategoryId: text("template_category_id")
+    .references(() => categories.categoryId, { onDelete: "set null" }),
+  templateAmount: real("template_amount").notNull(),
+  templateAdminFee: real("template_admin_fee").notNull().default(0.0),
+  templateType: text("template_type").notNull().default("expense"), // "expense" | "income" | "transfer"
+  templateFrequency: text("template_frequency").notNull().default("monthly"), // "daily" | "weekly" | "monthly" | "yearly"
+  templateInterval: integer("template_interval").notNull().default(1),
+  templateStartDate: text("template_start_date").notNull(), // YYYY-MM-DD
+  templateNextRunDate: text("template_next_run_date").notNull(), // YYYY-MM-DD
+  templateEndDate: text("template_end_date"), // YYYY-MM-DD nullable
+  templateIsActive: integer("template_is_active").notNull().default(1), // 1 or 0
+  templateNotes: text("template_notes"),
+  templateCreatedAt: text("template_created_at")
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  index("recurring_templates_user_active_idx").on(table.templateUserId, table.templateIsActive),
+  index("recurring_templates_next_run_idx").on(table.templateUserId, table.templateNextRunDate),
+  index("recurring_templates_wallet_id_idx").on(table.templateWalletId),
+]);

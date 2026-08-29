@@ -15,6 +15,34 @@
       "when": 1786886841749,
       "tag": "0001_low_stingray",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1786890000000,
+      "tag": "0002_table_prefixed_schema_and_tz",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1786895000000,
+      "tag": "0003_add_debts_loans",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1786900000000,
+      "tag": "0004_add_feedbacks_table",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1786905000000,
+      "tag": "0005_add_goals_and_recurring_templates",
+      "breakpoints": true
     }
   ]
 }

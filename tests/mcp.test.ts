@@ -103,7 +103,12 @@ class MockD1PreparedStatement {
 function createTestDB() {
   const sqlite = new DatabaseSync(':memory:');
   sqlite.exec('PRAGMA foreign_keys = ON;');
-  const migrationFiles = ['0002_table_prefixed_schema_and_tz.sql', '0003_add_debts_loans.sql', '0004_add_feedbacks_table.sql'];
+  const migrationFiles = [
+    '0002_table_prefixed_schema_and_tz.sql',
+    '0003_add_debts_loans.sql',
+    '0004_add_feedbacks_table.sql',
+    '0005_add_goals_and_recurring_templates.sql',
+  ];
   for (const file of migrationFiles) {
     const ddlPath = join(__dirname, `../drizzle/${file}`);
     const ddl = readFileSync(ddlPath, 'utf-8');
@@ -1482,6 +1487,331 @@ describe('Eve Finance MCP Server — Complete Test Suite', () => {
     await assert.rejects(async () => {
       await callTool(authServer, 'manage_category', { action: 'unknown_action' });
     }, /Valid actions: list, create, seed_defaults/i);
+  });
+
+  it('15. Financial Goals Management & Dynamic Pacing Calculations', async () => {
+    const { db } = createTestDB();
+    const publicServer = createMCPServer(db, null, TEST_JWT_SECRET);
+
+    const reg = JSON.parse((await callTool(publicServer, 'register_user', {
+      firstName: 'Goal',
+      lastName: 'Tester',
+      email: 'goal@example.com',
+      whatsappNumber: '+6289998887771',
+    })).content[0].text);
+
+    const userServer = createMCPServer(db, reg.userId, TEST_JWT_SECRET);
+
+    // Create Wallet
+    const wallet = JSON.parse((await callTool(userServer, 'manage_wallet', {
+      action: 'create',
+      name: 'Goal Savings Pocket',
+      institution: 'Bank Jago',
+      balance: 10000000,
+      currency: 'IDR',
+    })).content[0].text);
+
+    // Create Goal (Emergency Fund: 50,000,000 IDR)
+    const createdGoalRes = await callTool(userServer, 'manage_goal', {
+      action: 'create',
+      name: 'Emergency Fund',
+      targetAmount: 50000000,
+      currentAmount: 10000000,
+      currency: 'IDR',
+      targetDate: '2026-12-31',
+      walletId: wallet.walletId,
+      notes: '6 months living expenses',
+    });
+    const createdGoal = JSON.parse(createdGoalRes.content[0].text);
+    assert.equal(createdGoal.goalName, 'Emergency Fund');
+    assert.equal(createdGoal.goalTargetAmount, 50000000);
+    assert.equal(createdGoal.goalCurrentAmount, 10000000);
+    assert.equal(createdGoal.goalStatus, 'in_progress');
+    assert.ok(createdGoal.pacing);
+    assert.equal(createdGoal.pacing.progressPercentage, 20);
+    assert.equal(createdGoal.pacing.remainingAmount, 40000000);
+    assert.ok(createdGoal.pacing.daysRemaining > 0);
+
+    // List Goals
+    const listRes = await callTool(userServer, 'manage_goal', { action: 'list' });
+    const listGoals = JSON.parse(listRes.content[0].text);
+    assert.equal(listGoals.length, 1);
+    assert.equal(listGoals[0].goalId, createdGoal.goalId);
+
+    // Contribute to Goal (adjustWalletBalance: true)
+    const contributeRes = await callTool(userServer, 'manage_goal', {
+      action: 'contribute',
+      goalId: createdGoal.goalId,
+      amount: 5000000,
+      adjustWalletBalance: true,
+    });
+    const updatedGoal = JSON.parse(contributeRes.content[0].text);
+    assert.equal(updatedGoal.goalCurrentAmount, 15000000);
+    assert.equal(updatedGoal.pacing.progressPercentage, 30);
+    assert.equal(updatedGoal.pacing.remainingAmount, 35000000);
+
+    // Verify wallet balance was debited (10M - 5M = 5M)
+    const wallets = await db.select().from(schema.wallets).where(eq(schema.wallets.walletId, wallet.walletId));
+    assert.equal(wallets[0].walletBalance, 5000000);
+
+    // Update Goal Status
+    const updateRes = await callTool(userServer, 'manage_goal', {
+      action: 'update',
+      goalId: createdGoal.goalId,
+      notes: 'Updated note for emergency fund',
+    });
+    const updatedGoalRecord = JSON.parse(updateRes.content[0].text);
+    assert.equal(updatedGoalRecord.goalNotes, 'Updated note for emergency fund');
+
+    // RLS check with another user
+    const otherUser = JSON.parse((await callTool(publicServer, 'register_user', {
+      firstName: 'Other',
+      lastName: 'User',
+      email: 'other_goal@example.com',
+      whatsappNumber: '+6289998887772',
+    })).content[0].text);
+    const otherServer = createMCPServer(db, otherUser.userId, TEST_JWT_SECRET);
+
+    await assert.rejects(async () => {
+      await callTool(otherServer, 'manage_goal', {
+        action: 'contribute',
+        goalId: createdGoal.goalId,
+        amount: 1000000,
+      });
+    }, /not found or unauthorized/i);
+
+    // Delete Goal
+    const deleteRes = await callTool(userServer, 'manage_goal', {
+      action: 'delete',
+      goalId: createdGoal.goalId,
+    });
+    assert.equal(JSON.parse(deleteRes.content[0].text).message, 'Goal deleted successfully');
+  });
+
+  it('16. FX Rate Engine & Multi-Currency Consolidated Net Worth', async () => {
+    const { db } = createTestDB();
+    const publicServer = createMCPServer(db, null, TEST_JWT_SECRET);
+
+    const reg = JSON.parse((await callTool(publicServer, 'register_user', {
+      firstName: 'Multi',
+      lastName: 'Currency',
+      email: 'fx@example.com',
+      whatsappNumber: '+6289998887773',
+    })).content[0].text);
+
+    // Pass mock fetch that fails / falls back to test fallback rates deterministically
+    const mockFailingFetch = (async () => {
+      throw new Error('Network error');
+    }) as unknown as typeof fetch;
+    const userServer = createMCPServer(db, reg.userId, TEST_JWT_SECRET, { fetchFn: mockFailingFetch });
+    // Create IDR and USD Wallets
+    await callTool(userServer, 'manage_wallet', {
+      action: 'create',
+      name: 'IDR Bank BCA',
+      institution: 'BCA',
+      balance: 16350000, // 16.35M IDR = exactly 1,000 USD at fallback rate 16350
+      currency: 'IDR',
+    });
+
+    await callTool(userServer, 'manage_wallet', {
+      action: 'create',
+      name: 'USD Wise Account',
+      institution: 'Wise',
+      balance: 1000, // 1,000 USD
+      currency: 'USD',
+    });
+
+    // Summary with auto base currency (defaults to IDR or USD depending on wallet frequency)
+    const summaryIdr = JSON.parse((await callTool(userServer, 'financial_summary', {
+      baseCurrency: 'IDR',
+    })).content[0].text);
+
+    assert.equal(summaryIdr.netWorthByCurrency.IDR, 16350000);
+    assert.equal(summaryIdr.netWorthByCurrency.USD, 1000);
+    assert.ok(summaryIdr.consolidatedNetWorth);
+    assert.equal(summaryIdr.consolidatedNetWorth.baseCurrency, 'IDR');
+    // 16.35M IDR + (1000 USD * 16350) = 32,700,000 IDR
+    assert.equal(summaryIdr.consolidatedNetWorth.estimatedTotal, 32700000);
+    assert.equal(summaryIdr.consolidatedNetWorth.isEstimated, true);
+
+    // Summary converted to USD base currency
+    const summaryUsd = JSON.parse((await callTool(userServer, 'financial_summary', {
+      baseCurrency: 'USD',
+    })).content[0].text);
+    assert.equal(summaryUsd.consolidatedNetWorth.baseCurrency, 'USD');
+    // 1000 USD + (16,350,000 IDR / 16350) = 2,000 USD
+    assert.equal(summaryUsd.consolidatedNetWorth.estimatedTotal, 2000);
+  });
+
+  it('17. Recurring Transaction Templates, Atomic Apply, and 30-Day Projections', async () => {
+    const { db } = createTestDB();
+    const publicServer = createMCPServer(db, null, TEST_JWT_SECRET);
+
+    const reg = JSON.parse((await callTool(publicServer, 'register_user', {
+      firstName: 'Recur',
+      lastName: 'User',
+      email: 'recur@example.com',
+      whatsappNumber: '+6289998887774',
+    })).content[0].text);
+
+    const userServer = createMCPServer(db, reg.userId, TEST_JWT_SECRET);
+
+    const wallet = JSON.parse((await callTool(userServer, 'manage_wallet', {
+      action: 'create',
+      name: 'Main Checking',
+      institution: 'Mandiri',
+      balance: 10000000,
+      currency: 'IDR',
+    })).content[0].text);
+
+    // Create Monthly Recurring Expense Template (Netflix: 186,000 IDR, monthly on 1st)
+    const templateRes = await callTool(userServer, 'manage_recurring_template', {
+      action: 'create',
+      name: 'Netflix Subscription',
+      walletId: wallet.walletId,
+      amount: 186000,
+      adminFee: 2500,
+      type: 'expense',
+      frequency: 'monthly',
+      interval: 1,
+      startDate: '2026-09-01',
+      nextRunDate: '2026-09-01',
+    });
+    const template = JSON.parse(templateRes.content[0].text);
+    assert.equal(template.templateName, 'Netflix Subscription');
+    assert.equal(template.templateAmount, 186000);
+    assert.equal(template.templateAdminFee, 2500);
+    assert.equal(template.templateNextRunDate, '2026-09-01');
+
+    // Create Monthly Recurring Income Template (Salary: 15,000,000 IDR, monthly on 25th)
+    await callTool(userServer, 'manage_recurring_template', {
+      action: 'create',
+      name: 'Monthly Salary',
+      walletId: wallet.walletId,
+      amount: 15000000,
+      adminFee: 0,
+      type: 'income',
+      frequency: 'monthly',
+      interval: 1,
+      startDate: '2026-09-25',
+      nextRunDate: '2026-09-25',
+    });
+
+    // Check Cashflow Projections via financial_summary
+    const summary = JSON.parse((await callTool(userServer, 'financial_summary', {})).content[0].text);
+    assert.ok(summary.cashflowProjections);
+    assert.equal(summary.cashflowProjections.projectedIncome, 15000000);
+    assert.equal(summary.cashflowProjections.projectedExpense, 186000);
+    assert.equal(summary.cashflowProjections.projectedAdminFees, 2500);
+    assert.equal(summary.cashflowProjections.projectedNetChange, 14811500);
+    assert.equal(summary.cashflowProjections.events.length, 2);
+
+    // Apply Recurring Template (One-Click Execute)
+    const applyRes = await callTool(userServer, 'apply_recurring_template', {
+      templateId: template.templateId,
+    });
+    const applyData = JSON.parse(applyRes.content[0].text);
+    assert.equal(applyData.message, 'Recurring template successfully applied');
+    assert.equal(applyData.transaction.transactionAmount, 186000);
+    assert.equal(applyData.transaction.transactionAdminFee, 2500);
+    assert.equal(applyData.template.templateNextRunDate, '2026-10-01');
+
+    // Verify wallet balance debited atomically (10M - 186K - 2.5K = 9,811,500)
+    const updatedWallet = await db.select().from(schema.wallets).where(eq(schema.wallets.walletId, wallet.walletId));
+    assert.equal(updatedWallet[0].walletBalance, 9811500);
+  });
+
+  it('18. REST API Endpoints: /api/v1/summary, /api/v1/goals, /api/v1/recurring-templates', async () => {
+    const { d1 } = createTestDB();
+    const env = { DB: d1 as unknown as D1Database, JWT_SECRET: TEST_JWT_SECRET };
+
+    const userId = 'usr_rest_api_test';
+    const token = await generateUserToken({ userId }, TEST_JWT_SECRET);
+
+    // Create user and wallet in DB
+    const db = drizzle(d1, { schema });
+    await db.insert(schema.users).values({
+      userId,
+      userFirstName: 'REST',
+      userLastName: 'Client',
+      userEmail: 'rest@example.com',
+      userWhatsappNumber: '+6281112223339',
+      userApiKeyHash: 'hash_rest_test',
+    });
+    const w = await db.insert(schema.wallets).values({
+      walletUserId: userId,
+      walletName: 'REST Bank',
+      walletBalance: 5000000,
+      walletCurrency: 'IDR',
+    }).returning();
+
+    // 1. POST /api/v1/goals
+    const createGoalRes = await app.request('https://example.workers.dev/api/v1/goals', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        name: 'House Down Payment',
+        targetAmount: 100000000,
+        currentAmount: 20000000,
+        currency: 'IDR',
+        targetDate: '2027-12-31',
+      }),
+    }, env);
+    assert.equal(createGoalRes.status, 201);
+    const goalBody: any = await createGoalRes.json();
+    assert.equal(goalBody.goalName, 'House Down Payment');
+    assert.equal(goalBody.pacing.progressPercentage, 20);
+
+    // 2. GET /api/v1/goals
+    const getGoalsRes = await app.request('https://example.workers.dev/api/v1/goals', {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal(getGoalsRes.status, 200);
+    const goalsList: any = await getGoalsRes.json();
+    assert.equal(goalsList.length, 1);
+
+    // 3. POST /api/v1/recurring-templates
+    const createTplRes = await app.request('https://example.workers.dev/api/v1/recurring-templates', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        name: 'Gym Membership',
+        walletId: w[0].walletId,
+        amount: 350000,
+        type: 'expense',
+        frequency: 'monthly',
+        interval: 1,
+        startDate: '2026-09-05',
+      }),
+    }, env);
+    assert.equal(createTplRes.status, 201);
+    const tplBody: any = await createTplRes.json();
+    assert.equal(tplBody.templateName, 'Gym Membership');
+
+    // 4. POST /api/v1/recurring-templates/{templateId}/apply
+    const applyTplRes = await app.request(`https://example.workers.dev/api/v1/recurring-templates/${tplBody.templateId}/apply`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal(applyTplRes.status, 200);
+    const applyBody: any = await applyTplRes.json();
+    assert.equal(applyBody.template.templateNextRunDate, '2026-10-05');
+
+    // 5. GET /api/v1/summary
+    const summaryRes = await app.request('https://example.workers.dev/api/v1/summary?baseCurrency=IDR', {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal(summaryRes.status, 200);
+    const summaryBody: any = await summaryRes.json();
+    assert.ok(summaryBody.consolidatedNetWorth);
+    assert.equal(summaryBody.activeGoals.length, 1);
+    assert.ok(summaryBody.cashflowProjections);
   });
 });
 describe('Stateless OAuth Perplexity Engine — Discovery, DCR, PKCE, Token, Gate', () => {
