@@ -52,6 +52,8 @@ export async function financialSummary(
   const netWorthByCurrency: Record<string, number> = {};
   const netWorthByInstitution: Record<string, number> = {};
   const currencyCounts: Record<string, number> = {};
+  const spendableByCurrency: Record<string, number> = {};
+  const lockedByCurrency: Record<string, number> = {};
 
   for (const w of walletsData) {
     const curr = (w.walletCurrency || "IDR").toUpperCase();
@@ -64,6 +66,17 @@ export async function financialSummary(
       ).toFixed(2)
     );
     currencyCounts[curr] = (currencyCounts[curr] || 0) + 1;
+
+    const isLocked = Number(w.walletIsLocked) === 1;
+    if (isLocked) {
+      lockedByCurrency[w.walletCurrency] = Number(
+        ((lockedByCurrency[w.walletCurrency] || 0) + w.walletBalance).toFixed(2)
+      );
+    } else {
+      spendableByCurrency[w.walletCurrency] = Number(
+        ((spendableByCurrency[w.walletCurrency] || 0) + w.walletBalance).toFixed(2)
+      );
+    }
   }
 
   // Base currency resolution: explicit override or auto-detection from wallet frequency / default IDR
@@ -101,13 +114,44 @@ export async function financialSummary(
     consolidatedEstimatedTotal += converted;
   }
 
+  let consolidatedSpendableTotal = 0;
+  for (const [curr, balance] of Object.entries(spendableByCurrency)) {
+    consolidatedSpendableTotal += convertCurrency(
+      balance,
+      curr,
+      resolvedBaseCurrency,
+      fxRates.rates
+    );
+  }
+
+  let consolidatedLockedTotal = 0;
+  for (const [curr, balance] of Object.entries(lockedByCurrency)) {
+    consolidatedLockedTotal += convertCurrency(
+      balance,
+      curr,
+      resolvedBaseCurrency,
+      fxRates.rates
+    );
+  }
+
+  const spendableCash = {
+    byCurrency: spendableByCurrency,
+    estimatedTotal: Number(consolidatedSpendableTotal.toFixed(2)),
+    currency: resolvedBaseCurrency,
+  };
+
+  const lockedCash = {
+    byCurrency: lockedByCurrency,
+    estimatedTotal: Number(consolidatedLockedTotal.toFixed(2)),
+    currency: resolvedBaseCurrency,
+  };
+
   const consolidatedNetWorth = {
     baseCurrency: resolvedBaseCurrency,
     estimatedTotal: Number(consolidatedEstimatedTotal.toFixed(2)),
     isEstimated,
     exchangeRatesSource: fxRates.source,
   };
-
   // 2. Query non-planned transactions
   const conditions = [
     eq(schema.transactions.transactionUserId, userId),
@@ -263,11 +307,73 @@ export async function financialSummary(
     })),
     30
   );
+  // 7. Query planned expenses for Safe-to-Spend deduction
+  const plannedConditions = [
+    eq(schema.transactions.transactionUserId, userId),
+    eq(schema.transactions.transactionIsPlanned, 1),
+    eq(schema.transactions.transactionType, "expense"),
+  ];
+  if (typeof startDate === "string") {
+    plannedConditions.push(
+      gte(
+        schema.transactions.transactionDate,
+        normalizeToIsoTimestamp(startDate)
+      )
+    );
+  }
+  if (typeof endDate === "string") {
+    const cleanEndDate = /^\d{4}-\d{2}-\d{2}$/.test(endDate.trim())
+      ? `${endDate.trim()}T23:59:59.999Z`
+      : normalizeToIsoTimestamp(endDate);
+    plannedConditions.push(lte(schema.transactions.transactionDate, cleanEndDate));
+  }
+  const plannedTxs = await db
+    .select()
+    .from(schema.transactions)
+    .where(and(...plannedConditions));
+
+  let plannedExpensesTotal = 0;
+  for (const pTx of plannedTxs) {
+    plannedExpensesTotal += pTx.transactionAmount + (pTx.transactionAdminFee || 0);
+  }
+
+  const recurringExpensesTotal = cashflowProjections?.projectedExpense || 0;
+
+  // Compute remaining days in the period (or rest of the month)
+  let remainingDays = 1;
+  const now = new Date();
+  if (typeof endDate === "string" && isValidIsoDateOrTimestamp(endDate)) {
+    const end = new Date(endDate);
+    const diffMs = end.getTime() - now.getTime();
+    remainingDays = Math.max(1, Math.ceil(diffMs / (1000 * 60 * 60 * 24)));
+  } else {
+    const endOfMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0, 23, 59, 59));
+    const diffMs = endOfMonth.getTime() - now.getTime();
+    remainingDays = Math.max(1, Math.ceil(diffMs / (1000 * 60 * 60 * 24)));
+  }
+
+  const safeToSpend = Number(
+    (consolidatedSpendableTotal - (plannedExpensesTotal + recurringExpensesTotal + totalDebt)).toFixed(2)
+  );
+  const dailySafeToSpend = Number((safeToSpend / remainingDays).toFixed(2));
+  const safeToSpendDetails = {
+    remainingDays,
+    plannedExpensesDeducted: Number(plannedExpensesTotal.toFixed(2)),
+    recurringExpensesDeducted: Number(recurringExpensesTotal.toFixed(2)),
+    activeDebtDeducted: Number(totalDebt.toFixed(2)),
+    isDeficit: safeToSpend < 0,
+  };
+
 
   const summary: Record<string, unknown> = {
     netWorthByCurrency,
     netWorthByInstitution,
     consolidatedNetWorth,
+    spendableCash,
+    lockedCash,
+    safeToSpend,
+    dailySafeToSpend,
+    safeToSpendDetails,
     totalIncome: Number(totalIncome.toFixed(2)),
     totalExpense: Number(totalExpense.toFixed(2)),
     totalAdminFees: Number(totalAdminFees.toFixed(2)),

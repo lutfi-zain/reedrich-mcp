@@ -98,6 +98,14 @@ context: |
   - npm run test:local: Run integration tests against local dev server
   - npm run test:remote: Run integration tests against deployed remote worker
 
+  # COLLABORATIVE SPEC-DRIVEN REVIEW WORKFLOW
+  - Mandatory Workflow Sequence:
+    1. Explore (openspec-explore): Deeply explore problem space, investigate codebase, compare technical trade-offs without writing code.
+    2. Propose (openspec-propose): Run 'openspec new change "<name>"' and generate all planning artifacts (proposal.md, specs/, design.md, tasks.md).
+    3. Artifact Review via PR: Create a new git branch, push change artifacts, and open a Pull Request to 'main'. The user reviews the PR and gives comments on the artifacts before any implementation begins.
+    4. Apply (openspec-apply-change): Implement code only after user reviews and approves the PR and planning artifacts.
+    5. Archive (openspec-archive-change): Run verification, ensure zero regressions, merge PR, and archive the change.
+
 rules:
   proposal:
     - 'Clearly state the problem, motivation, and target user/client scenario in the "Why" section.'
@@ -138,6 +146,9 @@ rules:
 operations:
   apply:
     guidance:
+      - 'MANDATORY WORKFLOW: explore -> propose -> created artifacts -> create PR -> user reviews the PR and gives comments on the artifacts before implementation.'
+      - 'After generating all planning artifacts (proposal.md, specs/, design.md, tasks.md) and verifying with "openspec validate <change>", create a dedicated git branch, commit artifacts, push, and open a Pull Request to main.'
+      - 'Do NOT proceed to implementation or apply phase until the user reviews the PR and comments on the artifacts.'
       - 'CRITICAL - REMOTE DATA IMMUTABILITY: NEVER delete, truncate, or drop data in the remote Cloudflare D1 database (wrangler d1 --remote) during navigation, testing, debugging, or applying changes. Remote production data must remain completely intact.'
       - 'Read all completed change artifacts (proposal.md, specs/, design.md, tasks.md) before writing code.'
       - 'Never bypass Multi-Tenant Row Level Security (RLS): always filter database queries by the authenticated userId.'

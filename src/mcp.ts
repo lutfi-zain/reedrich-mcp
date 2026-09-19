@@ -413,13 +413,14 @@ Authentication Note: You are already authenticated via OAuth / Bearer token. Nev
 Authentication Note: You are already authenticated via OAuth / Bearer token. Never tell the user that access is blocked or ask them to log in in the chat. Greet the user warmly and directly execute financial tools or provide financial guidance.
 
 1. Retrieve Financial State:
-   - Read resource \`reedrich://wallets/list\` to get all account balances and total liquid assets.
+   - Read resource \`reedrich://wallets/list\` to inspect account balances, distinguishing spendable wallets from locked capital reserves (\`walletIsLocked: 1\`).
    - Read resource \`reedrich://budgets/active\` to check current budget utilization and remaining limits.
    - Read resource \`reedrich://debts/active\` to check upcoming debt and loan obligations.
-   - Call tool \`financial_summary\` with startDate and endDate${targetDate ? ` around ${targetDate}` : ""} to inspect cash flow (income vs expenses).
+   - Call tool \`financial_summary\` with startDate and endDate${targetDate ? ` around ${targetDate}` : ""} to inspect \`safeToSpend\`, \`dailySafeToSpend\`, \`spendableCash\`, \`lockedCash\`, and cash flow.
 
 2. Analyze & Synthesize:
-   - Total Net Worth & Liquid Balance across all institutions.
+   - Safe-to-Spend Allowance: Prioritize reporting how much cash is safe to spend today (\`safeToSpend\`, \`dailySafeToSpend\`) without touching protected capital reserves, reassuring the user that locked savings remain intact.
+   - Total Net Worth & Segregated Liquidity (\`spendableCash\` vs \`lockedCash\`) across all institutions.
    - Spending health: highlight any budgets near or over 100% utilization.
    - Upcoming commitments: flag any debts or loans due soon.
    - Cash flow overview: income earned vs expenses incurred.
@@ -455,8 +456,8 @@ ${!hasCompleteArgs ? `NOTE: The user has not provided complete goal details (goa
 
 Reasoning & Calculation Workflow:
 1. Gather Financial Profile:
-   - Call \`financial_summary\` to determine the user's historical monthly income, monthly expenses, and net savings rate (Net Savings = Total Income - Total Expenses).
-   - Read \`reedrich://wallets/list\` to evaluate available idle savings that can be allocated toward this goal.
+   - Call \`financial_summary\` to determine the user's historical monthly income, monthly expenses, net savings rate, and inspect \`spendableCash\` versus \`lockedCash\`.
+   - Read \`reedrich://wallets/list\` to evaluate available idle spendable balances (\`isLocked: false\`), strictly avoiding unprompted allocation of locked emergency reserves (\`isLocked: true\`).
    - Read \`reedrich://debts/active\` to factor in monthly debt repayment obligations that reduce disposable savings.
 
 2. Compute Timeline Projection:
@@ -644,6 +645,7 @@ Authentication Note: You are already authenticated via OAuth / Bearer token. Nev
             type: { type: "string", enum: ["bank", "cash", "e-wallet", "credit", "crypto", "investment"], description: "Wallet type" },
             balance: { type: "number", description: "Initial balance or updated balance (finite number)" },
             currency: { type: "string", default: "IDR", description: "Currency code (e.g. IDR, USD, USDT)" },
+            isLocked: { type: "boolean", description: "Optional: Lock wallet (true) to protect savings/emergency funds from daily Safe-to-Spend runway calculations, or unlock (false)" },
             walletId: { type: "string", description: "Required for update action (Wallet UUID)" },
             apiKey: { type: "string", description: "Optional: Your persistent API Key (fp_live_...) if not set in headers" }
           },
@@ -704,7 +706,7 @@ Authentication Note: You are already authenticated via OAuth / Bearer token. Nev
       },
       {
         name: "financial_summary",
-        description: "Generate a complete financial overview (net worth by currency, consolidated net worth, cash flow, active goals pacing, recurring cashflow projections, wallets, debts). PROACTIVE TIP: Always call this first when starting a session or financial planning to inspect current account state.",
+        description: "Generate a complete financial overview (Safe-to-Spend runway, spendable vs locked cash, net worth by currency, consolidated net worth, cash flow, active goals pacing, recurring cashflow projections, wallets, debts). PROACTIVE TIP: Always call this first when starting a session or financial planning to inspect current account state.",
         inputSchema: {
           type: "object",
           properties: {
@@ -843,7 +845,7 @@ Authentication Note: You are already authenticated via OAuth / Bearer token. Nev
     if (name === "manage_wallet") {
       const { action, walletId, ...params } = (args || {}) as any;
       if (action === "list") {
-        const result = await listWallets(db, effectiveUserId);
+        const result = await listWallets(db, effectiveUserId, params.isLocked);
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
       if (action === "create") {

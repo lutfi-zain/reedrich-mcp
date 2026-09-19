@@ -26,12 +26,16 @@ export const wallets = sqliteTable("wallets", {
   walletType: text("wallet_type").notNull().default("bank"),
   walletBalance: real("wallet_balance").notNull().default(0.0),
   walletCurrency: text("wallet_currency").notNull().default("IDR"),
+  walletIsLocked: integer("wallet_is_locked")
+    .notNull()
+    .default(0),
   walletCreatedAt: text("wallet_created_at")
     .notNull()
     .default(sql`CURRENT_TIMESTAMP`),
 }, (table) => [
   index("wallets_user_id_idx").on(table.walletUserId),
   index("wallets_institution_idx").on(table.walletInstitution),
+  index("wallets_user_locked_idx").on(table.walletUserId, table.walletIsLocked),
 ]);
 
 export const categories = sqliteTable("categories", {

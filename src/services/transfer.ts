@@ -229,6 +229,13 @@ export async function transferFunds(
       1
     );
   }
+  let notice: string | undefined;
+  if (Number(sourceWallet.walletIsLocked) === 1) {
+    notice = `Notice: Outward transfer from locked wallet '${cleanSourceWalletId}'. Protected capital reserve reduced.`;
+  }
 
-  return tx[0];
+  return {
+    ...tx[0],
+    ...(notice ? { notice } : {}),
+  };
 }
