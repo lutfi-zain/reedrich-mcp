@@ -110,6 +110,12 @@ export function generateOpenApiSpec(origin: string): Record<string, unknown> {
             },
             walletBalance: { type: "number", example: 12500000.5 },
             walletCurrency: { type: "string", example: "IDR" },
+            walletIsLocked: {
+              type: "integer",
+              enum: [0, 1],
+              example: 0,
+              description: "Whether the wallet is locked (1) for protected savings/emergency reserves or spendable (0)",
+            },
             walletCreatedAt: { type: "string", format: "date-time" },
           },
           required: ["walletId", "walletName", "walletBalance", "walletCurrency"],
@@ -285,6 +291,44 @@ export function generateOpenApiSpec(origin: string): Record<string, unknown> {
               },
               required: ["baseCurrency", "estimatedTotal"],
             },
+            spendableCash: {
+              type: "object",
+              properties: {
+                byCurrency: { type: "object", additionalProperties: { type: "number" } },
+                estimatedTotal: { type: "number", example: 10000000 },
+                currency: { type: "string", example: "IDR" },
+              },
+              required: ["byCurrency", "estimatedTotal", "currency"],
+            },
+            lockedCash: {
+              type: "object",
+              properties: {
+                byCurrency: { type: "object", additionalProperties: { type: "number" } },
+                estimatedTotal: { type: "number", example: 15400000 },
+                currency: { type: "string", example: "IDR" },
+              },
+              required: ["byCurrency", "estimatedTotal", "currency"],
+            },
+            safeToSpend: {
+              type: "number",
+              example: 4500000,
+              description: "Spendable cash remaining after deducting upcoming planned expenses, 30-day recurring bills, and active debts",
+            },
+            dailySafeToSpend: {
+              type: "number",
+              example: 375000,
+              description: "Daily safe-to-spend allowance for the remaining days in the active period",
+            },
+            safeToSpendDetails: {
+              type: "object",
+              properties: {
+                remainingDays: { type: "integer", example: 12 },
+                plannedExpensesDeducted: { type: "number", example: 1500000 },
+                recurringExpensesDeducted: { type: "number", example: 2000000 },
+                activeDebtDeducted: { type: "number", example: 2000000 },
+                isDeficit: { type: "boolean", example: false },
+              },
+            },
             totalIncome: { type: "number" },
             totalExpense: { type: "number" },
             totalAdminFees: { type: "number" },
@@ -345,9 +389,9 @@ export function generateOpenApiSpec(origin: string): Record<string, unknown> {
       "/api/v1/summary": {
         get: {
           tags: ["Analytics & Reporting"],
-          summary: "Get Consolidated Financial Summary",
+          summary: "Get Consolidated Financial Summary with Safe-to-Spend Runway",
           description:
-            "Returns multi-currency net worth, total income, expenses, admin fees, debt totals, active goal pacing, and 30-day cashflow projections.",
+            "Returns multi-currency net worth, spendable vs locked cash, deterministic safe-to-spend runway, total income, expenses, debt totals, active goal pacing, and 30-day cashflow projections.",
           operationId: "getFinancialSummary",
           security: [{ bearerAuth: [] }, { apiKeyHeader: [] }],
           parameters: [

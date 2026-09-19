@@ -144,13 +144,11 @@ rules:
     - 'Verify all testing and execution tasks are isolated to local test environments and strictly forbid destructive queries on remote Cloudflare D1 databases.'
 
 operations:
-  review:
+  apply:
     guidance:
       - 'MANDATORY WORKFLOW: explore -> propose -> created artifacts -> create PR -> user reviews the PR and gives comments on the artifacts before implementation.'
       - 'After generating all planning artifacts (proposal.md, specs/, design.md, tasks.md) and verifying with "openspec validate <change>", create a dedicated git branch, commit artifacts, push, and open a Pull Request to main.'
       - 'Do NOT proceed to implementation or apply phase until the user reviews the PR and comments on the artifacts.'
-  apply:
-    guidance:
       - 'CRITICAL - REMOTE DATA IMMUTABILITY: NEVER delete, truncate, or drop data in the remote Cloudflare D1 database (wrangler d1 --remote) during navigation, testing, debugging, or applying changes. Remote production data must remain completely intact.'
       - 'Read all completed change artifacts (proposal.md, specs/, design.md, tasks.md) before writing code.'
       - 'Never bypass Multi-Tenant Row Level Security (RLS): always filter database queries by the authenticated userId.'

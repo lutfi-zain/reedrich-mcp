@@ -108,6 +108,7 @@ function createTestDB() {
     '0003_add_debts_loans.sql',
     '0004_add_feedbacks_table.sql',
     '0005_add_goals_and_recurring_templates.sql',
+    '0006_add_wallet_lock.sql',
   ];
   for (const file of migrationFiles) {
     const ddlPath = join(__dirname, `../drizzle/${file}`);
@@ -3209,5 +3210,212 @@ describe('Stateless OAuth Perplexity Engine — Discovery, DCR, PKCE, Token, Gat
       body: JSON.stringify({ token: refresh }),
     }, spyEnv);
     assert.equal(spy.getCounts().writes, 0);
+  });
+});
+
+describe('Wallet Lock & Safe-to-Spend Runway Engine', () => {
+  it('4.1 Wallet lock state management via manage_wallet (create, update, validate)', async () => {
+    const { db } = createTestDB();
+    const publicServer = createMCPServer(db, null, TEST_JWT_SECRET);
+    const regRes = await callTool(publicServer, 'register_user', {
+      firstName: 'Lock',
+      lastName: 'Tester',
+      email: 'locktester@example.com',
+      whatsappNumber: '+628999999999',
+    });
+    const { userId } = JSON.parse(regRes.content[0].text);
+    const authServer = createMCPServer(db, userId, TEST_JWT_SECRET);
+
+    // Create unlocked wallet (default isLocked = false / 0)
+    const wSpendable = JSON.parse((await callTool(authServer, 'manage_wallet', {
+      action: 'create',
+      name: 'Mandiri Checking',
+      institution: 'Mandiri',
+      balance: 10000000,
+    })).content[0].text);
+    assert.equal(wSpendable.walletIsLocked, 0, 'default walletIsLocked must be 0');
+
+    // Create locked wallet (isLocked = true / 1)
+    const wLocked = JSON.parse((await callTool(authServer, 'manage_wallet', {
+      action: 'create',
+      name: 'BCA Deposito',
+      institution: 'BCA',
+      balance: 25000000,
+      isLocked: true,
+    })).content[0].text);
+    assert.equal(wLocked.walletIsLocked, 1, 'explicit isLocked true must set walletIsLocked to 1');
+
+    // Update wallet: toggle lock state from 0 to 1
+    const wSpendableUpdated = JSON.parse((await callTool(authServer, 'manage_wallet', {
+      action: 'update',
+      walletId: wSpendable.walletId,
+      isLocked: true,
+    })).content[0].text);
+    assert.equal(wSpendableUpdated.walletIsLocked, 1, 'updating isLocked to true must set walletIsLocked to 1');
+
+    // Toggle back to unlocked
+    const wUnlockedAgain = JSON.parse((await callTool(authServer, 'manage_wallet', {
+      action: 'update',
+      walletId: wSpendable.walletId,
+      isLocked: false,
+    })).content[0].text);
+    assert.equal(wUnlockedAgain.walletIsLocked, 0, 'updating isLocked to false must set walletIsLocked to 0');
+
+    // Verify invalid isLocked validation rejection
+    await assert.rejects(async () => {
+      await callTool(authServer, 'manage_wallet', {
+        action: 'create',
+        name: 'Invalid Lock Wallet',
+        isLocked: 'yes',
+      });
+    }, /'isLocked' must be a boolean/i);
+
+    // Verify resource reedrich://wallets/list exposes walletIsLocked
+    const resourceRes = await readResource(authServer, 'reedrich://wallets/list');
+    const resourceWallets = JSON.parse(resourceRes.contents[0].text);
+    assert.equal(resourceWallets.length, 2);
+    const lockedFound = resourceWallets.find((w: { walletId?: string; walletIsLocked?: number }) => w.walletId === wLocked.walletId);
+    assert.equal(lockedFound?.walletIsLocked, 1);
+  });
+
+  it('4.2 Liquidity partitioning and Safe-to-Spend calculation', async () => {
+    const { db } = createTestDB();
+    const publicServer = createMCPServer(db, null, TEST_JWT_SECRET);
+    const regRes = await callTool(publicServer, 'register_user', {
+      firstName: 'Safe',
+      lastName: 'Spender',
+      email: 'safespender@example.com',
+      whatsappNumber: '+628888888888',
+    });
+    const { userId } = JSON.parse(regRes.content[0].text);
+    const authServer = createMCPServer(db, userId, TEST_JWT_SECRET);
+
+    // Create 1 spendable wallet: 10,000,000 IDR
+    const wSpendable = JSON.parse((await callTool(authServer, 'manage_wallet', {
+      action: 'create',
+      name: 'Spendable BCA',
+      balance: 10000000,
+      isLocked: false,
+    })).content[0].text);
+
+    // Create 1 locked wallet: 40,000,000 IDR
+    const wLocked = JSON.parse((await callTool(authServer, 'manage_wallet', {
+      action: 'create',
+      name: 'Locked Deposito',
+      balance: 40000000,
+      isLocked: true,
+    })).content[0].text);
+
+    // Initial summary without obligations
+    const summary1 = JSON.parse((await callTool(authServer, 'financial_summary', {})).content[0].text);
+    assert.equal(summary1.consolidatedNetWorth.estimatedTotal, 50000000, 'net worth should be 50M');
+    assert.equal(summary1.spendableCash.estimatedTotal, 10000000, 'spendable cash should be 10M');
+    assert.equal(summary1.lockedCash.estimatedTotal, 40000000, 'locked cash should be 40M');
+    assert.equal(summary1.safeToSpend, 10000000, 'safeToSpend with zero obligations equals spendable cash');
+    assert.equal(summary1.safeToSpendDetails.isDeficit, false);
+
+    // Add Category
+    const cat = JSON.parse((await callTool(authServer, 'manage_category', {
+      action: 'create',
+      name: 'Bills',
+      type: 'expense',
+    })).content[0].text);
+
+    // Add Planned Expense: 3,000,000 IDR
+    await callTool(authServer, 'record_transaction', {
+      walletId: wSpendable.walletId,
+      categoryId: cat.categoryId,
+      amount: 3000000,
+      type: 'expense',
+      isPlanned: true,
+    });
+
+    // Add Active Debt: 1,000,000 IDR
+    await callTool(authServer, 'manage_debt_loan', {
+      action: 'create',
+      type: 'debt',
+      personName: 'Bank Loan',
+      amount: 1000000,
+    });
+
+    // Safe-to-Spend should now be: 10M - (3M planned + 1M debt) = 6,000,000 IDR
+    const summary2 = JSON.parse((await callTool(authServer, 'financial_summary', {})).content[0].text);
+    assert.equal(summary2.spendableCash.estimatedTotal, 10000000);
+    assert.equal(summary2.lockedCash.estimatedTotal, 40000000);
+    assert.equal(summary2.safeToSpend, 6000000);
+    assert.equal(summary2.safeToSpendDetails.plannedExpensesDeducted, 3000000);
+    assert.equal(summary2.safeToSpendDetails.activeDebtDeducted, 1000000);
+    assert.ok(summary2.dailySafeToSpend > 0, 'dailySafeToSpend should be positive');
+    assert.equal(summary2.safeToSpendDetails.isDeficit, false);
+  });
+
+  it('4.3 Soft-lock informational notices when spending from locked wallets', async () => {
+    const { db } = createTestDB();
+    const publicServer = createMCPServer(db, null, TEST_JWT_SECRET);
+    const regRes = await callTool(publicServer, 'register_user', {
+      firstName: 'Notice',
+      lastName: 'Tester',
+      email: 'noticetester@example.com',
+      whatsappNumber: '+628777777777',
+    });
+    const { userId } = JSON.parse(regRes.content[0].text);
+    const authServer = createMCPServer(db, userId, TEST_JWT_SECRET);
+
+    const wSpendable = JSON.parse((await callTool(authServer, 'manage_wallet', {
+      action: 'create',
+      name: 'Operational',
+      balance: 5000000,
+      isLocked: false,
+    })).content[0].text);
+
+    const wLocked = JSON.parse((await callTool(authServer, 'manage_wallet', {
+      action: 'create',
+      name: 'Emergency Fund',
+      balance: 10000000,
+      isLocked: true,
+    })).content[0].text);
+
+    const cat = JSON.parse((await callTool(authServer, 'manage_category', {
+      action: 'create',
+      name: 'Emergency Expense',
+      type: 'expense',
+    })).content[0].text);
+
+    // 1. Expense on unlocked wallet -> NO notice
+    const txSpendable = JSON.parse((await callTool(authServer, 'record_transaction', {
+      walletId: wSpendable.walletId,
+      categoryId: cat.categoryId,
+      amount: 100000,
+      type: 'expense',
+    })).content[0].text);
+    assert.equal(txSpendable.notice, undefined, 'unlocked wallet expense must not have notice');
+
+    // 2. Expense on locked wallet -> HAS notice
+    const txLocked = JSON.parse((await callTool(authServer, 'record_transaction', {
+      walletId: wLocked.walletId,
+      categoryId: cat.categoryId,
+      amount: 500000,
+      type: 'expense',
+    })).content[0].text);
+    assert.ok(txLocked.notice, 'locked wallet expense must have notice');
+    assert.match(txLocked.notice, /Notice: Expense recorded on locked wallet/);
+
+    // 3. Outward transfer from locked wallet -> HAS notice
+    const transferRes = JSON.parse((await callTool(authServer, 'transfer_funds', {
+      sourceWalletId: wLocked.walletId,
+      targetWalletId: wSpendable.walletId,
+      amount: 2000000,
+    })).content[0].text);
+    assert.ok(transferRes.notice, 'outward transfer from locked wallet must have notice');
+    assert.match(transferRes.notice, /Notice: Outward transfer from locked wallet/);
+
+    // 4. Income on locked wallet -> NO notice
+    const incomeRes = JSON.parse((await callTool(authServer, 'record_transaction', {
+      walletId: wLocked.walletId,
+      categoryId: cat.categoryId,
+      amount: 200000,
+      type: 'income',
+    })).content[0].text);
+    assert.equal(incomeRes.notice, undefined, 'income on locked wallet must not have notice');
   });
 });

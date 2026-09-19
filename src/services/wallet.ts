@@ -15,6 +15,7 @@ export interface CreateWalletParams {
   type?: unknown;
   balance?: unknown;
   currency?: unknown;
+  isLocked?: unknown;
 }
 
 export interface UpdateWalletParams {
@@ -23,16 +24,28 @@ export interface UpdateWalletParams {
   type?: unknown;
   balance?: unknown;
   currency?: unknown;
+  isLocked?: unknown;
 }
 
 export async function listWallets(
   db: DrizzleD1Database<typeof schema>,
-  userId: string
+  userId: string,
+  isLockedFilter?: unknown
 ) {
+  const conditions = [eq(schema.wallets.walletUserId, userId)];
+  if (isLockedFilter !== undefined) {
+    if (typeof isLockedFilter === "boolean") {
+      conditions.push(eq(schema.wallets.walletIsLocked, isLockedFilter ? 1 : 0));
+    } else if (isLockedFilter === 0 || isLockedFilter === 1 || isLockedFilter === "0" || isLockedFilter === "1") {
+      conditions.push(eq(schema.wallets.walletIsLocked, Number(isLockedFilter)));
+    } else if (isLockedFilter === "true" || isLockedFilter === "false") {
+      conditions.push(eq(schema.wallets.walletIsLocked, isLockedFilter === "true" ? 1 : 0));
+    }
+  }
   return db
     .select()
     .from(schema.wallets)
-    .where(eq(schema.wallets.walletUserId, userId));
+    .where(and(...conditions));
 }
 
 export async function createWallet(
@@ -40,8 +53,21 @@ export async function createWallet(
   userId: string,
   params: CreateWalletParams
 ) {
-  const { name: walletName, institution, type, balance, currency } = params;
+  const { name: walletName, institution, type, balance, currency, isLocked } = params;
 
+  let cleanIsLocked = 0;
+  if (isLocked !== undefined) {
+    if (typeof isLocked === "boolean") {
+      cleanIsLocked = isLocked ? 1 : 0;
+    } else if (isLocked === 0 || isLocked === 1) {
+      cleanIsLocked = isLocked;
+    } else {
+      validationError(
+        "Validation Error: 'isLocked' must be a boolean",
+        "isLocked"
+      );
+    }
+  }
   if (
     !walletName ||
     typeof walletName !== "string" ||
@@ -92,6 +118,7 @@ export async function createWallet(
       walletType: cleanType,
       walletBalance: cleanBalance,
       walletCurrency: cleanCurrency,
+      walletIsLocked: cleanIsLocked,
       walletCreatedAt: nowIso,
     })
     .returning();
@@ -128,7 +155,7 @@ export async function updateWallet(
     notFound("Wallet", cleanWalletId);
   }
 
-  const { name: walletName, institution, type, balance, currency } = params;
+  const { name: walletName, institution, type, balance, currency, isLocked } = params;
   const updates: Partial<typeof schema.wallets.$inferInsert> = {};
 
   if (
@@ -165,6 +192,18 @@ export async function updateWallet(
     currency.trim().length <= 10
   ) {
     updates.walletCurrency = currency.trim().toUpperCase();
+  }
+  if (isLocked !== undefined) {
+    if (typeof isLocked === "boolean") {
+      updates.walletIsLocked = isLocked ? 1 : 0;
+    } else if (isLocked === 0 || isLocked === 1) {
+      updates.walletIsLocked = isLocked;
+    } else {
+      validationError(
+        "Validation Error: 'isLocked' must be a boolean",
+        "isLocked"
+      );
+    }
   }
 
   if (Object.keys(updates).length === 0) {

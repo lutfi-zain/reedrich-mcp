@@ -335,8 +335,15 @@ export async function recordTransaction(
       1
     );
   }
+  let notice: string | undefined;
+  if (txType === "expense" && Number(wallet.walletIsLocked) === 1) {
+    notice = `Notice: Expense recorded on locked wallet '${cleanWalletId}'. Protected capital reserve reduced.`;
+  }
 
-  return tx[0];
+  return {
+    ...tx[0],
+    ...(notice ? { notice } : {}),
+  };
 }
 
 export interface UpdateTransactionParams {
