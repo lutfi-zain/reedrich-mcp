@@ -7,15 +7,14 @@ Defines the behavior contract for read-only REST API endpoints that expose finan
 ### Requirement: Read-Only Wallet Listing
 
 The system MUST expose `GET /api/v1/wallets` that returns all wallets for the authenticated user.
-
-The endpoint SHALL require a valid `Authorization: Bearer <token>` header. It SHALL respond with HTTP `200` and a JSON array of wallet objects. It SHALL respond with HTTP `401` if no valid credential is provided.
+The endpoint SHALL require a valid `Authorization: Bearer <token>` header or `X-API-Key` header. It SHALL respond with HTTP `200` and a JSON array of wallet objects. It SHALL respond with HTTP `401` if no valid credential is provided.
 
 #### Scenario: Authenticated user retrieves wallets
 
 - **GIVEN** an authenticated user with 3 wallets
 - **WHEN** `GET /api/v1/wallets` is called with a valid Bearer token
 - **THEN** the response SHALL be HTTP `200` with a JSON array of 3 wallet objects
-- **THEN** each wallet object SHALL contain `walletId`, `walletName`, `walletInstitution`, `walletType`, `walletBalance`, `walletCurrency`, `walletCreatedAt`
+- **THEN** each wallet object SHALL contain `walletId`, `walletName`, `walletInstitution`, `walletType`, `walletBalance`, `walletCurrency`, `walletCreatedAt`, and `walletIsLocked` (integer `0` or `1`)
 
 #### Scenario: Unauthenticated request is rejected
 
@@ -108,17 +107,17 @@ The system MUST expose `GET /api/v1/recurring-templates` that returns all recurr
 
 ### Requirement: Financial Summary Endpoint
 
-The system MUST expose `GET /api/v1/summary` that returns the same comprehensive financial summary currently available via the `financial_summary` MCP tool and the existing `GET /api/v1/summary` REST endpoint.
+The system MUST expose `GET /api/v1/summary` that returns the same comprehensive financial summary currently available via the `financial_summary` MCP tool and the existing `GET /api/v1/summary` REST endpoint, extended with segregated liquidity metrics and Safe-to-Spend runway.
 
 The endpoint SHALL accept optional query parameters: `startDate`, `endDate`, `baseCurrency`.
 
-The response format SHALL be identical to the current REST endpoint response.
+The response format SHALL be identical to the current REST endpoint response, with additive properties for liquidity breakdown.
 
 #### Scenario: Summary with date range and base currency
 
 - **WHEN** `GET /api/v1/summary?startDate=2026-09-01&endDate=2026-09-30&baseCurrency=USD` is called
 - **THEN** the response SHALL include `consolidatedNetWorth` with `baseCurrency: "USD"`, exchange rate conversion, and all summary fields
-
+- **THEN** the response SHALL additively include `spendableCash`, `lockedCash`, `safeToSpend`, and `dailySafeToSpend`
 ### Requirement: Consistent Authentication Across All REST Endpoints
 
 All `GET /api/v1/*` endpoints MUST accept the same authentication methods: OAuth2 Bearer access tokens, legacy Reedrich JWT tokens, and persistent API keys (`rd_live_*` / `fp_live_*`). The credential SHALL be provided via the `Authorization: Bearer <token>` header or the `X-API-Key` header.
