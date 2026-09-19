@@ -293,7 +293,37 @@ Once authenticated, prompt your coding agent with natural language:
 - *"Laporkan bug: Saldo di dompet saya tidak berkurang setelah transaksi dicatat"*
 - *"Ajukan feature request: Integrasi notifikasi WhatsApp harian untuk pengingat budget"*
 
+
+## 8. Developer & Contributor Architecture Guide
+
+If you are an AI coding agent or human engineer modifying or extending Reedrich:
+
+### Two-Layer Architecture
+
+```
+Transport Layer:   src/mcp.ts (JSON-RPC)      src/routes/* (REST /api/v1/*)
+                          │                           │
+                          ▼                           ▼
+Service Layer:             src/services/*.ts (Pure business logic)
+                                        │
+                                        ▼
+Database Layer:            Cloudflare D1 via Drizzle ORM (src/db/schema.ts)
+```
+
+1. **Never put business logic in transport handlers**: Both `src/mcp.ts` and `src/routes/*.ts` are **thin adapters**. They parse input, call a service function, and format output.
+2. **All business logic lives in `src/services/`**: Pure functions with signatures like `(db, userId, params) -> Promise<Result>`.
+3. **Use typed `ServiceError`**: Service functions throw `ServiceError` with discriminated codes (`VALIDATION`, `NOT_FOUND`, `UNAUTHORIZED`, `FORBIDDEN`, `CONFLICT`, `INTERNAL`).
+4. **Authentication is unified**: Use `resolveUserId(db, secret, opts)` from `src/middleware/auth.ts`.
+5. **Observability is automatic**: `src/middleware/observability.ts` automatically attaches `X-Request-ID` and `X-Response-Time` to all HTTP responses.
+
+### Adding a New Capability
+1. Implement the domain function in `src/services/<domain>.ts` with typed inputs and errors.
+2. Add unit/service tests or verify with `npm test`.
+3. Expose as an MCP tool in `src/mcp.ts` (CallToolRequestSchema).
+4. Expose as a REST endpoint in `src/routes/<domain>.ts`.
+
 ---
+
 
 ## ⚡ CLI Snippet Helper
 

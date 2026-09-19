@@ -33,7 +33,7 @@ Stateless Model Context Protocol (MCP) server for personal finance & determinist
   - `daily_briefing`: Comprehensive financial health overview (balances, active budgets, upcoming debt/loan due dates).
   - `financial_planning`: Goal timeline projection (e.g. "Kapan bisa beli laptop Rp 15jt?") with deterministic math based on net savings and debt commitments.
   - `debt_loan_advisor`: Prioritization and repayment strategy for active debts and loan collections.
-
+- **Interactive Scalar API Docs & OpenAPI 3.0**: Full interactive Scalar API Reference UI served at `/docs` (and `/reference`) with machine-readable OpenAPI 3.0 specification at `/openapi.json`.
 ---
 ## ⚡ Quick Install: Claude Code Plugin & Desktop
 
@@ -324,6 +324,197 @@ npm run agent:snippet [claude|opencode|pi|omp|all]
 ```
 
 ---
+## 🏗️ Architecture & Project Structure
+
+Reedrich uses a **2-layer architecture** (Transport Adapters → Shared Service Layer) deployed on Cloudflare Workers (workerd) with D1 SQLite:
+
+```
+src/
+├── index.ts              # Hono app: CORS, observability, OAuth & MCP mounting
+├── mcp.ts                # MCP server: tool, resource, and prompt declarations (thin adapters)
+├── middleware/           # Shared cross-cutting middleware
+│   ├── auth.ts           # Unified credential resolver (Bearer, API key, JWT, tool args)
+│   └── observability.ts  # Request ID propagation (X-Request-ID) & response timing (X-Response-Time)
+├── routes/               # Modular REST API endpoints (/api/v1/*)
+│   ├── index.ts          # Sub-router with scoped auth middleware & central error handling
+│   ├── wallets.ts        # GET /api/v1/wallets
+│   ├── categories.ts     # GET /api/v1/categories
+│   ├── budgets.ts        # GET /api/v1/budgets
+│   ├── transactions.ts   # GET /api/v1/transactions
+│   ├── debts-loans.ts    # GET /api/v1/debts-loans
+│   ├── goals.ts          # GET & POST /api/v1/goals
+│   ├── recurring-templates.ts # GET, POST, apply /api/v1/recurring-templates
+│   ├── summary.ts        # GET /api/v1/summary
+│   └── feedback.ts       # POST /api/v1/feedback
+├── services/             # Pure transport-neutral business logic & typed errors
+│   ├── errors.ts         # ServiceError class with discriminated error codes
+│   ├── auth.ts           # registerUser, loginUser, evaluateOnboarding
+│   ├── wallet.ts         # listWallets, createWallet, updateWallet
+│   ├── category.ts       # listCategories, createCategory, seedDefaults
+│   ├── budget.ts         # listBudgets, createBudget, budgetStatus
+│   ├── transaction.ts    # listTransactions, recordTransaction, updateTransaction, applyBalanceDelta
+│   ├── transfer.ts       # transferFunds
+│   ├── debt-loan.ts      # listDebtsLoans, createDebtLoan, repayDebtLoan, updateDebtLoan
+│   ├── goal.ts           # listGoals, createGoal, updateGoal, contributeGoal, deleteGoal
+│   ├── recurring.ts      # listRecurringTemplates, create/update/delete/apply template
+│   ├── summary.ts        # financialSummary
+│   └── feedback.ts       # submitFeedback
+├── db/
+│   └── schema.ts         # Drizzle SQLite D1 schema & indexes
+└── utils/                # Pure utilities (date, fx, goals, recurring, oauth, token, pkce)
+```
+
+---
+
+### 📖 Interactive Scalar API Reference
+
+Explore, inspect schemas, and test REST endpoints interactively in your browser:
+- **Interactive Documentation UI**: `https://<host>/docs` (or `/reference`)
+- **Machine-Readable OpenAPI Spec**: `https://<host>/openapi.json`
+- Features dark mode, search, schema inspector, and interactive "Test Request" console with Bearer token authentication.
+
+
+---
+
+## 📱 Frontend & Client Integration Guide (Web & Mobile)
+
+If you or an AI coding agent is building a user-facing interface on top of Reedrich (such as a **Vite React / Svelte / Vue SPA** deployed on Cloudflare Pages or a **Flutter / React Native mobile app**), use the REST API (`/api/v1/*`) as your backend.
+
+### 🔐 Choosing the Right Authorization Method
+
+| Method | Best For | How to Use | Security & Token Lifetime |
+|---|---|---|---|
+| **1. Persistent API Key (`rd_live_...`)** | Personal dashboards, internal tools, scripts, local dev | Header `Authorization: Bearer <rd_live_...>` or `X-API-Key: <rd_live_...>` | Permanent, never expires. Store in `.env` / secure storage. |
+| **2. OAuth 2.0 PKCE with Google Login** | Public multi-user Web SPAs & Mobile apps | Standard PKCE S256 (`/oauth/authorize` + `/oauth/token`) | 15-min stateless JWT access token + 30-day rotatable refresh token. Supports Google OAuth federation. |
+| **3. Ephemeral JWT** | Quick testing or headless agent session | Obtained via MCP `register_user` or `login_user` | 15-minute expiration. Verified at edge with zero DB lookups. |
+
+### 🛠️ Client Integration Recipes
+
+#### Option A: TypeScript / Fetch Client (Vite React, Svelte, Vue)
+
+```typescript
+// src/lib/reedrich.ts
+export class ReedrichClient {
+  private baseUrl: string;
+  private token?: string;
+
+  constructor(config: { baseUrl?: string; apiKey?: string; accessToken?: string }) {
+    this.baseUrl = config.baseUrl || "https://reedrich-mcp.lutfidmz.workers.dev";
+    this.token = config.apiKey || config.accessToken;
+  }
+
+  setToken(token: string) {
+    this.token = token;
+  }
+
+  private async request<T>(path: string, options: RequestInit = {}): Promise<T> {
+    const headers = new Headers(options.headers);
+    headers.set("Content-Type", "application/json");
+    if (this.token) {
+      headers.set("Authorization", `Bearer ${this.token}`);
+    }
+
+    const res = await fetch(`${this.baseUrl}${path}`, { ...options, headers });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ message: res.statusText }));
+      throw new Error(err.message || `Request failed with status ${res.status}`);
+    }
+    return res.json() as Promise<T>;
+  }
+
+  getSummary(params?: { startDate?: string; endDate?: string; baseCurrency?: string }) {
+    const query = new URLSearchParams(params as Record<string, string>).toString();
+    return this.request<any>(`/api/v1/summary${query ? `?${query}` : ""}`);
+  }
+
+  getWallets() {
+    return this.request<any[]>("/api/v1/wallets");
+  }
+
+  getTransactions(params?: Record<string, string | number | boolean>) {
+    const query = new URLSearchParams(params as Record<string, string>).toString();
+    return this.request<any[]>(`/api/v1/transactions${query ? `?${query}` : ""}`);
+  }
+
+  getBudgets() {
+    return this.request<any[]>("/api/v1/budgets");
+  }
+
+  getGoals(status?: "in_progress" | "completed" | "cancelled") {
+    const query = status ? `?status=${status}` : "";
+    return this.request<any[]>(`/api/v1/goals${query}`);
+  }
+
+  createGoal(goal: { name: string; targetAmount: number; targetDate?: string; currency?: string }) {
+    return this.request<any>("/api/v1/goals", { method: "POST", body: JSON.stringify(goal) });
+  }
+}
+```
+
+#### Option B: Dart / HTTP Client (Flutter Mobile)
+
+```dart
+// lib/services/reedrich_service.dart
+import 'dart:convert';
+import 'package:http/http.dart' as http;
+
+class ReedrichService {
+  final String baseUrl;
+  final String apiKey;
+
+  ReedrichService({
+    this.baseUrl = "https://reedrich-mcp.lutfidmz.workers.dev",
+    required this.apiKey,
+  });
+
+  Map<String, String> get _headers => {
+    "Content-Type": "application/json",
+    "Authorization": "Bearer $apiKey",
+  };
+
+  Future<Map<String, dynamic>> getSummary({String baseCurrency = "IDR"}) async {
+    final uri = Uri.parse("$baseUrl/api/v1/summary?baseCurrency=$baseCurrency");
+    final response = await http.get(uri, headers: _headers);
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body) as Map<String, dynamic>;
+    }
+    throw Exception("Failed to load summary: ${response.body}");
+  }
+
+  Future<List<dynamic>> getWallets() async {
+    final uri = Uri.parse("$baseUrl/api/v1/wallets");
+    final response = await http.get(uri, headers: _headers);
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body) as List<dynamic>;
+    }
+    throw Exception("Failed to load wallets: ${response.body}");
+  }
+
+  Future<List<dynamic>> getTransactions({String? type, int limit = 50}) async {
+    final params = {"limit": limit.toString()};
+    if (type != null) params["type"] = type;
+    final uri = Uri.parse("$baseUrl/api/v1/transactions").replace(queryParameters: params);
+    final response = await http.get(uri, headers: _headers);
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body) as List<dynamic>;
+    }
+    throw Exception("Failed to load transactions: ${response.body}");
+  }
+}
+```
+
+### ⚠️ Error Handling & Observability Headers
+
+All endpoints return uniform typed errors and observability headers:
+- `X-Request-ID`: Trace ID for tracking requests across client and server.
+- `X-Response-Time`: Edge execution duration in milliseconds (e.g. `2ms`).
+- Error codes:
+  * `VALIDATION` (400) — Input schema or validation constraint failure.
+  * `UNAUTHORIZED` (401) — Missing or invalid token/API key.
+  * `FORBIDDEN` (403) — Permission denied.
+  * `NOT_FOUND` (404) — Entity not found or belongs to another user (RLS isolation).
+  * `CONFLICT` (409) — Unique constraint conflict.
+  * `INTERNAL` (500) — Unexpected edge runtime error.
 
 ## 💾 Local D1 Setup & Migrations
 

@@ -134,3 +134,36 @@ const server = new Server(
 
 // Register tools, resources, and prompts handlers...
 ```
+
+---
+
+## 6. REST API Endpoints (`/api/v1/*`)
+
+Reedrich exposes modular REST API endpoints alongside the MCP server, sharing the same underlying service layer and database.
+
+### Interactive API Reference & OpenAPI Specification
+- **Interactive Scalar UI**: `https://<host>/docs` (or `/reference`)
+- **OpenAPI 3.0.0 Specification**: `https://<host>/openapi.json`
+
+### Common Headers
+- `Authorization: Bearer <token | api_key>`: Bearer OAuth access token, 15m JWT, or `rd_live_...` API key.
+- `X-API-Key: <api_key>`: Alternative API key authentication header.
+- `X-Request-ID`: Client-provided or server-generated request trace ID (propagated in response).
+- `X-Response-Time`: Server processing time in milliseconds (e.g. `12ms`).
+
+### Endpoint Reference
+
+| Method | Path | Description | Query Parameters |
+|---|---|---|---|
+| `GET` | `/api/v1/wallets` | List user wallets and balances | — |
+| `GET` | `/api/v1/categories` | List user categories | — |
+| `GET` | `/api/v1/budgets` | List active budgets with spending utilization | — |
+| `GET` | `/api/v1/transactions` | Query transactions with filters | `walletId`, `targetWalletId`, `categoryId`, `budgetId`, `type`, `isPlanned`, `startDate`, `endDate`, `limit`, `offset` |
+| `GET` | `/api/v1/debts-loans` | List personal debts and loans | `status` (`unpaid`/`partially_paid`/`paid`), `type` (`debt`/`loan`) |
+| `GET` | `/api/v1/goals` | List financial goals with pacing data | `status` (`in_progress`/`completed`/`cancelled`) |
+| `POST` | `/api/v1/goals` | Create a new financial goal (HTTP 201) | — (JSON body: `name`, `targetAmount`, `currentAmount`, `currency`, `targetDate`, `walletId`, `categoryId`) |
+| `GET` | `/api/v1/recurring-templates` | List recurring transaction templates | `isActive` (`true`/`false`) |
+| `POST` | `/api/v1/recurring-templates` | Create a recurring template (HTTP 201) | — (JSON body: `name`, `walletId`, `amount`, `type`, `frequency`, `interval`, `startDate`, ...) |
+| `POST` | `/api/v1/recurring-templates/:id/apply` | Apply a recurring template to transactions | — (JSON body: `executionDate?`) |
+| `GET` | `/api/v1/summary` | Consolidated net worth & financial summary | `startDate`, `endDate`, `baseCurrency` |
+| `POST` | `/api/v1/feedback` | Submit feedback (allows guest or authenticated) | — (JSON body: `title`, `content`, `type`, `name?`, `email?`) |

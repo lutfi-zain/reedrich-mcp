@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-LOCAL_PORT=8787
+LOCAL_PORT=8799
 LOCAL_URL="http://localhost:${LOCAL_PORT}"
 DEV_SECRET="reedrich_local_dev_jwt_secret_9948271038571204"
 
@@ -16,9 +16,14 @@ echo "📦 Migrating local D1 database..."
 npx wrangler d1 execute finance_db --local --file=./drizzle/0002_table_prefixed_schema_and_tz.sql > /dev/null 2>&1 || true
 npx wrangler d1 execute finance_db --local --file=./drizzle/0003_add_debts_loans.sql > /dev/null 2>&1 || true
 npx wrangler d1 execute finance_db --local --file=./drizzle/0004_add_feedbacks_table.sql > /dev/null 2>&1 || true
+npx wrangler d1 execute finance_db --local --file=./drizzle/0005_add_goals_and_recurring_templates.sql > /dev/null 2>&1 || true
 echo "✅ Local D1 database ready."
 echo ""
 
+# Kill any lingering process on the port before starting
+pkill -9 -f "wrangler.*${LOCAL_PORT}" > /dev/null 2>&1 || true
+pkill -9 -f "workerd.*${LOCAL_PORT}" > /dev/null 2>&1 || true
+sleep 1
 # 2. Start wrangler dev in background
 echo "🚀 Starting wrangler dev on port ${LOCAL_PORT}..."
 npx wrangler dev --port ${LOCAL_PORT} --ip 127.0.0.1 > /tmp/wrangler_local_dev.log 2>&1 &
@@ -29,8 +34,8 @@ cleanup() {
   echo ""
   echo "🛑 Stopping local wrangler dev (PID: ${DEV_PID})..."
   kill -9 $DEV_PID 2>/dev/null || true
-  # Kill any lingering wrangler processes on port 8787
-  fuser -k ${LOCAL_PORT}/tcp 2>/dev/null || true
+  pkill -9 -f "wrangler.*${LOCAL_PORT}" 2>/dev/null || true
+  pkill -9 -f "workerd.*${LOCAL_PORT}" 2>/dev/null || true
 }
 trap cleanup EXIT
 

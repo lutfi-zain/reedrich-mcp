@@ -10,96 +10,49 @@ import {
 import { DrizzleD1Database } from "drizzle-orm/d1";
 import * as schema from "./db/schema";
 import { eq, and, desc, gte, lte, sql } from "drizzle-orm";
+import { currentIsoTimestamp } from "./utils/date";
+import { resolveUserId } from "./middleware/auth";
+import { registerUser, loginUser, evaluateOnboarding } from "./services/auth";
+import { submitFeedback } from "./services/feedback";
+import { listWallets, createWallet, updateWallet } from "./services/wallet";
 import {
-  generateApiKey,
-  generateUserId,
-  generateUserToken,
-  verifyUserToken,
-  hashApiKey,
-  isValidEmail,
-  isValidWhatsApp,
-  DEFAULT_TOKEN_EXPIRY_SECONDS,
-} from "./utils/token";
+  DEFAULT_CATEGORIES,
+  listCategories,
+  createCategory,
+  seedDefaults,
+} from "./services/category";
+import { listBudgets, createBudget, budgetStatus } from "./services/budget";
 import {
-  isValidIsoDateOrTimestamp,
-  normalizeToIsoTimestamp,
-  currentIsoTimestamp,
-} from "./utils/date";
-import { getExchangeRates, convertCurrency } from "./utils/fx";
-import { calculateGoalPacing } from "./utils/goals";
+  listTransactions,
+  recordTransaction,
+  updateTransaction,
+  WalletRequiredError,
+} from "./services/transaction";
+import { transferFunds, InsufficientWalletsError } from "./services/transfer";
+import { financialSummary } from "./services/summary";
 import {
-  calculateNextRunDate,
-  projectRecurringCashflow,
-  type RecurringTemplateInput,
-} from "./utils/recurring";
-// Helper validators
-function isValidPositiveNumber(val: any): boolean {
-  return typeof val === "number" && Number.isFinite(val) && val > 0;
-}
+  listDebtsLoans,
+  createDebtLoan,
+  repayDebtLoan,
+  updateDebtLoan,
+} from "./services/debt-loan";
+import {
+  listGoals,
+  createGoal,
+  contributeGoal,
+  updateGoal,
+  deleteGoal,
+} from "./services/goal";
+import {
+  listRecurringTemplates,
+  createRecurringTemplate,
+  updateRecurringTemplate,
+  deleteRecurringTemplate,
+  applyRecurringTemplate,
+} from "./services/recurring";
 
-function isValidFiniteNumber(val: any): boolean {
-  return typeof val === "number" && Number.isFinite(val);
-}
-
-function isValidUUID(id: any): boolean {
-  return typeof id === "string" && id.trim().length > 0;
-}
-
-export const DEFAULT_CATEGORIES = [
-  // Expense categories
-  { name: "Makanan & Minuman", type: "expense" as const, icon: "🍔" },
-  { name: "Transportasi", type: "expense" as const, icon: "🚗" },
-  { name: "Belanja", type: "expense" as const, icon: "🛍️" },
-  { name: "Tagihan & Utilitas", type: "expense" as const, icon: "💡" },
-  { name: "Hiburan", type: "expense" as const, icon: "🎬" },
-  { name: "Kesehatan", type: "expense" as const, icon: "💊" },
-  // Income categories
-  { name: "Gaji", type: "income" as const, icon: "💼" },
-  { name: "Investasi & Bunga", type: "income" as const, icon: "📈" },
-  { name: "Usaha / Freelance", type: "income" as const, icon: "💻" },
-  { name: "Pemasukan Lainnya", type: "income" as const, icon: "🎁" },
-];
-
-export async function evaluateOnboarding(
-  db: DrizzleD1Database<typeof schema>,
-  userId: string
-): Promise<{
-  isComplete: boolean;
-  needs: string[];
-  suggestions: string[];
-  message: string;
-}> {
-  const [walletCount] = await db
-    .select({ count: sql<number>`count(*)` })
-    .from(schema.wallets)
-    .where(eq(schema.wallets.walletUserId, userId));
-
-  const [categoryCount] = await db
-    .select({ count: sql<number>`count(*)` })
-    .from(schema.categories)
-    .where(eq(schema.categories.categoryUserId, userId));
-
-  const hasWallets = Number(walletCount?.count || 0) > 0;
-  const hasCategories = Number(categoryCount?.count || 0) > 0;
-  const needs: string[] = [];
-  if (!hasWallets) needs.push("wallet");
-  if (!hasCategories) needs.push("categories");
-
-  const suggestions: string[] = [];
-  const [budgetCount] = await db
-    .select({ count: sql<number>`count(*)` })
-    .from(schema.budgets)
-    .where(eq(schema.budgets.budgetUserId, userId));
-  if (Number(budgetCount?.count || 0) === 0) suggestions.push("budget");
-
-  const isComplete = needs.length === 0;
-  const message = isComplete
-    ? "Setup complete! You can start recording transactions."
-    : `Please set up: ${needs.join(", ")}. Use the onboarding_assistant prompt for guidance.`;
-
-  return { isComplete, needs, suggestions, message };
-}
-
+export { DEFAULT_CATEGORIES } from "./services/category";
+export { evaluateOnboarding } from "./services/auth";
 export type MCPOptions = {
   fetchFn?: typeof fetch;
 };
@@ -114,41 +67,13 @@ export function createMCPServer(
   }
 
   // Helper to dynamically resolve user ID from HTTP headers (userId) or tool arguments (apiKey/token)
-  async function resolveEffectiveUserId(args?: any): Promise<string | null> {
+  async function resolveEffectiveUserId(args?: unknown): Promise<string | null> {
     if (userId) return userId;
-
-    const candidate = args?.apiKey || args?.token;
-    if (!candidate || typeof candidate !== "string") return null;
-    const clean = candidate.trim();
-    if (clean.length === 0) return null;
-
-    // Case A: Persistent API Key (starts with rd_live_ or fp_live_)
-    if (clean.startsWith("rd_live_") || clean.startsWith("fp_live_")) {
-      try {
-        const hash = await hashApiKey(clean);
-        const user = await db.select({ userId: schema.users.userId }).from(schema.users).where(eq(schema.users.userApiKeyHash, hash)).get();
-        return user ? user.userId : null;
-      } catch {
-        return null;
-      }
-    }
-
-    // Case B: Self-Contained JWT Token
-    try {
-      const jwtUser = await verifyUserToken(clean, jwtSecret);
-      if (jwtUser) return jwtUser.userId;
-    } catch {
-      // Continue to fallback
-    }
-
-    // Case C: Fallback raw API key lookup
-    try {
-      const hash = await hashApiKey(clean);
-      const user = await db.select({ userId: schema.users.userId }).from(schema.users).where(eq(schema.users.userApiKeyHash, hash)).get();
-      return user ? user.userId : null;
-    } catch {
-      return null;
-    }
+    const toolArgs =
+      args && typeof args === "object"
+        ? (args as { apiKey?: unknown; token?: unknown })
+        : null;
+    return resolveUserId(db, jwtSecret, { toolArgs });
   }
 
   const server = new Server(
@@ -886,190 +811,22 @@ Authentication Note: You are already authenticated via OAuth / Bearer token. Nev
 
     // --- Tool: register_user ---
     if (name === "register_user") {
-      const { firstName, lastName, email, whatsappNumber } = (args || {}) as any;
-
-      if (!firstName || typeof firstName !== "string" || firstName.trim().length === 0 || firstName.trim().length > 100) {
-        throw new Error("Validation Error: 'firstName' is required and must be between 1 and 100 characters");
-      }
-      if (!lastName || typeof lastName !== "string" || lastName.trim().length === 0 || lastName.trim().length > 100) {
-        throw new Error("Validation Error: 'lastName' is required and must be between 1 and 100 characters");
-      }
-      if (!isValidEmail(email) || (typeof email === "string" && email.length > 255)) {
-        throw new Error("Validation Error: Invalid email format. Please provide a valid email (e.g. user@example.com)");
-      }
-      if (!isValidWhatsApp(whatsappNumber)) {
-        throw new Error("Validation Error: Invalid WhatsApp number format. Must start with '+' followed by country code and 6-14 digits (e.g. +6281234567890)");
-      }
-
-      const normalizedEmail = email.trim().toLowerCase();
-      const existing = await db.select().from(schema.users).where(eq(schema.users.userEmail, normalizedEmail)).get();
-      if (existing) {
-        throw new Error(`Registration Error: Email '${normalizedEmail}' is already registered. Please login with your API key using the 'login_user' tool.`);
-      }
-
-      // Secure server-side user ID (UUID V4 based)
-      const newUserId = generateUserId();
-      const apiKey = generateApiKey();
-      const apiKeyHash = await hashApiKey(apiKey);
-      const cleanFirstName = firstName.trim();
-      const cleanLastName = lastName.trim();
-      const cleanWhatsApp = whatsappNumber.trim();
-      const fullName = `${cleanFirstName} ${cleanLastName}`;
-      const nowIso = currentIsoTimestamp();
-
-      await db.insert(schema.users).values({
-        userId: newUserId,
-        userFirstName: cleanFirstName,
-        userLastName: cleanLastName,
-        userEmail: normalizedEmail,
-        userWhatsappNumber: cleanWhatsApp,
-        userApiKeyHash: apiKeyHash,
-        userCreatedAt: nowIso
-      });
-
-      const token = await generateUserToken({
-        userId: newUserId,
-        name: fullName,
-        email: normalizedEmail,
-        expiresInSeconds: DEFAULT_TOKEN_EXPIRY_SECONDS
-      }, jwtSecret);
-
-      const onboarding = await evaluateOnboarding(db, newUserId);
-
-      const responsePayload = {
-        userId: newUserId,
-        name: fullName,
-        email: normalizedEmail,
-        whatsappNumber: cleanWhatsApp,
-        apiKey,
-        token,
-        tokenType: "Bearer",
-        expiresIn: DEFAULT_TOKEN_EXPIRY_SECONDS,
-        onboarding,
-        message: "Registration successful! Please set 'Authorization: Bearer <token>' in your MCP client headers for subsequent finance tool calls. Save your apiKey to login again via 'login_user' when your 15-minute token expires."
-      };
-
-      return { content: [{ type: "text", text: JSON.stringify(responsePayload, null, 2) }] };
+      const result = await registerUser(db, jwtSecret, (args || {}) as any);
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
     }
 
     // --- Tool: login_user ---
     if (name === "login_user") {
       const { apiKey } = (args || {}) as any;
-      if (!apiKey || typeof apiKey !== "string" || apiKey.trim() === "") {
-        throw new Error("Validation Error: 'apiKey' is required for login_user");
-      }
-
-      const cleanKey = apiKey.trim();
-      const apiKeyHash = await hashApiKey(cleanKey);
-      const user = await db.select().from(schema.users).where(eq(schema.users.userApiKeyHash, apiKeyHash)).get();
-      if (!user) {
-        throw new Error("Authentication Error: Invalid API Key. User not found. Please verify your API Key or register via 'register_user'.");
-      }
-
-      const fullName = `${user.userFirstName} ${user.userLastName}`.trim();
-      const token = await generateUserToken({
-        userId: user.userId,
-        name: fullName,
-        email: user.userEmail,
-        expiresInSeconds: DEFAULT_TOKEN_EXPIRY_SECONDS
-      }, jwtSecret);
-
-      const onboarding = await evaluateOnboarding(db, user.userId);
-
-      const responsePayload = {
-        userId: user.userId,
-        name: fullName,
-        email: user.userEmail,
-        token,
-        tokenType: "Bearer",
-        expiresIn: DEFAULT_TOKEN_EXPIRY_SECONDS,
-        onboarding,
-        message: "Login successful! Please update 'Authorization: Bearer <token>' in your MCP client headers for subsequent tool calls."
-      };
-
-      return { content: [{ type: "text", text: JSON.stringify(responsePayload, null, 2) }] };
+      const result = await loginUser(db, jwtSecret, apiKey);
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
     }
 
     // --- Tool: submit_feedback ---
     if (name === "submit_feedback") {
-      const { title, feedback, content, type = "feedback", name: submitterName, email: submitterEmail } = (args || {}) as any;
-      const feedbackContent = (content || feedback) as string | undefined;
-
-      if (!title || typeof title !== "string" || title.trim().length < 5 || title.trim().length > 200) {
-        throw new Error("Validation Error: 'title' is required (5-200 characters)");
-      }
-      if (!feedbackContent || typeof feedbackContent !== "string" || feedbackContent.trim().length < 10 || feedbackContent.trim().length > 4000) {
-        throw new Error("Validation Error: 'content' or 'feedback' is required (10-4000 characters)");
-      }
-
-      const validTypes = ["feedback", "bug", "feature_request", "question"];
-      if (!validTypes.includes(type)) {
-        throw new Error(`Validation Error: 'type' must be one of: ${validTypes.join(", ")}`);
-      }
-      const feedbackType = type;
-
-      let foundUserId: string | null = null;
-      let userName = submitterName && typeof submitterName === "string" && submitterName.trim().length > 0 ? submitterName.trim() : null;
-      let userEmail = submitterEmail && typeof submitterEmail === "string" && submitterEmail.trim().length > 0 ? submitterEmail.trim().toLowerCase() : null;
-
       const effectiveUserId = await resolveEffectiveUserId(args);
-      if (effectiveUserId) {
-        foundUserId = effectiveUserId;
-        const user = await db.select().from(schema.users).where(eq(schema.users.userId, effectiveUserId)).get();
-        if (user) {
-          if (!userName) {
-            userName = `${user.userFirstName} ${user.userLastName}`.trim();
-          }
-          if (!userEmail) {
-            userEmail = user.userEmail;
-          }
-        }
-      }
-
-      if (!userName) {
-        throw new Error("Validation Error: Submitter 'name' is required when unauthenticated. Please provide 'name' in arguments or authenticate with your API key.");
-      }
-      if (!userEmail || !isValidEmail(userEmail)) {
-        throw new Error(`Validation Error: A valid 'email' is required. Received: '${userEmail || ""}'. Please provide a valid email or authenticate with your API key.`);
-      }
-
-      const newFeedbackId = crypto.randomUUID();
-      const now = currentIsoTimestamp();
-
-      await db.insert(schema.feedbacks).values({
-        feedbackId: newFeedbackId,
-        feedbackUserId: foundUserId,
-        feedbackTitle: title.trim(),
-        feedbackContent: feedbackContent.trim(),
-        feedbackType: feedbackType,
-        feedbackSubmitterName: userName,
-        feedbackSubmitterEmail: userEmail,
-        feedbackStatus: "new",
-        feedbackCreatedAt: now
-      }).run();
-
-      const responsePayload = {
-        success: true,
-        message: "Feedback submitted successfully and saved to internal database!",
-        feedbackId: newFeedbackId,
-        type: feedbackType,
-        status: "new",
-        submitter: {
-          name: userName,
-          email: userEmail,
-          userId: foundUserId
-        },
-        submittedAt: now
-      };
-
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(responsePayload, null, 2)
-          }
-        ]
-      };
+      const result = await submitFeedback(db, effectiveUserId, (args || {}) as any);
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
     }
 
     // -------------------------------------------------------------------------
@@ -1077,1726 +834,204 @@ Authentication Note: You are already authenticated via OAuth / Bearer token. Nev
     // -------------------------------------------------------------------------
     const effectiveUserId = await resolveEffectiveUserId(args);
     if (!effectiveUserId) {
-      throw new Error("Unauthorized: Please provide your 'apiKey' in tool arguments (e.g. apiKey: 'fp_live_...'), or set 'Authorization: Bearer <apiKey>' in your MCP client headers, or call 'register_user' to create an account.");
+      throw new Error(
+        "Unauthorized: Please provide your 'apiKey' in tool arguments (e.g. apiKey: 'fp_live_...'), or set 'Authorization: Bearer <apiKey>' in your MCP client headers, or call 'register_user' to create an account."
+      );
     }
-
-    // Helper for atomic wallet balance updates & reconciliations
-    const applyBalanceDelta = async (
-      txType: string,
-      wId: string,
-      targetWId: string | null,
-      amt: number,
-      fee: number,
-      multiplier: 1 | -1
-    ) => {
-      if (txType === "expense") {
-        const delta = -(amt + fee) * multiplier;
-        await db.update(schema.wallets)
-          .set({ walletBalance: sql`wallet_balance + ${delta}` })
-          .where(and(eq(schema.wallets.walletId, wId), eq(schema.wallets.walletUserId, effectiveUserId)));
-      } else if (txType === "income") {
-        const delta = (amt - fee) * multiplier;
-        await db.update(schema.wallets)
-          .set({ walletBalance: sql`wallet_balance + ${delta}` })
-          .where(and(eq(schema.wallets.walletId, wId), eq(schema.wallets.walletUserId, effectiveUserId)));
-      } else if (txType === "transfer" && targetWId) {
-        const sourceDelta = -(amt + fee) * multiplier;
-        const targetDelta = amt * multiplier;
-        await db.update(schema.wallets)
-          .set({ walletBalance: sql`wallet_balance + ${sourceDelta}` })
-          .where(and(eq(schema.wallets.walletId, wId), eq(schema.wallets.walletUserId, effectiveUserId)));
-        await db.update(schema.wallets)
-          .set({ walletBalance: sql`wallet_balance + ${targetDelta}` })
-          .where(and(eq(schema.wallets.walletId, targetWId), eq(schema.wallets.walletUserId, effectiveUserId)));
-      }
-    };
 
     // --- Tool: manage_wallet ---
     if (name === "manage_wallet") {
-      const { action, name: walletName, institution, type, balance, currency, walletId } = (args || {}) as any;
-      
+      const { action, walletId, ...params } = (args || {}) as any;
       if (action === "list") {
-        const result = await db.select().from(schema.wallets).where(eq(schema.wallets.walletUserId, effectiveUserId));
+        const result = await listWallets(db, effectiveUserId);
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
-      
       if (action === "create") {
-        if (!walletName || typeof walletName !== "string" || walletName.trim().length === 0 || walletName.trim().length > 100) {
-          throw new Error("Validation Error: Wallet 'name' is required (1-100 characters)");
-        }
-        const allowedTypes = ["bank", "cash", "e-wallet", "credit", "crypto", "investment"];
-        const cleanType = type && allowedTypes.includes(type) ? type : "bank";
-        const cleanBalance = isValidFiniteNumber(balance) ? balance : 0;
-        const cleanCurrency = currency && typeof currency === "string" && currency.trim().length > 0 && currency.trim().length <= 10
-          ? currency.trim().toUpperCase()
-          : "IDR";
-        const cleanInstitution = institution && typeof institution === "string" && institution.trim().length > 0
-          ? institution.trim()
-          : "General";
-
-        const newWalletId = crypto.randomUUID();
-        const nowIso = currentIsoTimestamp();
-        const result = await db.insert(schema.wallets).values({
-          walletId: newWalletId,
-          walletUserId: effectiveUserId,
-          walletName: walletName.trim(),
-          walletInstitution: cleanInstitution,
-          walletType: cleanType,
-          walletBalance: cleanBalance,
-          walletCurrency: cleanCurrency,
-          walletCreatedAt: nowIso
-        }).returning();
-        return { content: [{ type: "text", text: JSON.stringify(result[0], null, 2) }] };
+        const result = await createWallet(db, effectiveUserId, params);
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
-      
       if (action === "update") {
-        if (!isValidUUID(walletId)) {
-          throw new Error("Validation Error: Valid string 'walletId' (UUID) is required for update action");
-        }
-        const cleanWalletId = walletId.trim();
-        const existing = await db.select().from(schema.wallets).where(and(eq(schema.wallets.walletId, cleanWalletId), eq(schema.wallets.walletUserId, effectiveUserId))).get();
-        if (!existing) {
-          throw new Error(`Wallet ID ${cleanWalletId} not found or unauthorized`);
-        }
-
-        const updates: any = {};
-        if (walletName && typeof walletName === "string" && walletName.trim().length > 0 && walletName.trim().length <= 100) {
-          updates.walletName = walletName.trim();
-        }
-        if (institution && typeof institution === "string" && institution.trim().length > 0) {
-          updates.walletInstitution = institution.trim();
-        }
-        if (balance !== undefined) {
-          if (!isValidFiniteNumber(balance)) {
-            throw new Error("Validation Error: 'balance' must be a valid finite number");
-          }
-          updates.walletBalance = balance;
-        }
-        if (type && ["bank", "cash", "e-wallet", "credit", "crypto", "investment"].includes(type)) {
-          updates.walletType = type;
-        }
-        if (currency && typeof currency === "string" && currency.trim().length > 0 && currency.trim().length <= 10) {
-          updates.walletCurrency = currency.trim().toUpperCase();
-        }
-
-        const result = await db.update(schema.wallets)
-          .set(updates)
-          .where(and(eq(schema.wallets.walletId, cleanWalletId), eq(schema.wallets.walletUserId, effectiveUserId)))
-          .returning();
-        return { content: [{ type: "text", text: JSON.stringify(result[0], null, 2) }] };
+        const result = await updateWallet(db, effectiveUserId, walletId, params);
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
-
       throw new Error(`Invalid action '${action}' for manage_wallet. Valid actions: list, create, update`);
     }
 
     // --- Tool: manage_category ---
     if (name === "manage_category") {
-      const { action, name: catName, type, icon } = (args || {}) as any;
-      
+      const { action, ...params } = (args || {}) as any;
       if (action === "list") {
-        const result = await db.select().from(schema.categories).where(eq(schema.categories.categoryUserId, effectiveUserId));
+        const result = await listCategories(db, effectiveUserId);
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
-      
       if (action === "create") {
-        if (!catName || typeof catName !== "string" || catName.trim().length === 0 || catName.trim().length > 100) {
-          throw new Error("Validation Error: Category 'name' is required (1-100 characters)");
-        }
-        const cleanIcon = icon && typeof icon === "string" && icon.trim().length <= 10 ? icon.trim() : null;
-        const newCategoryId = crypto.randomUUID();
-        const nowIso = currentIsoTimestamp();
-
-        const result = await db.insert(schema.categories).values({
-          categoryId: newCategoryId,
-          categoryUserId: effectiveUserId,
-          categoryName: catName.trim(),
-          categoryType: type === "income" ? "income" : "expense",
-          categoryIcon: cleanIcon,
-          categoryCreatedAt: nowIso
-        }).returning();
-        return { content: [{ type: "text", text: JSON.stringify(result[0], null, 2) }] };
+        const result = await createCategory(db, effectiveUserId, params);
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
-
       if (action === "seed_defaults") {
-        const existing = await db.select().from(schema.categories).where(eq(schema.categories.categoryUserId, effectiveUserId));
-        const existingNames = new Set(existing.map(c => c.categoryName.trim().toLowerCase()));
-
-        const toCreate = DEFAULT_CATEGORIES.filter(c => !existingNames.has(c.name.trim().toLowerCase()));
-        const createdCategories: any[] = [];
-        const nowIso = currentIsoTimestamp();
-
-        for (const cat of toCreate) {
-          const newCategoryId = crypto.randomUUID();
-          const [inserted] = await db.insert(schema.categories).values({
-            categoryId: newCategoryId,
-            categoryUserId: effectiveUserId,
-            categoryName: cat.name,
-            categoryType: cat.type,
-            categoryIcon: cat.icon,
-            categoryCreatedAt: nowIso
-          }).returning();
-          createdCategories.push(inserted);
-        }
-
-        const skippedCount = DEFAULT_CATEGORIES.length - toCreate.length;
-        const responseData = {
-          message: `Seeded ${createdCategories.length} default categories (${skippedCount} skipped due to existing names).`,
-          createdCount: createdCategories.length,
-          skippedCount,
-          categories: createdCategories
-        };
-
-        return { content: [{ type: "text", text: JSON.stringify(responseData, null, 2) }] };
+        const result = await seedDefaults(db, effectiveUserId);
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
-
       throw new Error(`Invalid action '${action}' for manage_category. Valid actions: list, create, seed_defaults`);
     }
 
     // --- Tool: manage_budget ---
     if (name === "manage_budget") {
-      const { action, name: budgetName, categoryId, amount, periodStart, periodEnd } = (args || {}) as any;
-      
+      const { action, ...params } = (args || {}) as any;
       if (action === "list") {
-        const result = await db.select().from(schema.budgets).where(eq(schema.budgets.budgetUserId, effectiveUserId));
+        const result = await listBudgets(db, effectiveUserId);
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
-      
       if (action === "create") {
-        if (!budgetName || typeof budgetName !== "string" || budgetName.trim().length === 0 || budgetName.trim().length > 100) {
-          throw new Error("Validation Error: Budget 'name' is required (1-100 characters)");
-        }
-        if (!isValidPositiveNumber(amount)) {
-          throw new Error("Validation Error: Budget 'amount' must be a positive finite number");
-        }
-        if (!isValidIsoDateOrTimestamp(periodStart) || !isValidIsoDateOrTimestamp(periodEnd)) {
-          throw new Error("Validation Error: 'periodStart' and 'periodEnd' must be valid ISO dates or timestamps (e.g. YYYY-MM-DD or YYYY-MM-DDTHH:mm:ssZ)");
-        }
-        const cleanStart = normalizeToIsoTimestamp(periodStart);
-        const cleanEnd = normalizeToIsoTimestamp(periodEnd);
-        if (cleanStart > cleanEnd) {
-          throw new Error("Validation Error: 'periodStart' cannot be after 'periodEnd'");
-        }
-
-        let cleanCategoryId: string | null = null;
-        if (categoryId) {
-          if (!isValidUUID(categoryId)) {
-            throw new Error("Validation Error: 'categoryId' must be a valid string (UUID)");
-          }
-          const targetCatId = (categoryId as string).trim();
-          const category = await db.select().from(schema.categories).where(and(eq(schema.categories.categoryId, targetCatId), eq(schema.categories.categoryUserId, effectiveUserId))).get();
-          if (!category) {
-            throw new Error(`Category ID ${targetCatId} not found or unauthorized`);
-          }
-          cleanCategoryId = targetCatId;
-        }
-
-        const newBudgetId = crypto.randomUUID();
-        const nowIso = currentIsoTimestamp();
-        const result = await db.insert(schema.budgets).values({
-          budgetId: newBudgetId,
-          budgetUserId: effectiveUserId,
-          budgetName: budgetName.trim(),
-          budgetCategoryId: cleanCategoryId,
-          budgetAmount: amount,
-          budgetPeriodStart: cleanStart,
-          budgetPeriodEnd: cleanEnd,
-          budgetCreatedAt: nowIso
-        }).returning();
-        return { content: [{ type: "text", text: JSON.stringify(result[0], null, 2) }] };
+        const result = await createBudget(db, effectiveUserId, params);
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
-      
       if (action === "status") {
-        const budgets = await db.select().from(schema.budgets).where(eq(schema.budgets.budgetUserId, effectiveUserId));
-        const statusList = [];
-        for (const b of budgets) {
-          const conditions = [
-            eq(schema.transactions.transactionUserId, effectiveUserId),
-            eq(schema.transactions.transactionIsPlanned, 0),
-            eq(schema.transactions.transactionType, "expense"),
-            gte(schema.transactions.transactionDate, b.budgetPeriodStart),
-            lte(schema.transactions.transactionDate, b.budgetPeriodEnd)
-          ];
-          if (b.budgetCategoryId) {
-            conditions.push(eq(schema.transactions.transactionCategoryId, b.budgetCategoryId));
-          } else {
-            conditions.push(eq(schema.transactions.transactionBudgetId, b.budgetId));
-          }
-
-          const txs = await db.select().from(schema.transactions).where(and(...conditions));
-          const spent = txs.reduce((sum, tx) => sum + tx.transactionAmount, 0);
-          statusList.push({
-            budget: b,
-            spent: Number(spent.toFixed(2)),
-            remaining: Number((b.budgetAmount - spent).toFixed(2)),
-            percentUsed: b.budgetAmount > 0 ? Number(((spent / b.budgetAmount) * 100).toFixed(2)) : 0
-          });
-        }
-        return { content: [{ type: "text", text: JSON.stringify(statusList, null, 2) }] };
+        const result = await budgetStatus(db, effectiveUserId);
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
-
       throw new Error(`Invalid action '${action}' for manage_budget. Valid actions: list, create, status`);
     }
 
     // --- Tool: record_transaction ---
     if (name === "record_transaction") {
-      const [walletCheck] = await db
-        .select({ count: sql<number>`count(*)` })
-        .from(schema.wallets)
-        .where(eq(schema.wallets.walletUserId, effectiveUserId));
-      if (Number(walletCheck?.count || 0) === 0) {
-        return {
-          content: [{
-            type: "text",
-            text: JSON.stringify({
-              error: "Dompet belum tersedia.",
-              actionRequired: "auto_create_wallet",
-              instruction: "Buat dompet terlebih dahulu dengan manage_wallet(action: 'create', name: '...') dan pasang kategori default dengan manage_category(action: 'seed_defaults'), lalu catat transaksi ini."
-            }, null, 2)
-          }],
-          isError: true
-        };
-      }
-
-      const { walletId, categoryId, budgetId, amount, adminFee, type, description, isPlanned, transactionDate } = (args || {}) as any;
-      
-      if (!isValidPositiveNumber(amount)) {
-        throw new Error("Validation Error: Transaction 'amount' must be a positive finite number greater than 0");
-      }
-      if (!isValidUUID(walletId)) {
-        throw new Error("Validation Error: Valid string 'walletId' (UUID) is required");
-      }
-      if (!isValidUUID(categoryId)) {
-        throw new Error("Validation Error: Valid string 'categoryId' (UUID) is required");
-      }
-      if (adminFee !== undefined && (!isValidFiniteNumber(adminFee) || adminFee < 0)) {
-        throw new Error("Validation Error: 'adminFee' must be a non-negative finite number");
-      }
-      if (transactionDate && !isValidIsoDateOrTimestamp(transactionDate)) {
-        throw new Error("Validation Error: 'transactionDate' must be in valid ISO format (e.g. YYYY-MM-DD or YYYY-MM-DDTHH:mm:ss+07:00)");
-      }
-      if (description && (typeof description !== "string" || description.length > 500)) {
-        throw new Error("Validation Error: 'description' cannot exceed 500 characters");
-      }
-
-      const cleanWalletId = walletId.trim();
-      const cleanCategoryId = categoryId.trim();
-      const cleanAdminFee = isValidFiniteNumber(adminFee) && adminFee >= 0 ? adminFee : 0;
-      const txType = type === "income" ? "income" : "expense";
-
-      const wallet = await db.select().from(schema.wallets).where(and(eq(schema.wallets.walletId, cleanWalletId), eq(schema.wallets.walletUserId, effectiveUserId))).get();
-      if (!wallet) throw new Error(`Wallet ID ${cleanWalletId} not found or unauthorized`);
-
-      const category = await db.select().from(schema.categories).where(and(eq(schema.categories.categoryId, cleanCategoryId), eq(schema.categories.categoryUserId, effectiveUserId))).get();
-      if (!category) throw new Error(`Category ID ${cleanCategoryId} not found or unauthorized`);
-
-      let cleanBudgetId: string | null = null;
-      if (budgetId) {
-        if (!isValidUUID(budgetId)) {
-          throw new Error("Validation Error: 'budgetId' must be a valid string (UUID)");
+      try {
+        const result = await recordTransaction(db, effectiveUserId, (args || {}) as any);
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      } catch (err) {
+        if (err instanceof WalletRequiredError) {
+          return {
+            content: [{
+              type: "text",
+              text: JSON.stringify({
+                error: err.message,
+                actionRequired: err.actionRequired,
+                instruction: err.instruction,
+              }, null, 2),
+            }],
+            isError: true,
+          };
         }
-        const targetBudgetId = (budgetId as string).trim();
-        const budget = await db.select().from(schema.budgets).where(and(eq(schema.budgets.budgetId, targetBudgetId), eq(schema.budgets.budgetUserId, effectiveUserId))).get();
-        if (!budget) throw new Error(`Budget ID ${targetBudgetId} not found or unauthorized`);
-        cleanBudgetId = targetBudgetId;
+        throw err;
       }
-
-      const dateStr = normalizeToIsoTimestamp(transactionDate);
-      const isPlannedInt = isPlanned ? 1 : 0;
-      const newTransactionId = crypto.randomUUID();
-      const nowIso = currentIsoTimestamp();
-
-      const tx = await db.insert(schema.transactions).values({
-        transactionId: newTransactionId,
-        transactionUserId: effectiveUserId,
-        transactionWalletId: cleanWalletId,
-        transactionCategoryId: cleanCategoryId,
-        transactionBudgetId: cleanBudgetId,
-        transactionAmount: amount,
-        transactionAdminFee: cleanAdminFee,
-        transactionType: txType,
-        transactionDescription: description ? description.trim() : null,
-        transactionIsPlanned: isPlannedInt,
-        transactionDate: dateStr,
-        transactionCreatedAt: nowIso
-      }).returning();
-
-      // Atomic wallet balance update for actual transactions (isPlanned == 0)
-      if (!isPlannedInt) {
-        await applyBalanceDelta(txType, cleanWalletId, null, amount, cleanAdminFee, 1);
-      }
-
-      return { content: [{ type: "text", text: JSON.stringify(tx[0], null, 2) }] };
     }
 
     // --- Tool: transfer_funds ---
     if (name === "transfer_funds") {
-      const [walletCheck] = await db
-        .select({ count: sql<number>`count(*)` })
-        .from(schema.wallets)
-        .where(eq(schema.wallets.walletUserId, effectiveUserId));
-      if (Number(walletCheck?.count || 0) === 0) {
-        return {
-          content: [{
-            type: "text",
-            text: JSON.stringify({
-              error: "No wallets found. You need at least 2 wallets to transfer funds. Please create wallets first using manage_wallet(action: 'create') or follow the onboarding_assistant prompt.",
-              suggestion: "onboarding_assistant"
-            }, null, 2)
-          }],
-          isError: true
-        };
-      }
-
-      const { sourceWalletId, targetWalletId, amount, adminFee, categoryId, description, isPlanned, transactionDate } = (args || {}) as any;
-
-      if (!isValidPositiveNumber(amount)) {
-        throw new Error("Validation Error: Transfer 'amount' must be a positive finite number greater than 0");
-      }
-      if (!isValidUUID(sourceWalletId)) {
-        throw new Error("Validation Error: Valid string 'sourceWalletId' (UUID) is required");
-      }
-      if (!isValidUUID(targetWalletId)) {
-        throw new Error("Validation Error: Valid string 'targetWalletId' (UUID) is required");
-      }
-      if (sourceWalletId.trim() === targetWalletId.trim()) {
-        throw new Error("Validation Error: 'sourceWalletId' and 'targetWalletId' cannot be the same wallet");
-      }
-      if (adminFee !== undefined && (!isValidFiniteNumber(adminFee) || adminFee < 0)) {
-        throw new Error("Validation Error: 'adminFee' must be a non-negative finite number");
-      }
-      if (transactionDate && !isValidIsoDateOrTimestamp(transactionDate)) {
-        throw new Error("Validation Error: 'transactionDate' must be in valid ISO format (e.g. YYYY-MM-DD or YYYY-MM-DDTHH:mm:ss+07:00)");
-      }
-      if (description && (typeof description !== "string" || description.length > 500)) {
-        throw new Error("Validation Error: 'description' cannot exceed 500 characters");
-      }
-
-      const cleanSourceWalletId = sourceWalletId.trim();
-      const cleanTargetWalletId = targetWalletId.trim();
-      const cleanAdminFee = isValidFiniteNumber(adminFee) && adminFee >= 0 ? adminFee : 0;
-
-      const sourceWallet = await db.select().from(schema.wallets).where(and(eq(schema.wallets.walletId, cleanSourceWalletId), eq(schema.wallets.walletUserId, effectiveUserId))).get();
-      if (!sourceWallet) throw new Error(`Source Wallet ID ${cleanSourceWalletId} not found or unauthorized`);
-
-      const targetWallet = await db.select().from(schema.wallets).where(and(eq(schema.wallets.walletId, cleanTargetWalletId), eq(schema.wallets.walletUserId, effectiveUserId))).get();
-      if (!targetWallet) throw new Error(`Target Wallet ID ${cleanTargetWalletId} not found or unauthorized`);
-
-      let cleanCategoryId: string | null = null;
-      if (categoryId && typeof categoryId === "string" && categoryId.trim().length > 0) {
-        if (!isValidUUID(categoryId)) {
-          throw new Error("Validation Error: 'categoryId' must be a valid string (UUID)");
+      try {
+        const result = await transferFunds(db, effectiveUserId, (args || {}) as any);
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      } catch (err) {
+        if (err instanceof InsufficientWalletsError) {
+          return {
+            content: [{
+              type: "text",
+              text: JSON.stringify({
+                error: err.message,
+                suggestion: err.suggestion,
+              }, null, 2),
+            }],
+            isError: true,
+          };
         }
-        const targetCatId = (categoryId as string).trim();
-        const category = await db.select().from(schema.categories).where(and(eq(schema.categories.categoryId, targetCatId), eq(schema.categories.categoryUserId, effectiveUserId))).get();
-        if (!category) throw new Error(`Category ID ${targetCatId} not found or unauthorized`);
-        cleanCategoryId = targetCatId;
-      } else {
-        let transferCat = await db.select().from(schema.categories).where(and(eq(schema.categories.categoryUserId, effectiveUserId), eq(schema.categories.categoryName, "Transfer"))).get();
-        if (!transferCat) {
-          const newCatId = crypto.randomUUID();
-          const created = await db.insert(schema.categories).values({
-            categoryId: newCatId,
-            categoryUserId: effectiveUserId,
-            categoryName: "Transfer",
-            categoryType: "expense",
-            categoryIcon: "🔄",
-            categoryCreatedAt: currentIsoTimestamp()
-          }).returning();
-          transferCat = created[0];
-        }
-        cleanCategoryId = transferCat.categoryId;
+        throw err;
       }
-
-      const dateStr = normalizeToIsoTimestamp(transactionDate);
-      const isPlannedInt = isPlanned ? 1 : 0;
-      const newTransactionId = crypto.randomUUID();
-      const nowIso = currentIsoTimestamp();
-
-      const tx = await db.insert(schema.transactions).values({
-        transactionId: newTransactionId,
-        transactionUserId: effectiveUserId,
-        transactionWalletId: cleanSourceWalletId,
-        transactionTargetWalletId: cleanTargetWalletId,
-        transactionCategoryId: cleanCategoryId,
-        transactionAmount: amount,
-        transactionAdminFee: cleanAdminFee,
-        transactionType: "transfer",
-        transactionDescription: description ? description.trim() : null,
-        transactionIsPlanned: isPlannedInt,
-        transactionDate: dateStr,
-        transactionCreatedAt: nowIso
-      }).returning();
-
-      // Atomic wallet balance update for actual transfer (isPlanned == 0)
-      if (!isPlannedInt) {
-        await applyBalanceDelta("transfer", cleanSourceWalletId, cleanTargetWalletId, amount, cleanAdminFee, 1);
-      }
-
-      return { content: [{ type: "text", text: JSON.stringify(tx[0], null, 2) }] };
     }
 
     // --- Tool: update_transaction ---
     if (name === "update_transaction") {
-      const { transactionId, amount, adminFee, walletId, targetWalletId, categoryId, budgetId, description, transactionDate, isPlanned } = (args || {}) as any;
-
-      if (!isValidUUID(transactionId)) {
-        throw new Error("Validation Error: Valid string 'transactionId' (UUID) is required");
-      }
-      const cleanTxId = transactionId.trim();
-      const existingTx = await db.select().from(schema.transactions).where(and(eq(schema.transactions.transactionId, cleanTxId), eq(schema.transactions.transactionUserId, effectiveUserId))).get();
-      if (!existingTx) {
-        throw new Error(`Transaction ID ${cleanTxId} not found or unauthorized`);
-      }
-
-      if (amount !== undefined && !isValidPositiveNumber(amount)) {
-        throw new Error("Validation Error: 'amount' must be a positive finite number greater than 0");
-      }
-      if (adminFee !== undefined && (!isValidFiniteNumber(adminFee) || adminFee < 0)) {
-        throw new Error("Validation Error: 'adminFee' must be a non-negative finite number");
-      }
-      if (transactionDate !== undefined && !isValidIsoDateOrTimestamp(transactionDate)) {
-        throw new Error("Validation Error: 'transactionDate' must be in valid ISO format (e.g. YYYY-MM-DD or YYYY-MM-DDTHH:mm:ss+07:00)");
-      }
-      if (description !== undefined && (typeof description !== "string" || description.length > 500)) {
-        throw new Error("Validation Error: 'description' cannot exceed 500 characters");
-      }
-
-      let newWalletId = existingTx.transactionWalletId;
-      if (walletId !== undefined) {
-        if (!isValidUUID(walletId)) throw new Error("Validation Error: 'walletId' must be a valid UUID");
-        const cleanWId = (walletId as string).trim();
-        const w = await db.select().from(schema.wallets).where(and(eq(schema.wallets.walletId, cleanWId), eq(schema.wallets.walletUserId, effectiveUserId))).get();
-        if (!w) throw new Error(`Wallet ID ${cleanWId} not found or unauthorized`);
-        newWalletId = cleanWId;
-      }
-
-      let newTargetWalletId = existingTx.transactionTargetWalletId;
-      if (targetWalletId !== undefined) {
-        if (targetWalletId === null || targetWalletId === "") {
-          newTargetWalletId = null;
-        } else {
-          if (!isValidUUID(targetWalletId)) throw new Error("Validation Error: 'targetWalletId' must be a valid UUID");
-          const cleanTWId = (targetWalletId as string).trim();
-          const tw = await db.select().from(schema.wallets).where(and(eq(schema.wallets.walletId, cleanTWId), eq(schema.wallets.walletUserId, effectiveUserId))).get();
-          if (!tw) throw new Error(`Target Wallet ID ${cleanTWId} not found or unauthorized`);
-          newTargetWalletId = cleanTWId;
-        }
-      }
-
-      let newCategoryId = existingTx.transactionCategoryId;
-      if (categoryId !== undefined) {
-        if (categoryId === null || categoryId === "") {
-          newCategoryId = null;
-        } else {
-          if (!isValidUUID(categoryId)) throw new Error("Validation Error: 'categoryId' must be a valid UUID");
-          const cleanCatId = (categoryId as string).trim();
-          const cat = await db.select().from(schema.categories).where(and(eq(schema.categories.categoryId, cleanCatId), eq(schema.categories.categoryUserId, effectiveUserId))).get();
-          if (!cat) throw new Error(`Category ID ${cleanCatId} not found or unauthorized`);
-          newCategoryId = cleanCatId;
-        }
-      }
-
-      let newBudgetId = existingTx.transactionBudgetId;
-      if (budgetId !== undefined) {
-        if (budgetId === null || budgetId === "") {
-          newBudgetId = null;
-        } else {
-          if (!isValidUUID(budgetId)) throw new Error("Validation Error: 'budgetId' must be a valid UUID");
-          const cleanBId = (budgetId as string).trim();
-          const b = await db.select().from(schema.budgets).where(and(eq(schema.budgets.budgetId, cleanBId), eq(schema.budgets.budgetUserId, effectiveUserId))).get();
-          if (!b) throw new Error(`Budget ID ${cleanBId} not found or unauthorized`);
-          newBudgetId = cleanBId;
-        }
-      }
-
-      const newAmount = amount !== undefined ? amount : existingTx.transactionAmount;
-      const newAdminFee = adminFee !== undefined ? adminFee : existingTx.transactionAdminFee;
-      const newIsPlannedInt = isPlanned !== undefined ? (isPlanned ? 1 : 0) : existingTx.transactionIsPlanned;
-
-      // -----------------------------------------------------------------------
-      // Atomic Balance Reconciliation
-      // -----------------------------------------------------------------------
-      // 1. Revert previous transaction impact if it was an actual transaction
-      if (existingTx.transactionIsPlanned === 0) {
-        await applyBalanceDelta(existingTx.transactionType, existingTx.transactionWalletId, existingTx.transactionTargetWalletId, existingTx.transactionAmount, existingTx.transactionAdminFee, -1);
-      }
-
-      // 2. Apply new transaction impact if the updated transaction is an actual transaction
-      if (newIsPlannedInt === 0) {
-        await applyBalanceDelta(existingTx.transactionType, newWalletId, newTargetWalletId, newAmount, newAdminFee, 1);
-      }
-
-      const updates: any = {
-        transactionAmount: newAmount,
-        transactionAdminFee: newAdminFee,
-        transactionWalletId: newWalletId,
-        transactionTargetWalletId: newTargetWalletId,
-        transactionCategoryId: newCategoryId,
-        transactionBudgetId: newBudgetId,
-        transactionIsPlanned: newIsPlannedInt
-      };
-
-      if (description !== undefined) updates.transactionDescription = description ? description.trim() : null;
-      if (transactionDate !== undefined) updates.transactionDate = normalizeToIsoTimestamp(transactionDate);
-
-      const updated = await db.update(schema.transactions)
-        .set(updates)
-        .where(and(eq(schema.transactions.transactionId, cleanTxId), eq(schema.transactions.transactionUserId, effectiveUserId)))
-        .returning();
-
-      return { content: [{ type: "text", text: JSON.stringify(updated[0], null, 2) }] };
+      const { transactionId, ...params } = (args || {}) as any;
+      const result = await updateTransaction(db, effectiveUserId, transactionId, params);
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
     }
 
     // --- Tool: list_transactions ---
     if (name === "list_transactions") {
-      const { walletId, targetWalletId, categoryId, budgetId, type, isPlanned, startDate, endDate, limit = 50, offset = 0 } = (args || {}) as any;
-      const conditions = [eq(schema.transactions.transactionUserId, effectiveUserId)];
-      
-      if (walletId !== undefined && typeof walletId === "string" && walletId.trim() !== "") {
-        conditions.push(eq(schema.transactions.transactionWalletId, walletId.trim()));
-      }
-      if (targetWalletId !== undefined && typeof targetWalletId === "string" && targetWalletId.trim() !== "") {
-        conditions.push(eq(schema.transactions.transactionTargetWalletId, targetWalletId.trim()));
-      }
-      if (categoryId !== undefined && typeof categoryId === "string" && categoryId.trim() !== "") {
-        conditions.push(eq(schema.transactions.transactionCategoryId, categoryId.trim()));
-      }
-      if (budgetId !== undefined && typeof budgetId === "string" && budgetId.trim() !== "") {
-        conditions.push(eq(schema.transactions.transactionBudgetId, budgetId.trim()));
-      }
-      if (type !== undefined && (type === "expense" || type === "income" || type === "transfer")) {
-        conditions.push(eq(schema.transactions.transactionType, type));
-      }
-      if (isPlanned !== undefined) {
-        conditions.push(eq(schema.transactions.transactionIsPlanned, isPlanned ? 1 : 0));
-      }
-      if (startDate !== undefined) {
-        if (!isValidIsoDateOrTimestamp(startDate)) throw new Error("Validation Error: 'startDate' must be a valid ISO date or timestamp");
-        conditions.push(gte(schema.transactions.transactionDate, normalizeToIsoTimestamp(startDate)));
-      }
-      if (endDate !== undefined) {
-        if (!isValidIsoDateOrTimestamp(endDate)) throw new Error("Validation Error: 'endDate' must be a valid ISO date or timestamp");
-        // If end date is YYYY-MM-DD, allow up to end of the day YYYY-MM-DDT23:59:59.999Z
-        const cleanEndDate = /^\d{4}-\d{2}-\d{2}$/.test(endDate.trim())
-          ? `${endDate.trim()}T23:59:59.999Z`
-          : normalizeToIsoTimestamp(endDate);
-        conditions.push(lte(schema.transactions.transactionDate, cleanEndDate));
-      }
-
-      const safeLimit = Math.min(Math.max(1, Number(limit) || 50), 200);
-      const safeOffset = Math.max(0, Number(offset) || 0);
-
-      const txs = await db.select()
-        .from(schema.transactions)
-        .where(and(...conditions))
-        .orderBy(desc(schema.transactions.transactionDate), desc(schema.transactions.transactionCreatedAt))
-        .limit(safeLimit)
-        .offset(safeOffset);
-
-      return { content: [{ type: "text", text: JSON.stringify(txs, null, 2) }] };
+      const result = await listTransactions(db, effectiveUserId, (args || {}) as any);
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
     }
 
     // --- Tool: financial_summary ---
     if (name === "financial_summary") {
-      const { startDate, endDate, baseCurrency } = (args || {}) as any;
-      
-      if (startDate !== undefined && !isValidIsoDateOrTimestamp(startDate)) throw new Error("Validation Error: 'startDate' must be a valid ISO date or timestamp");
-      if (endDate !== undefined && !isValidIsoDateOrTimestamp(endDate)) throw new Error("Validation Error: 'endDate' must be a valid ISO date or timestamp");
-
-      // 1. Group net worth by currency and institution across all user wallets
-      const walletsData = await db.select().from(schema.wallets).where(eq(schema.wallets.walletUserId, effectiveUserId));
-      const netWorthByCurrency: Record<string, number> = {};
-      const netWorthByInstitution: Record<string, number> = {};
-      const currencyCounts: Record<string, number> = {};
-
-      for (const w of walletsData) {
-        const curr = (w.walletCurrency || "IDR").toUpperCase();
-        netWorthByCurrency[w.walletCurrency] = Number(((netWorthByCurrency[w.walletCurrency] || 0) + w.walletBalance).toFixed(2));
-        netWorthByInstitution[w.walletInstitution] = Number(((netWorthByInstitution[w.walletInstitution] || 0) + w.walletBalance).toFixed(2));
-        currencyCounts[curr] = (currencyCounts[curr] || 0) + 1;
-      }
-
-      // Base currency resolution: explicit override or auto-detection from wallet frequency / default IDR
-      let resolvedBaseCurrency = "IDR";
-      if (baseCurrency && typeof baseCurrency === "string" && baseCurrency.trim().length > 0) {
-        resolvedBaseCurrency = baseCurrency.trim().toUpperCase();
-      } else {
-        let maxCount = 0;
-        for (const [curr, count] of Object.entries(currencyCounts)) {
-          if (count > maxCount) {
-            maxCount = count;
-            resolvedBaseCurrency = curr;
-          }
-        }
-      }
-
-      // Fetch exchange rates (with 3s timeout & fallback)
-      const fxRates = await getExchangeRates(options?.fetchFn);
-      let consolidatedEstimatedTotal = 0;
-      const isEstimated = Object.keys(netWorthByCurrency).some(curr => curr.toUpperCase() !== resolvedBaseCurrency);
-
-      for (const [curr, balance] of Object.entries(netWorthByCurrency)) {
-        const converted = convertCurrency(balance, curr, resolvedBaseCurrency, fxRates.rates);
-        consolidatedEstimatedTotal += converted;
-      }
-
-      const consolidatedNetWorth = {
-        baseCurrency: resolvedBaseCurrency,
-        estimatedTotal: Number(consolidatedEstimatedTotal.toFixed(2)),
-        isEstimated,
-        exchangeRatesSource: fxRates.source,
-      };
-
-      // 2. Query non-planned transactions
-      const conditions = [
-        eq(schema.transactions.transactionUserId, effectiveUserId),
-        eq(schema.transactions.transactionIsPlanned, 0)
-      ];
-      if (startDate !== undefined) conditions.push(gte(schema.transactions.transactionDate, normalizeToIsoTimestamp(startDate)));
-      if (endDate !== undefined) {
-        const cleanEndDate = /^\d{4}-\d{2}-\d{2}$/.test(endDate.trim())
-          ? `${endDate.trim()}T23:59:59.999Z`
-          : normalizeToIsoTimestamp(endDate);
-        conditions.push(lte(schema.transactions.transactionDate, cleanEndDate));
-      }
-
-      const txs = await db.select().from(schema.transactions).where(and(...conditions));
-      
-      // 3. Map categories for human-readable breakdown
-      const categoriesData = await db.select().from(schema.categories).where(eq(schema.categories.categoryUserId, effectiveUserId));
-      const categoryMap = new Map(categoriesData.map(c => [c.categoryId, c.categoryName]));
-
-      let totalIncome = 0;
-      let totalExpense = 0;
-      let totalAdminFees = 0;
-      let transfersCount = 0;
-      const categoryBreakdown: Record<string, number> = {};
-
-      for (const tx of txs) {
-        const fee = tx.transactionAdminFee || 0;
-        totalAdminFees += fee;
-
-        if (tx.transactionType === "income") {
-          totalIncome += (tx.transactionAmount - fee);
-        } else if (tx.transactionType === "expense") {
-          const totalCost = tx.transactionAmount + fee;
-          totalExpense += totalCost;
-          const catName = tx.transactionCategoryId ? (categoryMap.get(tx.transactionCategoryId) || `Category #${tx.transactionCategoryId}`) : "Uncategorized";
-          categoryBreakdown[catName] = Number(((categoryBreakdown[catName] || 0) + totalCost).toFixed(2));
-        } else if (tx.transactionType === "transfer") {
-          transfersCount += 1;
-          if (fee > 0) {
-            totalExpense += fee;
-            const catName = tx.transactionCategoryId ? (categoryMap.get(tx.transactionCategoryId) || `Category #${tx.transactionCategoryId}`) : "Transfer Fees";
-            categoryBreakdown[catName] = Number(((categoryBreakdown[catName] || 0) + fee).toFixed(2));
-          }
-        }
-      }
-
-      // 4. Query active debts & loans for summary totals
-      const activeDebtsLoans = await db.select().from(schema.debtsLoans)
-        .where(
-          and(
-            eq(schema.debtsLoans.debtLoanUserId, effectiveUserId),
-            sql`debt_loan_status != 'paid'`
-          )
-        );
-
-      let totalDebt = 0;
-      let totalReceivable = 0;
-      for (const dl of activeDebtsLoans) {
-        if (dl.debtLoanType === "debt") {
-          totalDebt += dl.debtLoanRemainingAmount;
-        } else if (dl.debtLoanType === "loan") {
-          totalReceivable += dl.debtLoanRemainingAmount;
-        }
-      }
-
-      // 5. Query active goals and compute pacing
-      const goalsData = await db.select().from(schema.goals)
-        .where(
-          and(
-            eq(schema.goals.goalUserId, effectiveUserId),
-            sql`goal_status != 'cancelled'`
-          )
-        );
-
-      const activeGoals = goalsData.map(g => {
-        const pacing = calculateGoalPacing(
-          g.goalTargetAmount,
-          g.goalCurrentAmount,
-          g.goalTargetDate,
-          g.goalStatus
-        );
-        return {
-          goalId: g.goalId,
-          name: g.goalName,
-          currency: g.goalCurrency,
-          walletId: g.goalWalletId,
-          categoryId: g.goalCategoryId,
-          ...pacing,
-        };
-      });
-
-      // 6. Query recurring templates & forward 30-day cashflow projection
-      const templatesData = await db.select().from(schema.recurringTemplates)
-        .where(
-          and(
-            eq(schema.recurringTemplates.templateUserId, effectiveUserId),
-            eq(schema.recurringTemplates.templateIsActive, 1)
-          )
-        );
-
-      const cashflowProjections = projectRecurringCashflow(
-        templatesData.map(t => ({
-          templateId: t.templateId,
-          templateName: t.templateName,
-          templateWalletId: t.templateWalletId,
-          templateTargetWalletId: t.templateTargetWalletId,
-          templateCategoryId: t.templateCategoryId,
-          templateAmount: t.templateAmount,
-          templateAdminFee: t.templateAdminFee,
-          templateType: t.templateType as 'expense' | 'income' | 'transfer',
-          templateFrequency: t.templateFrequency as 'daily' | 'weekly' | 'monthly' | 'yearly',
-          templateInterval: t.templateInterval,
-          templateStartDate: t.templateStartDate,
-          templateNextRunDate: t.templateNextRunDate,
-          templateEndDate: t.templateEndDate,
-          templateIsActive: t.templateIsActive,
-          templateNotes: t.templateNotes,
-        })),
-        30
-      );
-
-      const summary: Record<string, any> = {
-        netWorthByCurrency,
-        netWorthByInstitution,
-        consolidatedNetWorth,
-        totalIncome: Number(totalIncome.toFixed(2)),
-        totalExpense: Number(totalExpense.toFixed(2)),
-        totalAdminFees: Number(totalAdminFees.toFixed(2)),
-        netSavings: Number((totalIncome - totalExpense).toFixed(2)),
-        totalDebt: Number(totalDebt.toFixed(2)),
-        totalReceivable: Number(totalReceivable.toFixed(2)),
-        activeGoals,
-        cashflowProjections,
-        walletsCount: walletsData.length,
-        transactionsCount: txs.length,
-        transfersCount,
-        categoryBreakdown
-      };
-
-      if (walletsData.length === 0) {
-        summary.accountStatus = "new_account_needs_onboarding";
-        summary.isNewUser = true;
-        summary.guidance = "Akun Reedrich ini baru terhubung dan belum memiliki dompet. Tawarkan untuk membuat dompet pertama (misal: Bank BCA, Cash, GoPay) via manage_wallet(action: 'create') dan pasang kategori via manage_category(action: 'seed_defaults').";
-      }
-      return { content: [{ type: "text", text: JSON.stringify(summary, null, 2) }] };
+      const result = await financialSummary(db, effectiveUserId, (args || {}) as any, options?.fetchFn);
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
     }
 
     // --- Tool: manage_debt_loan ---
     if (name === "manage_debt_loan") {
-      const {
-        action,
-        debtLoanId,
-        type,
-        personName,
-        amount,
-        walletId,
-        dueDate,
-        notes,
-        status,
-        adjustWalletBalance,
-      } = (args || {}) as any;
-
-      if (!action || typeof action !== "string") {
-        throw new Error("Validation Error: 'action' is required for manage_debt_loan. Valid actions: create, list, repay, update");
-      }
-
-      // 1. Action: create
-      if (action === "create") {
-        if (!personName || typeof personName !== "string" || personName.trim().length === 0 || personName.trim().length > 100) {
-          throw new Error("Validation Error: 'personName' is required (1-100 characters)");
-        }
-        if (!isValidPositiveNumber(amount)) {
-          throw new Error("Validation Error: 'amount' must be a positive finite number greater than 0");
-        }
-        const cleanType = type === "debt" ? "debt" : "loan";
-        const cleanPersonName = personName.trim();
-        const shouldAdjustWallet = adjustWalletBalance !== false;
-
-        let cleanWalletId: string | null = null;
-        if (walletId) {
-          if (!isValidUUID(walletId)) {
-            throw new Error("Validation Error: 'walletId' must be a valid UUID string");
-          }
-          const targetWallet = await db.select().from(schema.wallets)
-            .where(and(eq(schema.wallets.walletId, walletId.trim()), eq(schema.wallets.walletUserId, effectiveUserId)))
-            .get();
-          if (!targetWallet) {
-            throw new Error(`Wallet ID ${walletId.trim()} not found or unauthorized`);
-          }
-          cleanWalletId = walletId.trim();
-        }
-
-        if (dueDate && !isValidIsoDateOrTimestamp(dueDate)) {
-          throw new Error("Validation Error: 'dueDate' must be in valid ISO format (e.g. YYYY-MM-DD or YYYY-MM-DDTHH:mm:ss+07:00)");
-        }
-        if (notes && (typeof notes !== "string" || notes.length > 500)) {
-          throw new Error("Validation Error: 'notes' cannot exceed 500 characters");
-        }
-
-        const newDebtLoanId = crypto.randomUUID();
-        const nowIso = currentIsoTimestamp();
-        const cleanDueDate = dueDate ? dueDate.trim() : null;
-
-        const newRecord = await db.insert(schema.debtsLoans).values({
-          debtLoanId: newDebtLoanId,
-          debtLoanUserId: effectiveUserId,
-          debtLoanPersonName: cleanPersonName,
-          debtLoanType: cleanType,
-          debtLoanAmount: amount,
-          debtLoanRemainingAmount: amount,
-          debtLoanWalletId: cleanWalletId,
-          debtLoanDueDate: cleanDueDate,
-          debtLoanStatus: "unpaid",
-          debtLoanNotes: notes ? notes.trim() : null,
-          debtLoanCreatedAt: nowIso,
-        }).returning();
-
-        // Atomic wallet balance adjustment on create
-        if (shouldAdjustWallet && cleanWalletId) {
-          if (cleanType === "loan") {
-            // Giving loan -> deduct from wallet balance
-            await db.update(schema.wallets)
-              .set({ walletBalance: sql`wallet_balance - ${amount}` })
-              .where(and(eq(schema.wallets.walletId, cleanWalletId), eq(schema.wallets.walletUserId, effectiveUserId)));
-          } else if (cleanType === "debt") {
-            // Borrowing -> credit to wallet balance
-            await db.update(schema.wallets)
-              .set({ walletBalance: sql`wallet_balance + ${amount}` })
-              .where(and(eq(schema.wallets.walletId, cleanWalletId), eq(schema.wallets.walletUserId, effectiveUserId)));
-          }
-        }
-
-        return { content: [{ type: "text", text: JSON.stringify(newRecord[0], null, 2) }] };
-      }
-
-      // 2. Action: list
+      const { action, debtLoanId, ...params } = (args || {}) as any;
       if (action === "list") {
-        const conditions = [eq(schema.debtsLoans.debtLoanUserId, effectiveUserId)];
-        if (status && ["unpaid", "partially_paid", "paid"].includes(status)) {
-          conditions.push(eq(schema.debtsLoans.debtLoanStatus, status));
-        }
-        if (type && ["debt", "loan"].includes(type)) {
-          conditions.push(eq(schema.debtsLoans.debtLoanType, type));
-        }
-
-        const results = await db.select().from(schema.debtsLoans)
-          .where(and(...conditions))
-          .orderBy(desc(schema.debtsLoans.debtLoanCreatedAt));
-
-        return { content: [{ type: "text", text: JSON.stringify(results, null, 2) }] };
+        const result = await listDebtsLoans(db, effectiveUserId, params);
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
-
-      // 3. Action: repay
+      if (action === "create") {
+        const result = await createDebtLoan(db, effectiveUserId, params);
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      }
       if (action === "repay") {
-        if (!isValidUUID(debtLoanId)) {
-          throw new Error("Validation Error: Valid string 'debtLoanId' (UUID) is required for repay");
-        }
-        if (!isValidPositiveNumber(amount)) {
-          throw new Error("Validation Error: Repayment 'amount' must be a positive finite number greater than 0");
-        }
-
-        const cleanId = (debtLoanId as string).trim();
-        const existingRecord = await db.select().from(schema.debtsLoans)
-          .where(and(eq(schema.debtsLoans.debtLoanId, cleanId), eq(schema.debtsLoans.debtLoanUserId, effectiveUserId)))
-          .get();
-
-        if (!existingRecord) {
-          throw new Error(`Debt/Loan ID ${cleanId} not found or unauthorized`);
-        }
-
-        if (existingRecord.debtLoanStatus === "paid" || existingRecord.debtLoanRemainingAmount <= 0) {
-          throw new Error(`Debt/Loan ${cleanId} is already fully paid`);
-        }
-
-        if (amount > existingRecord.debtLoanRemainingAmount + 0.001) {
-          throw new Error(`Validation Error: Repayment amount (${amount}) cannot exceed remaining balance (${existingRecord.debtLoanRemainingAmount})`);
-        }
-
-        const shouldAdjustWallet = adjustWalletBalance !== false;
-        let cleanWalletId = existingRecord.debtLoanWalletId;
-        if (walletId) {
-          if (!isValidUUID(walletId)) {
-            throw new Error("Validation Error: 'walletId' must be a valid UUID string");
-          }
-          const targetWallet = await db.select().from(schema.wallets)
-            .where(and(eq(schema.wallets.walletId, walletId.trim()), eq(schema.wallets.walletUserId, effectiveUserId)))
-            .get();
-          if (!targetWallet) {
-            throw new Error(`Wallet ID ${walletId.trim()} not found or unauthorized`);
-          }
-          cleanWalletId = walletId.trim();
-        }
-
-        const newRemaining = Number((existingRecord.debtLoanRemainingAmount - amount).toFixed(2));
-        const newStatus = newRemaining <= 0.001 ? "paid" : "partially_paid";
-        const finalRemaining = newRemaining <= 0.001 ? 0 : newRemaining;
-
-        const updated = await db.update(schema.debtsLoans)
-          .set({
-            debtLoanRemainingAmount: finalRemaining,
-            debtLoanStatus: newStatus,
-          })
-          .where(and(eq(schema.debtsLoans.debtLoanId, cleanId), eq(schema.debtsLoans.debtLoanUserId, effectiveUserId)))
-          .returning();
-
-        // Atomic wallet balance adjustment on repay
-        if (shouldAdjustWallet && cleanWalletId) {
-          if (existingRecord.debtLoanType === "loan") {
-            // Debtor pays us back -> credit our wallet
-            await db.update(schema.wallets)
-              .set({ walletBalance: sql`wallet_balance + ${amount}` })
-              .where(and(eq(schema.wallets.walletId, cleanWalletId), eq(schema.wallets.walletUserId, effectiveUserId)));
-          } else if (existingRecord.debtLoanType === "debt") {
-            // We pay creditor back -> deduct from our wallet
-            await db.update(schema.wallets)
-              .set({ walletBalance: sql`wallet_balance - ${amount}` })
-              .where(and(eq(schema.wallets.walletId, cleanWalletId), eq(schema.wallets.walletUserId, effectiveUserId)));
-          }
-        }
-
-        return { content: [{ type: "text", text: JSON.stringify(updated[0], null, 2) }] };
+        const result = await repayDebtLoan(db, effectiveUserId, debtLoanId, params);
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
-
-      // 4. Action: update
       if (action === "update") {
-        if (!isValidUUID(debtLoanId)) {
-          throw new Error("Validation Error: Valid string 'debtLoanId' (UUID) is required for update");
-        }
-        const cleanId = (debtLoanId as string).trim();
-        const existingRecord = await db.select().from(schema.debtsLoans)
-          .where(and(eq(schema.debtsLoans.debtLoanId, cleanId), eq(schema.debtsLoans.debtLoanUserId, effectiveUserId)))
-          .get();
-
-        if (!existingRecord) {
-          throw new Error(`Debt/Loan ID ${cleanId} not found or unauthorized`);
-        }
-
-        const updateData: Partial<typeof schema.debtsLoans.$inferInsert> = {};
-        if (personName !== undefined) {
-          if (typeof personName !== "string" || personName.trim().length === 0 || personName.trim().length > 100) {
-            throw new Error("Validation Error: 'personName' must be 1-100 characters");
-          }
-          updateData.debtLoanPersonName = personName.trim();
-        }
-        if (dueDate !== undefined) {
-          if (dueDate && !isValidIsoDateOrTimestamp(dueDate)) {
-            throw new Error("Validation Error: 'dueDate' must be in valid ISO format");
-          }
-          updateData.debtLoanDueDate = dueDate ? dueDate.trim() : null;
-        }
-        if (notes !== undefined) {
-          if (notes && (typeof notes !== "string" || notes.length > 500)) {
-            throw new Error("Validation Error: 'notes' cannot exceed 500 characters");
-          }
-          updateData.debtLoanNotes = notes ? notes.trim() : null;
-        }
-
-        if (Object.keys(updateData).length === 0) {
-          return { content: [{ type: "text", text: JSON.stringify(existingRecord, null, 2) }] };
-        }
-
-        const updated = await db.update(schema.debtsLoans)
-          .set(updateData)
-          .where(and(eq(schema.debtsLoans.debtLoanId, cleanId), eq(schema.debtsLoans.debtLoanUserId, effectiveUserId)))
-          .returning();
-
-        return { content: [{ type: "text", text: JSON.stringify(updated[0], null, 2) }] };
+        const result = await updateDebtLoan(db, effectiveUserId, debtLoanId, params);
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
-
       throw new Error(`Invalid action '${action}' for manage_debt_loan. Valid actions: create, list, repay, update`);
     }
 
     // --- Tool: manage_goal ---
     if (name === "manage_goal") {
-      const {
-        action,
-        goalId,
-        name: goalNameInput,
-        targetAmount,
-        currentAmount,
-        currency,
-        targetDate,
-        walletId,
-        categoryId,
-        status: goalStatusInput,
-        notes,
-        amount,
-        adjustWalletBalance,
-      } = (args || {}) as any;
-
-      if (!action || typeof action !== "string") {
-        throw new Error("Validation Error: 'action' is required for manage_goal. Valid actions: create, list, update, contribute, delete");
-      }
-
-      // 1. Action: create
-      if (action === "create") {
-        if (!goalNameInput || typeof goalNameInput !== "string" || goalNameInput.trim().length === 0 || goalNameInput.trim().length > 100) {
-          throw new Error("Validation Error: 'name' is required (1-100 characters)");
-        }
-        if (!isValidPositiveNumber(targetAmount)) {
-          throw new Error("Validation Error: 'targetAmount' must be a positive finite number greater than 0");
-        }
-        const initialCurrent = currentAmount !== undefined ? (isValidFiniteNumber(currentAmount) && currentAmount >= 0 ? currentAmount : null) : 0.0;
-        if (initialCurrent === null) {
-          throw new Error("Validation Error: 'currentAmount' must be a non-negative finite number");
-        }
-
-        let cleanWalletId: string | null = null;
-        if (walletId) {
-          if (!isValidUUID(walletId)) throw new Error("Validation Error: 'walletId' must be a valid UUID string");
-          const w = await db.select().from(schema.wallets)
-            .where(and(eq(schema.wallets.walletId, walletId.trim()), eq(schema.wallets.walletUserId, effectiveUserId)))
-            .get();
-          if (!w) throw new Error(`Wallet ID ${walletId.trim()} not found or unauthorized`);
-          cleanWalletId = walletId.trim();
-        }
-
-        let cleanCategoryId: string | null = null;
-        if (categoryId) {
-          if (!isValidUUID(categoryId)) throw new Error("Validation Error: 'categoryId' must be a valid UUID string");
-          const cat = await db.select().from(schema.categories)
-            .where(and(eq(schema.categories.categoryId, categoryId.trim()), eq(schema.categories.categoryUserId, effectiveUserId)))
-            .get();
-          if (!cat) throw new Error(`Category ID ${categoryId.trim()} not found or unauthorized`);
-          cleanCategoryId = categoryId.trim();
-        }
-
-        if (targetDate && !isValidIsoDateOrTimestamp(targetDate)) {
-          throw new Error("Validation Error: 'targetDate' must be in valid ISO format (e.g. YYYY-MM-DD)");
-        }
-        if (notes && (typeof notes !== "string" || notes.length > 500)) {
-          throw new Error("Validation Error: 'notes' cannot exceed 500 characters");
-        }
-
-        const cleanCurrency = currency && typeof currency === "string" && currency.trim().length > 0 ? currency.trim().toUpperCase() : "IDR";
-        const isAutoCompleted = initialCurrent >= targetAmount;
-        const finalStatus = isAutoCompleted ? "completed" : (goalStatusInput === "completed" || goalStatusInput === "cancelled" ? goalStatusInput : "in_progress");
-
-        const newGoal = await db.insert(schema.goals).values({
-          goalUserId: effectiveUserId,
-          goalName: goalNameInput.trim(),
-          goalTargetAmount: targetAmount,
-          goalCurrentAmount: initialCurrent,
-          goalCurrency: cleanCurrency,
-          goalTargetDate: targetDate ? targetDate.trim().split("T")[0] : null,
-          goalWalletId: cleanWalletId,
-          goalCategoryId: cleanCategoryId,
-          goalStatus: finalStatus,
-          goalNotes: notes ? notes.trim() : null,
-        }).returning();
-
-        const pacing = calculateGoalPacing(
-          newGoal[0].goalTargetAmount,
-          newGoal[0].goalCurrentAmount,
-          newGoal[0].goalTargetDate,
-          newGoal[0].goalStatus
-        );
-
-        return {
-          content: [{
-            type: "text",
-            text: JSON.stringify({ ...newGoal[0], pacing }, null, 2)
-          }]
-        };
-      }
-
-      // 2. Action: list
+      const { action, goalId, ...params } = (args || {}) as any;
       if (action === "list") {
-        const conditions = [eq(schema.goals.goalUserId, effectiveUserId)];
-        if (goalStatusInput && ["in_progress", "completed", "cancelled"].includes(goalStatusInput)) {
-          conditions.push(eq(schema.goals.goalStatus, goalStatusInput));
-        }
-
-        const goalsList = await db.select().from(schema.goals)
-          .where(and(...conditions))
-          .orderBy(desc(schema.goals.goalCreatedAt));
-
-        const enrichedGoals = goalsList.map(g => {
-          const pacing = calculateGoalPacing(
-            g.goalTargetAmount,
-            g.goalCurrentAmount,
-            g.goalTargetDate,
-            g.goalStatus
-          );
-          return { ...g, pacing };
-        });
-
-        return { content: [{ type: "text", text: JSON.stringify(enrichedGoals, null, 2) }] };
+        const result = await listGoals(db, effectiveUserId, params.status);
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
-
-      // 3. Action: contribute
+      if (action === "create") {
+        const result = await createGoal(db, effectiveUserId, params);
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      }
       if (action === "contribute") {
-        if (!isValidUUID(goalId)) {
-          throw new Error("Validation Error: Valid string 'goalId' (UUID) is required for contribute");
-        }
-        if (!isValidPositiveNumber(amount)) {
-          throw new Error("Validation Error: Contribution 'amount' must be a positive finite number greater than 0");
-        }
-
-        const cleanGoalId = (goalId as string).trim();
-        const existingGoal = await db.select().from(schema.goals)
-          .where(and(eq(schema.goals.goalId, cleanGoalId), eq(schema.goals.goalUserId, effectiveUserId)))
-          .get();
-
-        if (!existingGoal) {
-          throw new Error(`Goal ID ${cleanGoalId} not found or unauthorized`);
-        }
-
-        const newCurrent = Number((existingGoal.goalCurrentAmount + amount).toFixed(2));
-        const newStatus = newCurrent >= existingGoal.goalTargetAmount ? "completed" : existingGoal.goalStatus;
-
-        const updated = await db.update(schema.goals)
-          .set({
-            goalCurrentAmount: newCurrent,
-            goalStatus: newStatus,
-          })
-          .where(and(eq(schema.goals.goalId, cleanGoalId), eq(schema.goals.goalUserId, effectiveUserId)))
-          .returning();
-
-        // Optional: adjust wallet balance
-        const shouldAdjust = adjustWalletBalance === true;
-        const targetWalletId = walletId ? walletId.trim() : existingGoal.goalWalletId;
-
-        if (shouldAdjust && targetWalletId) {
-          const w = await db.select().from(schema.wallets)
-            .where(and(eq(schema.wallets.walletId, targetWalletId), eq(schema.wallets.walletUserId, effectiveUserId)))
-            .get();
-          if (w) {
-            await db.update(schema.wallets)
-              .set({ walletBalance: sql`wallet_balance - ${amount}` })
-              .where(and(eq(schema.wallets.walletId, targetWalletId), eq(schema.wallets.walletUserId, effectiveUserId)));
-
-            // Record transaction
-            await db.insert(schema.transactions).values({
-              transactionUserId: effectiveUserId,
-              transactionWalletId: targetWalletId,
-              transactionCategoryId: existingGoal.goalCategoryId,
-              transactionAmount: amount,
-              transactionAdminFee: 0.0,
-              transactionType: "expense",
-              transactionDescription: `Goal contribution: ${existingGoal.goalName}`,
-              transactionIsPlanned: 0,
-              transactionDate: currentIsoTimestamp(),
-            });
-          }
-        }
-
-        const pacing = calculateGoalPacing(
-          updated[0].goalTargetAmount,
-          updated[0].goalCurrentAmount,
-          updated[0].goalTargetDate,
-          updated[0].goalStatus
-        );
-
-        return {
-          content: [{
-            type: "text",
-            text: JSON.stringify({ ...updated[0], pacing }, null, 2)
-          }]
-        };
+        const result = await contributeGoal(db, effectiveUserId, goalId, params);
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
-
-      // 4. Action: update
       if (action === "update") {
-        if (!isValidUUID(goalId)) {
-          throw new Error("Validation Error: Valid string 'goalId' (UUID) is required for update");
-        }
-        const cleanGoalId = (goalId as string).trim();
-        const existingGoal = await db.select().from(schema.goals)
-          .where(and(eq(schema.goals.goalId, cleanGoalId), eq(schema.goals.goalUserId, effectiveUserId)))
-          .get();
-
-        if (!existingGoal) {
-          throw new Error(`Goal ID ${cleanGoalId} not found or unauthorized`);
-        }
-
-        const updateData: Partial<typeof schema.goals.$inferInsert> = {};
-        if (goalNameInput !== undefined) {
-          if (typeof goalNameInput !== "string" || goalNameInput.trim().length === 0 || goalNameInput.trim().length > 100) {
-            throw new Error("Validation Error: 'name' must be 1-100 characters");
-          }
-          updateData.goalName = goalNameInput.trim();
-        }
-        if (targetAmount !== undefined) {
-          if (!isValidPositiveNumber(targetAmount)) {
-            throw new Error("Validation Error: 'targetAmount' must be a positive finite number greater than 0");
-          }
-          updateData.goalTargetAmount = targetAmount;
-        }
-        if (currentAmount !== undefined) {
-          if (!isValidFiniteNumber(currentAmount) || currentAmount < 0) {
-            throw new Error("Validation Error: 'currentAmount' must be a non-negative finite number");
-          }
-          updateData.goalCurrentAmount = currentAmount;
-        }
-        if (currency !== undefined) {
-          if (typeof currency !== "string" || currency.trim().length === 0) {
-            throw new Error("Validation Error: 'currency' must be a valid currency string");
-          }
-          updateData.goalCurrency = currency.trim().toUpperCase();
-        }
-        if (targetDate !== undefined) {
-          if (targetDate && !isValidIsoDateOrTimestamp(targetDate)) {
-            throw new Error("Validation Error: 'targetDate' must be in valid ISO format");
-          }
-          updateData.goalTargetDate = targetDate ? targetDate.trim().split("T")[0] : null;
-        }
-        if (walletId !== undefined) {
-          if (walletId) {
-            if (!isValidUUID(walletId)) throw new Error("Validation Error: 'walletId' must be a valid UUID string");
-            const w = await db.select().from(schema.wallets)
-              .where(and(eq(schema.wallets.walletId, walletId.trim()), eq(schema.wallets.walletUserId, effectiveUserId)))
-              .get();
-            if (!w) throw new Error(`Wallet ID ${walletId.trim()} not found or unauthorized`);
-            updateData.goalWalletId = walletId.trim();
-          } else {
-            updateData.goalWalletId = null;
-          }
-        }
-        if (categoryId !== undefined) {
-          if (categoryId) {
-            if (!isValidUUID(categoryId)) throw new Error("Validation Error: 'categoryId' must be a valid UUID string");
-            const cat = await db.select().from(schema.categories)
-              .where(and(eq(schema.categories.categoryId, categoryId.trim()), eq(schema.categories.categoryUserId, effectiveUserId)))
-              .get();
-            if (!cat) throw new Error(`Category ID ${categoryId.trim()} not found or unauthorized`);
-            updateData.goalCategoryId = categoryId.trim();
-          } else {
-            updateData.goalCategoryId = null;
-          }
-        }
-        if (goalStatusInput !== undefined) {
-          if (!["in_progress", "completed", "cancelled"].includes(goalStatusInput)) {
-            throw new Error("Validation Error: 'status' must be 'in_progress', 'completed', or 'cancelled'");
-          }
-          updateData.goalStatus = goalStatusInput;
-        }
-        if (notes !== undefined) {
-          if (notes && (typeof notes !== "string" || notes.length > 500)) {
-            throw new Error("Validation Error: 'notes' cannot exceed 500 characters");
-          }
-          updateData.goalNotes = notes ? notes.trim() : null;
-        }
-
-        if (Object.keys(updateData).length === 0) {
-          const pacing = calculateGoalPacing(
-            existingGoal.goalTargetAmount,
-            existingGoal.goalCurrentAmount,
-            existingGoal.goalTargetDate,
-            existingGoal.goalStatus
-          );
-          return { content: [{ type: "text", text: JSON.stringify({ ...existingGoal, pacing }, null, 2) }] };
-        }
-
-        const updated = await db.update(schema.goals)
-          .set(updateData)
-          .where(and(eq(schema.goals.goalId, cleanGoalId), eq(schema.goals.goalUserId, effectiveUserId)))
-          .returning();
-
-        const pacing = calculateGoalPacing(
-          updated[0].goalTargetAmount,
-          updated[0].goalCurrentAmount,
-          updated[0].goalTargetDate,
-          updated[0].goalStatus
-        );
-
-        return { content: [{ type: "text", text: JSON.stringify({ ...updated[0], pacing }, null, 2) }] };
+        const result = await updateGoal(db, effectiveUserId, goalId, params);
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
-
-      // 5. Action: delete
       if (action === "delete") {
-        if (!isValidUUID(goalId)) {
-          throw new Error("Validation Error: Valid string 'goalId' (UUID) is required for delete");
-        }
-        const cleanGoalId = (goalId as string).trim();
-        const deleted = await db.delete(schema.goals)
-          .where(and(eq(schema.goals.goalId, cleanGoalId), eq(schema.goals.goalUserId, effectiveUserId)))
-          .returning();
-
-        if (deleted.length === 0) {
-          throw new Error(`Goal ID ${cleanGoalId} not found or unauthorized`);
-        }
-
-        return { content: [{ type: "text", text: JSON.stringify({ message: "Goal deleted successfully", goal: deleted[0] }, null, 2) }] };
+        const deleted = await deleteGoal(db, effectiveUserId, goalId);
+        return { content: [{ type: "text", text: JSON.stringify({ message: "Goal deleted successfully", goal: deleted }, null, 2) }] };
       }
-
       throw new Error(`Invalid action '${action}' for manage_goal. Valid actions: create, list, update, contribute, delete`);
     }
 
     // --- Tool: manage_recurring_template ---
     if (name === "manage_recurring_template") {
-      const {
-        action,
-        templateId,
-        name: templateNameInput,
-        walletId,
-        targetWalletId,
-        categoryId,
-        amount,
-        adminFee,
-        type: templateTypeInput,
-        frequency,
-        interval,
-        startDate,
-        nextRunDate,
-        endDate,
-        isActive,
-        notes,
-      } = (args || {}) as any;
-
-      if (!action || typeof action !== "string") {
-        throw new Error("Validation Error: 'action' is required for manage_recurring_template. Valid actions: create, list, update, delete");
-      }
-
-      // 1. Action: create
-      if (action === "create") {
-        if (!templateNameInput || typeof templateNameInput !== "string" || templateNameInput.trim().length === 0 || templateNameInput.trim().length > 100) {
-          throw new Error("Validation Error: 'name' is required (1-100 characters)");
-        }
-        if (!isValidUUID(walletId)) {
-          throw new Error("Validation Error: 'walletId' is required and must be a valid UUID string");
-        }
-        const sourceWallet = await db.select().from(schema.wallets)
-          .where(and(eq(schema.wallets.walletId, walletId.trim()), eq(schema.wallets.walletUserId, effectiveUserId)))
-          .get();
-        if (!sourceWallet) {
-          throw new Error(`Wallet ID ${walletId.trim()} not found or unauthorized`);
-        }
-
-        const cleanType = (templateTypeInput === "income" || templateTypeInput === "transfer") ? templateTypeInput : "expense";
-
-        let cleanTargetWalletId: string | null = null;
-        if (cleanType === "transfer") {
-          if (!isValidUUID(targetWalletId)) {
-            throw new Error("Validation Error: 'targetWalletId' is required for transfer recurring templates");
-          }
-          if (targetWalletId.trim() === walletId.trim()) {
-            throw new Error("Validation Error: 'walletId' and 'targetWalletId' cannot be identical for transfers");
-          }
-          const destWallet = await db.select().from(schema.wallets)
-            .where(and(eq(schema.wallets.walletId, targetWalletId.trim()), eq(schema.wallets.walletUserId, effectiveUserId)))
-            .get();
-          if (!destWallet) {
-            throw new Error(`Target Wallet ID ${targetWalletId.trim()} not found or unauthorized`);
-          }
-          cleanTargetWalletId = targetWalletId.trim();
-        }
-
-        let cleanCategoryId: string | null = null;
-        if (categoryId) {
-          if (!isValidUUID(categoryId)) throw new Error("Validation Error: 'categoryId' must be a valid UUID string");
-          const cat = await db.select().from(schema.categories)
-            .where(and(eq(schema.categories.categoryId, categoryId.trim()), eq(schema.categories.categoryUserId, effectiveUserId)))
-            .get();
-          if (!cat) throw new Error(`Category ID ${categoryId.trim()} not found or unauthorized`);
-          cleanCategoryId = categoryId.trim();
-        }
-
-        if (!isValidPositiveNumber(amount)) {
-          throw new Error("Validation Error: 'amount' must be a positive finite number greater than 0");
-        }
-
-        const cleanAdminFee = adminFee !== undefined ? (isValidFiniteNumber(adminFee) && adminFee >= 0 ? adminFee : null) : 0.0;
-        if (cleanAdminFee === null) {
-          throw new Error("Validation Error: 'adminFee' must be a non-negative finite number");
-        }
-
-        const cleanFrequency = ["daily", "weekly", "monthly", "yearly"].includes(frequency) ? frequency : "monthly";
-        const cleanInterval = interval !== undefined ? (Number.isInteger(interval) && interval >= 1 ? interval : null) : 1;
-        if (cleanInterval === null) {
-          throw new Error("Validation Error: 'interval' must be an integer greater than or equal to 1");
-        }
-
-        if (!startDate || !isValidIsoDateOrTimestamp(startDate)) {
-          throw new Error("Validation Error: 'startDate' is required in valid ISO format (e.g. YYYY-MM-DD)");
-        }
-        const cleanStartDate = startDate.trim().split("T")[0];
-
-        const cleanNextRunDate = nextRunDate && isValidIsoDateOrTimestamp(nextRunDate)
-          ? nextRunDate.trim().split("T")[0]
-          : cleanStartDate;
-
-        if (endDate && !isValidIsoDateOrTimestamp(endDate)) {
-          throw new Error("Validation Error: 'endDate' must be in valid ISO format (e.g. YYYY-MM-DD)");
-        }
-        const cleanEndDate = endDate ? endDate.trim().split("T")[0] : null;
-
-        if (notes && (typeof notes !== "string" || notes.length > 500)) {
-          throw new Error("Validation Error: 'notes' cannot exceed 500 characters");
-        }
-
-        const activeFlag = isActive === false ? 0 : 1;
-
-        const newTemplate = await db.insert(schema.recurringTemplates).values({
-          templateUserId: effectiveUserId,
-          templateName: templateNameInput.trim(),
-          templateWalletId: walletId.trim(),
-          templateTargetWalletId: cleanTargetWalletId,
-          templateCategoryId: cleanCategoryId,
-          templateAmount: amount,
-          templateAdminFee: cleanAdminFee,
-          templateType: cleanType,
-          templateFrequency: cleanFrequency,
-          templateInterval: cleanInterval,
-          templateStartDate: cleanStartDate,
-          templateNextRunDate: cleanNextRunDate,
-          templateEndDate: cleanEndDate,
-          templateIsActive: activeFlag,
-          templateNotes: notes ? notes.trim() : null,
-        }).returning();
-
-        return { content: [{ type: "text", text: JSON.stringify(newTemplate[0], null, 2) }] };
-      }
-
-      // 2. Action: list
+      const { action, templateId, ...params } = (args || {}) as any;
       if (action === "list") {
-        const conditions = [eq(schema.recurringTemplates.templateUserId, effectiveUserId)];
-        if (isActive !== undefined) {
-          conditions.push(eq(schema.recurringTemplates.templateIsActive, isActive ? 1 : 0));
-        }
-
-        const list = await db.select().from(schema.recurringTemplates)
-          .where(and(...conditions))
-          .orderBy(desc(schema.recurringTemplates.templateCreatedAt));
-
-        return { content: [{ type: "text", text: JSON.stringify(list, null, 2) }] };
+        const result = await listRecurringTemplates(db, effectiveUserId, params.isActive);
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
-
-      // 3. Action: update
+      if (action === "create") {
+        const result = await createRecurringTemplate(db, effectiveUserId, params);
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      }
       if (action === "update") {
-        if (!isValidUUID(templateId)) {
-          throw new Error("Validation Error: Valid string 'templateId' (UUID) is required for update");
-        }
-        const cleanTemplateId = (templateId as string).trim();
-        const existingTemplate = await db.select().from(schema.recurringTemplates)
-          .where(and(eq(schema.recurringTemplates.templateId, cleanTemplateId), eq(schema.recurringTemplates.templateUserId, effectiveUserId)))
-          .get();
-
-        if (!existingTemplate) {
-          throw new Error(`Recurring Template ID ${cleanTemplateId} not found or unauthorized`);
-        }
-
-        const updateData: Partial<typeof schema.recurringTemplates.$inferInsert> = {};
-        if (templateNameInput !== undefined) {
-          if (typeof templateNameInput !== "string" || templateNameInput.trim().length === 0 || templateNameInput.trim().length > 100) {
-            throw new Error("Validation Error: 'name' must be 1-100 characters");
-          }
-          updateData.templateName = templateNameInput.trim();
-        }
-        if (walletId !== undefined) {
-          if (!isValidUUID(walletId)) throw new Error("Validation Error: 'walletId' must be a valid UUID string");
-          const w = await db.select().from(schema.wallets)
-            .where(and(eq(schema.wallets.walletId, walletId.trim()), eq(schema.wallets.walletUserId, effectiveUserId)))
-            .get();
-          if (!w) throw new Error(`Wallet ID ${walletId.trim()} not found or unauthorized`);
-          updateData.templateWalletId = walletId.trim();
-        }
-        if (targetWalletId !== undefined) {
-          if (targetWalletId) {
-            if (!isValidUUID(targetWalletId)) throw new Error("Validation Error: 'targetWalletId' must be a valid UUID string");
-            const tw = await db.select().from(schema.wallets)
-              .where(and(eq(schema.wallets.walletId, targetWalletId.trim()), eq(schema.wallets.walletUserId, effectiveUserId)))
-              .get();
-            if (!tw) throw new Error(`Target Wallet ID ${targetWalletId.trim()} not found or unauthorized`);
-            updateData.templateTargetWalletId = targetWalletId.trim();
-          } else {
-            updateData.templateTargetWalletId = null;
-          }
-        }
-        if (categoryId !== undefined) {
-          if (categoryId) {
-            if (!isValidUUID(categoryId)) throw new Error("Validation Error: 'categoryId' must be a valid UUID string");
-            const cat = await db.select().from(schema.categories)
-              .where(and(eq(schema.categories.categoryId, categoryId.trim()), eq(schema.categories.categoryUserId, effectiveUserId)))
-              .get();
-            if (!cat) throw new Error(`Category ID ${categoryId.trim()} not found or unauthorized`);
-            updateData.templateCategoryId = categoryId.trim();
-          } else {
-            updateData.templateCategoryId = null;
-          }
-        }
-        if (amount !== undefined) {
-          if (!isValidPositiveNumber(amount)) throw new Error("Validation Error: 'amount' must be a positive finite number greater than 0");
-          updateData.templateAmount = amount;
-        }
-        if (adminFee !== undefined) {
-          if (!isValidFiniteNumber(adminFee) || adminFee < 0) throw new Error("Validation Error: 'adminFee' must be a non-negative finite number");
-          updateData.templateAdminFee = adminFee;
-        }
-        if (templateTypeInput !== undefined) {
-          if (!["expense", "income", "transfer"].includes(templateTypeInput)) {
-            throw new Error("Validation Error: 'type' must be 'expense', 'income', or 'transfer'");
-          }
-          updateData.templateType = templateTypeInput;
-        }
-        if (frequency !== undefined) {
-          if (!["daily", "weekly", "monthly", "yearly"].includes(frequency)) {
-            throw new Error("Validation Error: 'frequency' must be 'daily', 'weekly', 'monthly', or 'yearly'");
-          }
-          updateData.templateFrequency = frequency;
-        }
-        if (interval !== undefined) {
-          if (!Number.isInteger(interval) || interval < 1) {
-            throw new Error("Validation Error: 'interval' must be an integer >= 1");
-          }
-          updateData.templateInterval = interval;
-        }
-        if (startDate !== undefined) {
-          if (!isValidIsoDateOrTimestamp(startDate)) throw new Error("Validation Error: 'startDate' must be in valid ISO format");
-          updateData.templateStartDate = startDate.trim().split("T")[0];
-        }
-        if (nextRunDate !== undefined) {
-          if (!isValidIsoDateOrTimestamp(nextRunDate)) throw new Error("Validation Error: 'nextRunDate' must be in valid ISO format");
-          updateData.templateNextRunDate = nextRunDate.trim().split("T")[0];
-        }
-        if (endDate !== undefined) {
-          if (endDate && !isValidIsoDateOrTimestamp(endDate)) throw new Error("Validation Error: 'endDate' must be in valid ISO format");
-          updateData.templateEndDate = endDate ? endDate.trim().split("T")[0] : null;
-        }
-        if (isActive !== undefined) {
-          updateData.templateIsActive = isActive ? 1 : 0;
-        }
-        if (notes !== undefined) {
-          if (notes && (typeof notes !== "string" || notes.length > 500)) {
-            throw new Error("Validation Error: 'notes' cannot exceed 500 characters");
-          }
-          updateData.templateNotes = notes ? notes.trim() : null;
-        }
-
-        if (Object.keys(updateData).length === 0) {
-          return { content: [{ type: "text", text: JSON.stringify(existingTemplate, null, 2) }] };
-        }
-
-        const updated = await db.update(schema.recurringTemplates)
-          .set(updateData)
-          .where(and(eq(schema.recurringTemplates.templateId, cleanTemplateId), eq(schema.recurringTemplates.templateUserId, effectiveUserId)))
-          .returning();
-
-        return { content: [{ type: "text", text: JSON.stringify(updated[0], null, 2) }] };
+        const result = await updateRecurringTemplate(db, effectiveUserId, templateId, params);
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
-
-      // 4. Action: delete
       if (action === "delete") {
-        if (!isValidUUID(templateId)) {
-          throw new Error("Validation Error: Valid string 'templateId' (UUID) is required for delete");
-        }
-        const cleanTemplateId = (templateId as string).trim();
-        const deleted = await db.delete(schema.recurringTemplates)
-          .where(and(eq(schema.recurringTemplates.templateId, cleanTemplateId), eq(schema.recurringTemplates.templateUserId, effectiveUserId)))
-          .returning();
-
-        if (deleted.length === 0) {
-          throw new Error(`Recurring Template ID ${cleanTemplateId} not found or unauthorized`);
-        }
-
-        return { content: [{ type: "text", text: JSON.stringify({ message: "Recurring template deleted successfully", template: deleted[0] }, null, 2) }] };
+        const deleted = await deleteRecurringTemplate(db, effectiveUserId, templateId);
+        return { content: [{ type: "text", text: JSON.stringify({ message: "Recurring template deleted successfully", template: deleted }, null, 2) }] };
       }
-
       throw new Error(`Invalid action '${action}' for manage_recurring_template. Valid actions: create, list, update, delete`);
     }
 
     // --- Tool: apply_recurring_template ---
     if (name === "apply_recurring_template") {
       const { templateId, executionDate } = (args || {}) as any;
-
-      if (!isValidUUID(templateId)) {
-        throw new Error("Validation Error: Valid string 'templateId' (UUID) is required for apply_recurring_template");
-      }
-      const cleanTemplateId = (templateId as string).trim();
-      const template = await db.select().from(schema.recurringTemplates)
-        .where(and(eq(schema.recurringTemplates.templateId, cleanTemplateId), eq(schema.recurringTemplates.templateUserId, effectiveUserId)))
-        .get();
-
-      if (!template) {
-        throw new Error(`Recurring Template ID ${cleanTemplateId} not found or unauthorized`);
-      }
-
-      if (executionDate !== undefined && !isValidIsoDateOrTimestamp(executionDate)) {
-        throw new Error("Validation Error: 'executionDate' must be in valid ISO format");
-      }
-      const txDate = executionDate ? normalizeToIsoTimestamp(executionDate) : `${template.templateNextRunDate}T12:00:00.000Z`;
-
-      const fee = template.templateAdminFee || 0.0;
-      const amt = template.templateAmount;
-      const totalOutflow = amt + fee;
-
-      // Check wallet existence
-      const sourceWallet = await db.select().from(schema.wallets)
-        .where(and(eq(schema.wallets.walletId, template.templateWalletId), eq(schema.wallets.walletUserId, effectiveUserId)))
-        .get();
-      if (!sourceWallet) {
-        throw new Error(`Source wallet ID ${template.templateWalletId} not found or unauthorized`);
-      }
-
-      // Execute atomic transaction creation
-      const newTx = await db.insert(schema.transactions).values({
-        transactionUserId: effectiveUserId,
-        transactionWalletId: template.templateWalletId,
-        transactionTargetWalletId: template.templateTargetWalletId,
-        transactionCategoryId: template.templateCategoryId,
-        transactionAmount: amt,
-        transactionAdminFee: fee,
-        transactionType: template.templateType,
-        transactionDescription: `[Recurring] ${template.templateName}`,
-        transactionIsPlanned: 0,
-        transactionDate: txDate,
-      }).returning();
-
-      // Reconcile wallet balance atomically
-      if (template.templateType === "expense") {
-        await db.update(schema.wallets)
-          .set({ walletBalance: sql`wallet_balance - ${totalOutflow}` })
-          .where(and(eq(schema.wallets.walletId, template.templateWalletId), eq(schema.wallets.walletUserId, effectiveUserId)));
-      } else if (template.templateType === "income") {
-        const netIncome = amt - fee;
-        await db.update(schema.wallets)
-          .set({ walletBalance: sql`wallet_balance + ${netIncome}` })
-          .where(and(eq(schema.wallets.walletId, template.templateWalletId), eq(schema.wallets.walletUserId, effectiveUserId)));
-      } else if (template.templateType === "transfer" && template.templateTargetWalletId) {
-        await db.update(schema.wallets)
-          .set({ walletBalance: sql`wallet_balance - ${totalOutflow}` })
-          .where(and(eq(schema.wallets.walletId, template.templateWalletId), eq(schema.wallets.walletUserId, effectiveUserId)));
-
-        await db.update(schema.wallets)
-          .set({ walletBalance: sql`wallet_balance + ${amt}` })
-          .where(and(eq(schema.wallets.walletId, template.templateTargetWalletId), eq(schema.wallets.walletUserId, effectiveUserId)));
-      }
-
-      // Advance template nextRunDate
-      const nextDate = calculateNextRunDate(
-        template.templateNextRunDate,
-        template.templateFrequency as 'daily' | 'weekly' | 'monthly' | 'yearly',
-        template.templateInterval
-      );
-
-      const updatedTemplate = await db.update(schema.recurringTemplates)
-        .set({ templateNextRunDate: nextDate })
-        .where(and(eq(schema.recurringTemplates.templateId, cleanTemplateId), eq(schema.recurringTemplates.templateUserId, effectiveUserId)))
-        .returning();
-
-      return {
-        content: [{
-          type: "text",
-          text: JSON.stringify({
-            message: "Recurring template successfully applied",
-            transaction: newTx[0],
-            template: updatedTemplate[0],
-          }, null, 2)
-        }]
-      };
+      const result = await applyRecurringTemplate(db, effectiveUserId, templateId, executionDate);
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
     }
 
     throw new Error(`Tool not found: ${name}`);

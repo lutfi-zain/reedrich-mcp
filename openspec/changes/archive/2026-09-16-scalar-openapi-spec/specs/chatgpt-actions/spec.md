@@ -1,10 +1,4 @@
-# chatgpt-actions Specification
-
-## Purpose
-
-Exposes OpenAPI 3.0.0 metadata, privacy policy documentation, and REST endpoints under `/api/v1` to enable seamless integration with Custom GPTs and ChatGPT Actions without requiring raw Model Context Protocol transport.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: OpenAPI 3.0.0 Manifest
 The server SHALL serve an OpenAPI 3.0.0 compliant specification at `GET /openapi.json`.
@@ -37,29 +31,3 @@ The OpenAPI specification MUST:
 - **THEN** the response status MUST be `200` with `Content-Type: application/json; charset=utf-8`
 - **THEN** the JSON document SHALL include path entries for `/api/v1/wallets`, `/api/v1/categories`, `/api/v1/budgets`, `/api/v1/transactions`, `/api/v1/debts-loans`, `/api/v1/goals`, `/api/v1/recurring-templates`, `/api/v1/summary`, and `/api/v1/feedback`
 - **THEN** all path operations SHALL specify appropriate tags, response codes, and security definitions
----
-
-### Requirement: Public Privacy Policy
-The server SHALL serve a public HTML Privacy Policy at `GET /privacy`.
-
-The Privacy Policy MUST:
-- Contain clean HTML describing data handling, zero third-party selling, and user rights.
-- Support dark theme visual styling.
-- Return `200 OK` with `Content-Type: text/html; charset=utf-8` and CORS header `Access-Control-Allow-Origin: *`.
-
-#### Scenario: Fetch Privacy Policy
-- **WHEN** an HTTP `GET /privacy` request is received
-- **THEN** the response status MUST be `200` with HTML content detailing privacy guarantees.
-
----
-
-### Requirement: REST Endpoints under /api/v1
-The server SHALL define and serve REST endpoints under `/api/v1/*` corresponding to core financial operations (e.g. `/api/v1/summary`) protected by Bearer authentication.
-
-#### Scenario: Access REST endpoint with valid Bearer token
-- **WHEN** a client sends an HTTP request to `/api/v1/summary` with a valid Bearer token (JWT or API key)
-- **THEN** the response MUST return the financial summary with HTTP status `200`.
-
-#### Scenario: Access REST endpoint without credentials
-- **WHEN** a client sends an HTTP request to `/api/v1/summary` without an `Authorization` header
-- **THEN** the response MUST return HTTP status `401 Unauthorized` with an error message.

@@ -1,0 +1,59 @@
+import { Hono } from "hono";
+import { drizzle } from "drizzle-orm/d1";
+import * as schema from "../db/schema";
+import {
+  listRecurringTemplates,
+  createRecurringTemplate,
+  applyRecurringTemplate,
+} from "../services/recurring";
+import type { AppEnv } from "../index";
+
+const recurringTemplates = new Hono<AppEnv>();
+
+recurringTemplates.get("/", async (c) => {
+  const userId = c.get("userId");
+  const db = drizzle(c.env.DB, { schema });
+  const isActiveQuery = c.req.query("isActive");
+  const isActive =
+    isActiveQuery !== undefined
+      ? isActiveQuery === "true" || isActiveQuery === "1"
+      : undefined;
+
+  const result = await listRecurringTemplates(db, userId!, isActive);
+  return c.json(result, 200);
+});
+
+recurringTemplates.post("/", async (c) => {
+  const userId = c.get("userId");
+  const db = drizzle(c.env.DB, { schema });
+  const body = (await c.req.json()) as Record<string, unknown>;
+
+  const result = await createRecurringTemplate(db, userId!, body as any);
+  return c.json(result, 201);
+});
+
+recurringTemplates.post("/:templateId/apply", async (c) => {
+  const userId = c.get("userId");
+  const db = drizzle(c.env.DB, { schema });
+  const templateId = c.req.param("templateId");
+
+  let executionDate: string | undefined = undefined;
+  try {
+    const body = (await c.req.json()) as Record<string, unknown>;
+    if (typeof body?.executionDate === "string") {
+      executionDate = body.executionDate;
+    }
+  } catch {
+    // Body optional for apply
+  }
+
+  const result = await applyRecurringTemplate(
+    db,
+    userId!,
+    templateId,
+    executionDate
+  );
+  return c.json(result, 200);
+});
+
+export default recurringTemplates;

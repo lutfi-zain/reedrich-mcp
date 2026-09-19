@@ -287,7 +287,7 @@ describe('Integration Test: Full User Journey (Deployed Worker + Remote D1)', ()
       categoryId: state.categories.food.categoryId,
       amount: 2000000,
       periodStart: '2026-08-01',
-      periodEnd: '2026-08-31',
+      periodEnd: '2026-12-31',
     }, state.userA.token);
 
     assert.equal(budget.budgetName, 'August Food Budget');

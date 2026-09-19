@@ -1813,6 +1813,226 @@ describe('Eve Finance MCP Server — Complete Test Suite', () => {
     assert.equal(summaryBody.activeGoals.length, 1);
     assert.ok(summaryBody.cashflowProjections);
   });
+
+  it('19. Modular REST API Read-Only Endpoints & Observability Headers', async () => {
+    const { d1 } = createTestDB();
+    const env = { DB: d1 as unknown as D1Database, JWT_SECRET: TEST_JWT_SECRET };
+    const db = drizzle(d1 as unknown as D1Database, { schema });
+
+    const userId = crypto.randomUUID();
+    const token = await generateUserToken({
+      userId,
+      name: 'REST Reader',
+      email: 'reader@example.com',
+      expiresInSeconds: 900,
+    }, TEST_JWT_SECRET);
+
+    await db.insert(schema.users).values({
+      userId,
+      userFirstName: 'REST',
+      userLastName: 'Reader',
+      userEmail: 'reader@example.com',
+      userWhatsappNumber: '+62811111111',
+      userApiKeyHash: 'hash_reader_test',
+    });
+
+    const [wallet] = await db.insert(schema.wallets).values({
+      walletUserId: userId,
+      walletName: 'Main Savings',
+      walletBalance: 10000000,
+      walletCurrency: 'IDR',
+    }).returning();
+
+    const [category] = await db.insert(schema.categories).values({
+      categoryUserId: userId,
+      categoryName: 'Food & Dining',
+      categoryType: 'expense',
+    }).returning();
+
+    await db.insert(schema.budgets).values({
+      budgetUserId: userId,
+      budgetName: 'Monthly Food',
+      budgetCategoryId: category.categoryId,
+      budgetAmount: 2000000,
+      budgetPeriodStart: '2026-09-01T00:00:00.000Z',
+      budgetPeriodEnd: '2026-09-30T23:59:59.999Z',
+    });
+
+    await db.insert(schema.transactions).values({
+      transactionUserId: userId,
+      transactionWalletId: wallet.walletId,
+      transactionCategoryId: category.categoryId,
+      transactionAmount: 150000,
+      transactionAdminFee: 0,
+      transactionType: 'expense',
+      transactionDescription: 'Dinner',
+      transactionIsPlanned: 0,
+      transactionDate: '2026-09-10T19:00:00.000Z',
+    });
+
+    await db.insert(schema.debtsLoans).values({
+      debtLoanUserId: userId,
+      debtLoanPersonName: 'Alice',
+      debtLoanType: 'loan',
+      debtLoanAmount: 500000,
+      debtLoanRemainingAmount: 500000,
+      debtLoanStatus: 'unpaid',
+    });
+
+    // 1. GET /api/v1/wallets
+    const walletsRes = await app.request('https://example.workers.dev/api/v1/wallets', {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal(walletsRes.status, 200);
+    const walletsData: any = await walletsRes.json();
+    assert.equal(walletsData.length, 1);
+    assert.equal(walletsData[0].walletName, 'Main Savings');
+
+    // Verify Observability Headers
+    assert.ok(walletsRes.headers.get('X-Request-ID'), 'X-Request-ID header should be present');
+    assert.ok(walletsRes.headers.get('X-Response-Time'), 'X-Response-Time header should be present');
+
+    // 2. GET /api/v1/categories
+    const catsRes = await app.request('https://example.workers.dev/api/v1/categories', {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal(catsRes.status, 200);
+    const catsData: any = await catsRes.json();
+    assert.equal(catsData.length, 1);
+    assert.equal(catsData[0].categoryName, 'Food & Dining');
+
+    // 3. GET /api/v1/budgets
+    const budgetsRes = await app.request('https://example.workers.dev/api/v1/budgets', {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal(budgetsRes.status, 200);
+    const budgetsData: any = await budgetsRes.json();
+    assert.equal(budgetsData.length, 1);
+    assert.equal(budgetsData[0].spent, 150000);
+    assert.equal(budgetsData[0].remaining, 1850000);
+
+    // 4. GET /api/v1/transactions
+    const txsRes = await app.request('https://example.workers.dev/api/v1/transactions?type=expense', {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal(txsRes.status, 200);
+    const txsData: any = await txsRes.json();
+    assert.equal(txsData.length, 1);
+    assert.equal(txsData[0].transactionAmount, 150000);
+
+    // 5. GET /api/v1/debts-loans
+    const dlRes = await app.request('https://example.workers.dev/api/v1/debts-loans', {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal(dlRes.status, 200);
+    const dlData: any = await dlRes.json();
+    assert.equal(dlData.length, 1);
+    assert.equal(dlData[0].debtLoanPersonName, 'Alice');
+
+    // 6. Auth rejection: 401 without credentials
+    const unauthRes = await app.request('https://example.workers.dev/api/v1/wallets', {}, env);
+    assert.equal(unauthRes.status, 401);
+    const unauthData: any = await unauthRes.json();
+    assert.equal(unauthData.error, 'UNAUTHORIZED');
+  });
+
+  it('20. OpenAPI Specification Coverage & Interactive Scalar Documentation UI', async () => {
+    const { d1 } = createTestDB();
+    const env = { DB: d1 as unknown as D1Database, JWT_SECRET: TEST_JWT_SECRET };
+
+    // 1. GET /openapi.json contains all 9 REST route groups
+    const openApiRes = await app.request('https://example.workers.dev/openapi.json', {}, env);
+    assert.equal(openApiRes.status, 200);
+    assert.ok(openApiRes.headers.get('content-type')?.includes('application/json'));
+    const spec: any = await openApiRes.json();
+    assert.equal(spec.openapi, '3.0.0');
+    assert.equal(spec.info.title, 'Reedrich Financial Intelligence API');
+
+    // Verify all 9 paths are declared
+    const expectedPaths = [
+      '/api/v1/summary',
+      '/api/v1/wallets',
+      '/api/v1/categories',
+      '/api/v1/budgets',
+      '/api/v1/transactions',
+      '/api/v1/debts-loans',
+      '/api/v1/goals',
+      '/api/v1/recurring-templates',
+      '/api/v1/recurring-templates/{templateId}/apply',
+      '/api/v1/feedback',
+    ];
+    for (const p of expectedPaths) {
+      assert.ok(spec.paths[p], `Path ${p} should exist in OpenAPI spec`);
+    }
+
+    // Verify schemas
+    assert.ok(spec.components.schemas.Wallet, 'Wallet schema should exist');
+    assert.ok(spec.components.schemas.Category, 'Category schema should exist');
+    assert.ok(spec.components.schemas.Budget, 'Budget schema should exist');
+    assert.ok(spec.components.schemas.Transaction, 'Transaction schema should exist');
+    assert.ok(spec.components.schemas.DebtLoan, 'DebtLoan schema should exist');
+    assert.ok(spec.components.schemas.Goal, 'Goal schema should exist');
+    assert.ok(spec.components.schemas.RecurringTemplate, 'RecurringTemplate schema should exist');
+    assert.ok(spec.components.schemas.FinancialSummary, 'FinancialSummary schema should exist');
+    assert.ok(spec.components.schemas.ErrorResponse, 'ErrorResponse schema should exist');
+
+    // Verify x-oauth
+    assert.ok(spec['x-oauth'], 'x-oauth extension should exist');
+
+    // 2. GET /docs returns Scalar HTML
+    const docsRes = await app.request('https://example.workers.dev/docs', {}, env);
+    assert.equal(docsRes.status, 200);
+    assert.ok(docsRes.headers.get('content-type')?.includes('text/html'));
+    const docsHtml = await docsRes.text();
+    assert.ok(docsHtml.includes('@scalar/api-reference'), 'Docs HTML should include Scalar script');
+    assert.ok(docsHtml.includes('/openapi.json'), 'Docs HTML should reference /openapi.json');
+
+    // 3. GET /reference alias returns Scalar HTML
+    const refRes = await app.request('https://example.workers.dev/reference', {}, env);
+    assert.equal(refRes.status, 200);
+    assert.ok(refRes.headers.get('content-type')?.includes('text/html'));
+    const refHtml = await refRes.text();
+    assert.ok(refHtml.includes('@scalar/api-reference'));
+
+    // 4. GET / server info exposes docs link
+    const rootRes = await app.request('https://example.workers.dev/', {}, env);
+    assert.equal(rootRes.status, 200);
+    const rootJson: any = await rootRes.json();
+    assert.equal(rootJson.endpoints.docs, '/docs');
+    assert.equal(rootJson.endpoints.reference, '/reference');
+    assert.equal(rootJson.endpoints.openapi, '/openapi.json');
+  });
+
+  it('21. LLM Manifest Endpoints (/llms.txt, /llm.txt) & Discovery', async () => {
+    const { d1 } = createTestDB();
+    const env = { DB: d1 as unknown as D1Database, JWT_SECRET: TEST_JWT_SECRET };
+
+    // 1. GET /llms.txt
+    const res = await app.request('https://example.workers.dev/llms.txt', {}, env);
+    assert.equal(res.status, 200);
+    assert.ok(res.headers.get('content-type')?.includes('text/markdown'));
+    const text = await res.text();
+    assert.ok(text.includes('# Reedrich Financial Intelligence Engine'));
+    assert.ok(text.includes('Model Context Protocol (MCP)'));
+    assert.ok(text.includes('/api/v1/*'));
+    assert.ok(text.includes('OAuth 2.0 PKCE'));
+    assert.ok(text.includes('rd_live_'));
+    assert.ok(text.includes('TypeScript Client'));
+    assert.ok(text.includes('Dart Client'));
+
+    // 2. GET /llm.txt (alias)
+    const aliasRes = await app.request('https://example.workers.dev/llm.txt', {}, env);
+    assert.equal(aliasRes.status, 200);
+    assert.ok(aliasRes.headers.get('content-type')?.includes('text/markdown'));
+    const aliasText = await aliasRes.text();
+    assert.equal(aliasText, text);
+
+    // 3. GET / server info exposes llms link
+    const rootRes = await app.request('https://example.workers.dev/', {}, env);
+    assert.equal(rootRes.status, 200);
+    const rootJson: any = await rootRes.json();
+    assert.equal(rootJson.endpoints.llms, '/llms.txt');
+  });
 });
 describe('Stateless OAuth Perplexity Engine — Discovery, DCR, PKCE, Token, Gate', () => {
   // Helper to create spy DB that counts reads/writes
