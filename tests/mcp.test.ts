@@ -16,6 +16,7 @@ import {
   hashApiKey,
 } from '../src/utils/token';
 import { currentIsoTimestamp } from '../src/utils/date';
+import { normalizeCurrencyForFx, convertCurrency } from '../src/utils/fx';
 import { isValidVerifier, computeS256Challenge, verifyS256Challenge } from '../src/utils/pkce';
 import { sign as honoSign } from 'hono/jwt';
 import {
@@ -109,6 +110,7 @@ function createTestDB() {
     '0004_add_feedbacks_table.sql',
     '0005_add_goals_and_recurring_templates.sql',
     '0006_add_wallet_lock.sql',
+    '0007_goal_wallet_links.sql',
   ];
   for (const file of migrationFiles) {
     const ddlPath = join(__dirname, `../drizzle/${file}`);
@@ -1502,13 +1504,19 @@ describe('Eve Finance MCP Server — Complete Test Suite', () => {
     })).content[0].text);
 
     const userServer = createMCPServer(db, reg.userId, TEST_JWT_SECRET);
-
-    // Create Wallet
+    // Create Wallets (two funding pockets)
     const wallet = JSON.parse((await callTool(userServer, 'manage_wallet', {
       action: 'create',
       name: 'Goal Savings Pocket',
       institution: 'Bank Jago',
       balance: 10000000,
+      currency: 'IDR',
+    })).content[0].text);
+    const wallet2 = JSON.parse((await callTool(userServer, 'manage_wallet', {
+      action: 'create',
+      name: 'Goal Overflow Pocket',
+      institution: 'BCA',
+      balance: 5000000,
       currency: 'IDR',
     })).content[0].text);
 
@@ -1538,22 +1546,51 @@ describe('Eve Finance MCP Server — Complete Test Suite', () => {
     const listGoals = JSON.parse(listRes.content[0].text);
     assert.equal(listGoals.length, 1);
     assert.equal(listGoals[0].goalId, createdGoal.goalId);
+    // Contribute action is removed: link wallets instead, progress derives automatically
+    await assert.rejects(async () => {
+      await callTool(userServer, 'manage_goal', {
+        action: 'contribute',
+        goalId: createdGoal.goalId,
+        amount: 5000000,
+      });
+    }, /deprecated and removed/i);
 
-    // Contribute to Goal (adjustWalletBalance: true)
-    const contributeRes = await callTool(userServer, 'manage_goal', {
-      action: 'contribute',
+    // Link the funding wallet: derived progress = wallet balance (10M), isDerived true
+    const linkedGoal = JSON.parse((await callTool(userServer, 'manage_goal', {
+      action: 'link_wallet',
       goalId: createdGoal.goalId,
-      amount: 5000000,
-      adjustWalletBalance: true,
-    });
-    const updatedGoal = JSON.parse(contributeRes.content[0].text);
-    assert.equal(updatedGoal.goalCurrentAmount, 15000000);
-    assert.equal(updatedGoal.pacing.progressPercentage, 30);
-    assert.equal(updatedGoal.pacing.remainingAmount, 35000000);
+      walletId: wallet.walletId,
+    })).content[0].text);
+    assert.equal(linkedGoal.isDerived, true);
+    assert.equal(linkedGoal.goalCurrentAmount, 10000000);
+    assert.equal(linkedGoal.linkedWallets.length, 1);
 
-    // Verify wallet balance was debited (10M - 5M = 5M)
-    const wallets = await db.select().from(schema.wallets).where(eq(schema.wallets.walletId, wallet.walletId));
-    assert.equal(wallets[0].walletBalance, 5000000);
+    // Idempotent re-link: no duplication
+    const relinkedGoal = JSON.parse((await callTool(userServer, 'manage_goal', {
+      action: 'link_wallet',
+      goalId: createdGoal.goalId,
+      walletId: wallet.walletId,
+    })).content[0].text);
+    assert.equal(relinkedGoal.linkedWallets.length, 1);
+
+    // Link second wallet: derived progress = 10M + 5M = 15M
+    const multiGoal = JSON.parse((await callTool(userServer, 'manage_goal', {
+      action: 'link_wallet',
+      goalId: createdGoal.goalId,
+      walletId: wallet2.walletId,
+    })).content[0].text);
+    assert.equal(multiGoal.goalCurrentAmount, 15000000);
+    assert.equal(multiGoal.linkedWallets.length, 2);
+    assert.equal(multiGoal.pacing.progressPercentage, 30);
+
+    // Unlink second wallet: back to 10M
+    const unlinkedGoal = JSON.parse((await callTool(userServer, 'manage_goal', {
+      action: 'unlink_wallet',
+      goalId: createdGoal.goalId,
+      walletId: wallet2.walletId,
+    })).content[0].text);
+    assert.equal(unlinkedGoal.goalCurrentAmount, 10000000);
+    assert.equal(unlinkedGoal.linkedWallets.length, 1);
 
     // Update Goal Status
     const updateRes = await callTool(userServer, 'manage_goal', {
@@ -1572,12 +1609,11 @@ describe('Eve Finance MCP Server — Complete Test Suite', () => {
       whatsappNumber: '+6289998887772',
     })).content[0].text);
     const otherServer = createMCPServer(db, otherUser.userId, TEST_JWT_SECRET);
-
     await assert.rejects(async () => {
       await callTool(otherServer, 'manage_goal', {
-        action: 'contribute',
+        action: 'link_wallet',
         goalId: createdGoal.goalId,
-        amount: 1000000,
+        walletId: wallet.walletId,
       });
     }, /not found or unauthorized/i);
 
@@ -1642,6 +1678,20 @@ describe('Eve Finance MCP Server — Complete Test Suite', () => {
     assert.equal(summaryUsd.consolidatedNetWorth.baseCurrency, 'USD');
     // 1000 USD + (16,350,000 IDR / 16350) = 2,000 USD
     assert.equal(summaryUsd.consolidatedNetWorth.estimatedTotal, 2000);
+  });
+
+  it('16b. FX Stablecoin Peg: USDT converts at live USD rate with usedPeg marker', async () => {
+    assert.deepEqual(normalizeCurrencyForFx('USDT'), { code: 'USD', usedPeg: true });
+    assert.deepEqual(normalizeCurrencyForFx('usdc'), { code: 'USD', usedPeg: true });
+    assert.deepEqual(normalizeCurrencyForFx('Dai'), { code: 'USD', usedPeg: true });
+    assert.deepEqual(normalizeCurrencyForFx('idr'), { code: 'IDR', usedPeg: false });
+    assert.deepEqual(normalizeCurrencyForFx('USD'), { code: 'USD', usedPeg: false });
+    // 1000 USDT -> IDR at live USD rate 17800 = 17,800,000 (pegged to USD, not stale USDT:1.0 path)
+    assert.equal(convertCurrency(1000, 'USDT', 'IDR', { USD: 1, IDR: 17800 }), 17800000);
+    // Same raw currency returns amount unchanged (even for pegged codes)
+    assert.equal(convertCurrency(500, 'USDT', 'USDT', { USD: 1 }), 500);
+    // Pegged USDT converts identically to USD for the same target
+    assert.equal(convertCurrency(1000, 'USDT', 'IDR', { USD: 1, IDR: 17800 }), convertCurrency(1000, 'USD', 'IDR', { USD: 1, IDR: 17800 }));
   });
 
   it('17. Recurring Transaction Templates, Atomic Apply, and 30-Day Projections', async () => {
@@ -3417,5 +3467,90 @@ describe('Wallet Lock & Safe-to-Spend Runway Engine', () => {
       type: 'income',
     })).content[0].text);
     assert.equal(incomeRes.notice, undefined, 'income on locked wallet must not have notice');
+  });
+});
+
+describe('Goal Wallet Links & Derived Progress', () => {
+  it('5.2 Derived progress: sum, auto-movement, locked inclusion, fallback, mode switch', async () => {
+    const { db } = createTestDB();
+    const publicServer = createMCPServer(db, null, TEST_JWT_SECRET);
+    const reg = JSON.parse((await callTool(publicServer, 'register_user', {
+      firstName: 'Goal',
+      lastName: 'Linker',
+      email: 'goallinker@example.com',
+      whatsappNumber: '+628111222333',
+    })).content[0].text);
+    const userServer = createMCPServer(db, reg.userId, TEST_JWT_SECRET);
+
+    const wA = JSON.parse((await callTool(userServer, 'manage_wallet', {
+      action: 'create', name: 'Pocket A', balance: 10000000,
+    })).content[0].text);
+    const wB = JSON.parse((await callTool(userServer, 'manage_wallet', {
+      action: 'create', name: 'Pocket B', balance: 5000000,
+    })).content[0].text);
+    const wLocked = JSON.parse((await callTool(userServer, 'manage_wallet', {
+      action: 'create', name: 'Locked Reserve', balance: 20000000, isLocked: true,
+    })).content[0].text);
+    const cat = JSON.parse((await callTool(userServer, 'manage_category', {
+      action: 'create', name: 'Savings', type: 'expense',
+    })).content[0].text);
+
+    // Unlinked goal: stored counter fallback, isDerived false
+    const goal = JSON.parse((await callTool(userServer, 'manage_goal', {
+      action: 'create', name: 'Sewa Rumah 2026', targetAmount: 50000000, currentAmount: 3000000,
+    })).content[0].text);
+    assert.equal(goal.isDerived, false);
+    assert.equal(goal.goalCurrentAmount, 3000000);
+    assert.deepEqual(goal.linkedWallets, []);
+
+    // First link switches to derived mode (stored 3M ignored, balance 10M wins)
+    const linked = JSON.parse((await callTool(userServer, 'manage_goal', {
+      action: 'link_wallet', goalId: goal.goalId, walletId: wA.walletId,
+    })).content[0].text);
+    assert.equal(linked.isDerived, true);
+    assert.equal(linked.goalCurrentAmount, 10000000);
+    assert.equal(linked.linkedWallets.length, 1);
+
+    // Link second wallet: 10M + 5M = 15M
+    const multi = JSON.parse((await callTool(userServer, 'manage_goal', {
+      action: 'link_wallet', goalId: goal.goalId, walletId: wB.walletId,
+    })).content[0].text);
+    assert.equal(multi.goalCurrentAmount, 15000000);
+
+    // Transaction on linked wallet auto-moves progress: +2M income to Pocket A
+    await callTool(userServer, 'record_transaction', {
+      walletId: wA.walletId, categoryId: cat.categoryId, amount: 2000000, type: 'income',
+    });
+    const afterTx = JSON.parse((await callTool(userServer, 'manage_goal', {
+      action: 'list',
+    })).content[0].text).find((g: { goalId: string }) => g.goalId === goal.goalId);
+    assert.equal(afterTx.goalCurrentAmount, 17000000);
+
+    // Locked linked wallet counts in full (ownership, not spendability)
+    const withLocked = JSON.parse((await callTool(userServer, 'manage_goal', {
+      action: 'link_wallet', goalId: goal.goalId, walletId: wLocked.walletId,
+    })).content[0].text);
+    assert.equal(withLocked.goalCurrentAmount, 37000000);
+    assert.equal(withLocked.linkedWallets.length, 3);
+  });
+
+  it('5.3 Contribute action rejected with deprecation error', async () => {
+    const { db } = createTestDB();
+    const publicServer = createMCPServer(db, null, TEST_JWT_SECRET);
+    const reg = JSON.parse((await callTool(publicServer, 'register_user', {
+      firstName: 'Deprec',
+      lastName: 'Tester',
+      email: 'deprectester@example.com',
+      whatsappNumber: '+628444555666',
+    })).content[0].text);
+    const userServer = createMCPServer(db, reg.userId, TEST_JWT_SECRET);
+    const goal = JSON.parse((await callTool(userServer, 'manage_goal', {
+      action: 'create', name: 'Old Goal', targetAmount: 10000000,
+    })).content[0].text);
+    await assert.rejects(async () => {
+      await callTool(userServer, 'manage_goal', {
+        action: 'contribute', goalId: goal.goalId, amount: 1000000,
+      });
+    }, /deprecated and removed/i);
   });
 });

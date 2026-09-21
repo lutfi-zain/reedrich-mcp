@@ -1,11 +1,11 @@
 import { DrizzleD1Database } from "drizzle-orm/d1";
 import * as schema from "../db/schema";
-import { eq, and, gte, lte, sql } from "drizzle-orm";
+import { eq, and, gte, lte, sql, inArray } from "drizzle-orm";
 import {
   normalizeToIsoTimestamp,
   isValidIsoDateOrTimestamp,
 } from "../utils/date";
-import { getExchangeRates, convertCurrency } from "../utils/fx";
+import { getExchangeRates, convertCurrency, normalizeCurrencyForFx } from "../utils/fx";
 import { calculateGoalPacing } from "../utils/goals";
 import { projectRecurringCashflow } from "../utils/recurring";
 import { validationError } from "./errors";
@@ -244,7 +244,7 @@ export async function financialSummary(
     }
   }
 
-  // 5. Query active goals and compute pacing
+  // 5. Query active goals and compute derived pacing over linked wallets
   const goalsData = await db
     .select()
     .from(schema.goals)
@@ -255,10 +255,87 @@ export async function financialSummary(
       )
     );
 
+  const goalIds = goalsData.map((g) => g.goalId);
+  const goalLinksByGoalId = new Map<string, string[]>();
+  if (goalIds.length > 0) {
+    const allLinks = await db
+      .select()
+      .from(schema.goalWallets)
+      .where(inArray(schema.goalWallets.goalId, goalIds));
+    for (const link of allLinks) {
+      const bucket = goalLinksByGoalId.get(link.goalId) || [];
+      bucket.push(link.walletId);
+      goalLinksByGoalId.set(link.goalId, bucket);
+    }
+  }
+  const linkedWalletIds = [...new Set([...goalLinksByGoalId.values()].flat())];
+  const walletsById = new Map<string, (typeof walletsData)[number]>();
+  for (const w of walletsData) walletsById.set(w.walletId, w);
+  if (linkedWalletIds.length > 0) {
+    const missingIds = linkedWalletIds.filter((id) => !walletsById.has(id));
+    if (missingIds.length > 0) {
+      const missingWallets = await db
+        .select()
+        .from(schema.wallets)
+        .where(
+          and(
+            inArray(schema.wallets.walletId, missingIds),
+            eq(schema.wallets.walletUserId, userId)
+          )
+        );
+      for (const w of missingWallets) walletsById.set(w.walletId, w);
+    }
+  }
+
   const activeGoals = goalsData.map((g) => {
+    const linkedIds = goalLinksByGoalId.get(g.goalId) || [];
+    if (linkedIds.length === 0) {
+      const pacing = calculateGoalPacing(
+        g.goalTargetAmount,
+        g.goalCurrentAmount,
+        g.goalTargetDate,
+        g.goalStatus
+      );
+      return {
+        goalId: g.goalId,
+        name: g.goalName,
+        currency: g.goalCurrency,
+        walletId: g.goalWalletId,
+        categoryId: g.goalCategoryId,
+        ...pacing,
+        isDerived: false,
+        linkedWallets: [],
+      };
+    }
+    const goalCurrency = (g.goalCurrency || "IDR").toUpperCase();
+    const breakdown = [];
+    let derivedTotal = 0;
+    for (const wid of linkedIds) {
+      const w = walletsById.get(wid);
+      if (!w) continue;
+      const walletCurrency = (w.walletCurrency || "IDR").toUpperCase();
+      const converted = convertCurrency(
+        w.walletBalance,
+        walletCurrency,
+        goalCurrency,
+        fxRates.rates
+      );
+      const linkedWalletsEntryUsedPeg =
+        normalizeCurrencyForFx(walletCurrency).usedPeg ||
+        normalizeCurrencyForFx(goalCurrency).usedPeg;
+      breakdown.push({
+        walletId: w.walletId,
+        walletName: w.walletName,
+        balance: w.walletBalance,
+        currency: walletCurrency,
+        convertedAmount: converted,
+        usedPeg: linkedWalletsEntryUsedPeg,
+      });
+      derivedTotal = Number((derivedTotal + converted).toFixed(2));
+    }
     const pacing = calculateGoalPacing(
       g.goalTargetAmount,
-      g.goalCurrentAmount,
+      derivedTotal,
       g.goalTargetDate,
       g.goalStatus
     );
@@ -269,6 +346,9 @@ export async function financialSummary(
       walletId: g.goalWalletId,
       categoryId: g.goalCategoryId,
       ...pacing,
+      goalCurrentAmount: derivedTotal,
+      isDerived: true,
+      linkedWallets: breakdown,
     };
   });
 

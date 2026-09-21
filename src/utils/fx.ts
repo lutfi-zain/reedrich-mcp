@@ -22,6 +22,21 @@ export const FALLBACK_RATES_USD_BASE: Record<string, number> = {
   BTC: 0.0000155,
 };
 
+// USD-pegged stablecoins normalized 1:1 to USD before conversion.
+// Rationale: no keyless FX provider returns stablecoin codes, so without
+// normalization these fall through to stale hardcoded fallbacks (~9% error).
+const USD_PEGGED_STABLECOINS: Record<string, true> = {
+  USDT: true,
+  USDC: true,
+  DAI: true,
+};
+
+export function normalizeCurrencyForFx(code: string): { code: string; usedPeg: boolean } {
+  const upper = code.trim().toUpperCase();
+  if (USD_PEGGED_STABLECOINS[upper]) return { code: "USD", usedPeg: true };
+  return { code: upper, usedPeg: false };
+}
+
 const FX_API_URL = 'https://open.er-api.com/v6/latest/USD';
 const FX_TIMEOUT_MS = 3000;
 
@@ -82,12 +97,23 @@ export function convertCurrency(
   rates: Record<string, number>
 ): number {
   if (!Number.isFinite(amount) || amount === 0) return 0;
-  const from = fromCurrency.toUpperCase();
-  const to = toCurrency.toUpperCase();
-  if (from === to) return amount;
+  const rawFrom = fromCurrency.trim().toUpperCase();
+  const rawTo = toCurrency.trim().toUpperCase();
+  const fromNorm = normalizeCurrencyForFx(fromCurrency);
+  const toNorm = normalizeCurrencyForFx(toCurrency);
+  const from = fromNorm.code;
+  const to = toNorm.code;
+  // Same raw code: identity. Same normalized code via peg (e.g. USDT->USD):
+  // proceed so the peg rate path applies instead of returning early.
+  if (rawFrom === rawTo) return amount;
+  if (from === to && !fromNorm.usedPeg && !toNorm.usedPeg) return amount;
 
-  const fromRate = rates[from] || FALLBACK_RATES_USD_BASE[from] || 1.0;
-  const toRate = rates[to] || FALLBACK_RATES_USD_BASE[to] || 1.0;
+  const fromRate = fromNorm.usedPeg
+    ? rates[from] || FALLBACK_RATES_USD_BASE[from] || 1.0
+    : rates[rawFrom] || FALLBACK_RATES_USD_BASE[rawFrom] || rates[from] || FALLBACK_RATES_USD_BASE[from] || 1.0;
+  const toRate = toNorm.usedPeg
+    ? rates[to] || FALLBACK_RATES_USD_BASE[to] || 1.0
+    : rates[rawTo] || FALLBACK_RATES_USD_BASE[rawTo] || rates[to] || FALLBACK_RATES_USD_BASE[to] || 1.0;
 
   if (fromRate <= 0) return amount;
 
