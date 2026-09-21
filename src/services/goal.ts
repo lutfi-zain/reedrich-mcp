@@ -1,11 +1,17 @@
 import { DrizzleD1Database } from "drizzle-orm/d1";
 import * as schema from "../db/schema";
-import { eq, and, desc, sql } from "drizzle-orm";
+import { eq, and, desc, sql, inArray } from "drizzle-orm";
 import {
   currentIsoTimestamp,
   isValidIsoDateOrTimestamp,
 } from "../utils/date";
 import { calculateGoalPacing } from "../utils/goals";
+import {
+  getExchangeRates,
+  convertCurrency,
+  normalizeCurrencyForFx,
+  type ExchangeRates,
+} from "../utils/fx";
 import {
   validationError,
   notFound,
@@ -17,7 +23,8 @@ import {
 export async function listGoals(
   db: DrizzleD1Database<typeof schema>,
   userId: string,
-  statusFilter?: unknown
+  statusFilter?: unknown,
+  fetchFn?: typeof fetch
 ) {
   const conditions = [eq(schema.goals.goalUserId, userId)];
   if (
@@ -33,15 +40,101 @@ export async function listGoals(
     .where(and(...conditions))
     .orderBy(desc(schema.goals.goalCreatedAt));
 
-  return goalsList.map((g) => {
+  const withProgress = [];
+  for (const g of goalsList) {
+    withProgress.push(await attachDerivedProgress(db, g, fetchFn));
+  }
+  return withProgress;
+}
+
+export interface GoalWalletBreakdownEntry {
+  walletId: string;
+  walletName: string;
+  balance: number;
+  currency: string;
+  convertedAmount: number;
+  usedPeg: boolean;
+}
+
+export interface GoalWithDerivedProgress {
+  isDerived: boolean;
+  linkedWallets: GoalWalletBreakdownEntry[];
+}
+
+async function attachDerivedProgress<
+  T extends {
+    goalId: string;
+    goalCurrency: string;
+    goalTargetAmount: number;
+    goalCurrentAmount: number;
+    goalTargetDate: string | null;
+    goalStatus: string;
+  }
+>(
+  db: DrizzleD1Database<typeof schema>,
+  goal: T,
+  fetchFn?: typeof fetch
+) {
+  const links = await db
+    .select()
+    .from(schema.goalWallets)
+    .where(eq(schema.goalWallets.goalId, goal.goalId));
+
+  if (links.length === 0) {
     const pacing = calculateGoalPacing(
-      g.goalTargetAmount,
-      g.goalCurrentAmount,
-      g.goalTargetDate,
-      g.goalStatus
+      goal.goalTargetAmount,
+      goal.goalCurrentAmount,
+      goal.goalTargetDate,
+      goal.goalStatus
     );
-    return { ...g, pacing };
-  });
+    return { ...goal, pacing, isDerived: false, linkedWallets: [] };
+  }
+
+  const walletIds = links.map((l) => l.walletId);
+  const linkedWalletsData = await db
+    .select()
+    .from(schema.wallets)
+    .where(inArray(schema.wallets.walletId, walletIds));
+
+  const fxRates = await getExchangeRates(fetchFn);
+  const goalCurrency = (goal.goalCurrency || "IDR").toUpperCase();
+  const breakdown: GoalWalletBreakdownEntry[] = [];
+  let derivedTotal = 0;
+
+  for (const w of linkedWalletsData) {
+    const walletCurrency = (w.walletCurrency || "IDR").toUpperCase();
+    const converted = convertCurrency(
+      w.walletBalance,
+      walletCurrency,
+      goalCurrency,
+      fxRates.rates
+    );
+    const { usedPeg: fromPeg } = normalizeCurrencyForFx(walletCurrency);
+    const { usedPeg: toPeg } = normalizeCurrencyForFx(goalCurrency);
+    breakdown.push({
+      walletId: w.walletId,
+      walletName: w.walletName,
+      balance: w.walletBalance,
+      currency: walletCurrency,
+      convertedAmount: converted,
+      usedPeg: fromPeg || toPeg,
+    });
+    derivedTotal = Number((derivedTotal + converted).toFixed(2));
+  }
+
+  const pacing = calculateGoalPacing(
+    goal.goalTargetAmount,
+    derivedTotal,
+    goal.goalTargetDate,
+    goal.goalStatus
+  );
+  return {
+    ...goal,
+    goalCurrentAmount: derivedTotal,
+    pacing,
+    isDerived: true,
+    linkedWallets: breakdown,
+  };
 }
 
 export interface CreateGoalParams {
@@ -51,9 +144,11 @@ export interface CreateGoalParams {
   currency?: unknown;
   targetDate?: unknown;
   walletId?: unknown;
+  walletIds?: unknown;
   categoryId?: unknown;
   status?: unknown;
   notes?: unknown;
+  fetchFn?: typeof fetch;
 }
 
 export async function createGoal(
@@ -68,9 +163,11 @@ export async function createGoal(
     currency,
     targetDate,
     walletId,
+    walletIds,
     categoryId,
     status: goalStatusInput,
     notes,
+    fetchFn,
   } = params;
 
   if (
@@ -192,43 +289,75 @@ export async function createGoal(
     })
     .returning();
 
-  const pacing = calculateGoalPacing(
-    newGoal[0].goalTargetAmount,
-    newGoal[0].goalCurrentAmount,
-    newGoal[0].goalTargetDate,
-    newGoal[0].goalStatus
-  );
+  const createdGoalId = newGoal[0].goalId;
+  const walletIdsToLink: string[] = [];
+  if (cleanWalletId) walletIdsToLink.push(cleanWalletId);
+  if (Array.isArray(walletIds)) {
+    for (const candidate of walletIds) {
+      if (typeof candidate !== "string" || candidate.trim().length === 0) {
+        validationError(
+          "Validation Error: each 'walletIds' entry must be a valid UUID string",
+          "walletIds"
+        );
+      }
+      if (!isValidUUID(candidate)) {
+        validationError(
+          "Validation Error: each 'walletIds' entry must be a valid UUID string",
+          "walletIds"
+        );
+      }
+      const trimmed = candidate.trim();
+      if (!walletIdsToLink.includes(trimmed)) walletIdsToLink.push(trimmed);
+    }
+  } else if (walletIds !== undefined) {
+    validationError(
+      "Validation Error: 'walletIds' must be an array of wallet UUID strings",
+      "walletIds"
+    );
+  }
 
-  return { ...newGoal[0], pacing };
+  for (const linkWalletId of walletIdsToLink) {
+    if (linkWalletId === cleanWalletId) continue;
+    const w = await db
+      .select({ walletId: schema.wallets.walletId })
+      .from(schema.wallets)
+      .where(
+        and(
+          eq(schema.wallets.walletId, linkWalletId),
+          eq(schema.wallets.walletUserId, userId)
+        )
+      )
+      .get();
+    if (!w) notFound("Wallet", linkWalletId);
+    await db
+      .insert(schema.goalWallets)
+      .values({ goalId: createdGoalId, walletId: linkWalletId })
+      .onConflictDoNothing()
+      .run();
+  }
+  if (cleanWalletId) {
+    await db
+      .insert(schema.goalWallets)
+      .values({ goalId: createdGoalId, walletId: cleanWalletId })
+      .onConflictDoNothing()
+      .run();
+  }
+
+  return attachDerivedProgress(db, newGoal[0], fetchFn);
 }
 
-export interface ContributeGoalParams {
-  amount: unknown;
-  adjustWalletBalance?: unknown;
-  walletId?: unknown;
-}
-
-export async function contributeGoal(
+async function requireOwnedGoal(
   db: DrizzleD1Database<typeof schema>,
   userId: string,
-  goalId: unknown,
-  params: ContributeGoalParams
+  goalId: unknown
 ) {
   if (!isValidUUID(goalId)) {
     validationError(
-      "Validation Error: Valid string 'goalId' (UUID) is required for contribute",
+      "Validation Error: Valid string 'goalId' (UUID) is required",
       "goalId"
     );
   }
-  const { amount, adjustWalletBalance, walletId } = params;
-  if (!isValidPositiveNumber(amount)) {
-    validationError(
-      "Validation Error: Contribution 'amount' must be a positive finite number greater than 0",
-      "amount"
-    );
-  }
-
-  const cleanGoalId = goalId.trim();
+  const cleanGoalId = (goalId as string).trim();
   const existingGoal = await db
     .select()
     .from(schema.goals)
@@ -239,83 +368,101 @@ export async function contributeGoal(
       )
     )
     .get();
-
   if (!existingGoal) {
     notFound("Goal", cleanGoalId);
   }
+  return existingGoal;
+}
 
-  const newCurrent = Number(
-    (existingGoal.goalCurrentAmount + amount).toFixed(2)
+export interface ContributeGoalParams {
+  amount?: unknown;
+  adjustWalletBalance?: unknown;
+  walletId?: unknown;
+}
+
+export async function contributeGoal(
+  _db: DrizzleD1Database<typeof schema>,
+  _userId: string,
+  _goalId: unknown,
+  _params: ContributeGoalParams
+): Promise<never> {
+  validationError(
+    "Validation Error: 'contribute' action is deprecated and removed. Link wallets to the goal via 'link_wallet' and record top-ups with 'record_transaction' or 'transfer_funds'; progress updates automatically on the next read.",
+    "action"
   );
-  const newStatus =
-    newCurrent >= existingGoal.goalTargetAmount
-      ? "completed"
-      : existingGoal.goalStatus;
+}
 
-  const updated = await db
-    .update(schema.goals)
-    .set({
-      goalCurrentAmount: newCurrent,
-      goalStatus: newStatus,
-    })
+export async function linkGoalWallet(
+  db: DrizzleD1Database<typeof schema>,
+  userId: string,
+  goalId: unknown,
+  walletId: unknown,
+  fetchFn?: typeof fetch
+) {
+  const existingGoal = await requireOwnedGoal(db, userId, goalId);
+  if (!isValidUUID(walletId)) {
+    validationError(
+      "Validation Error: Valid string 'walletId' (UUID) is required for link_wallet",
+      "walletId"
+    );
+  }
+  const cleanWalletId = (walletId as string).trim();
+  const wallet = await db
+    .select({ walletId: schema.wallets.walletId })
+    .from(schema.wallets)
     .where(
       and(
-        eq(schema.goals.goalId, cleanGoalId),
-        eq(schema.goals.goalUserId, userId)
+        eq(schema.wallets.walletId, cleanWalletId),
+        eq(schema.wallets.walletUserId, userId)
       )
     )
-    .returning();
+    .get();
+  if (!wallet) notFound("Wallet", cleanWalletId);
+  await db
+    .insert(schema.goalWallets)
+    .values({ goalId: existingGoal.goalId, walletId: cleanWalletId })
+    .onConflictDoNothing()
+    .run();
+  const refreshed = await db
+    .select()
+    .from(schema.goals)
+    .where(eq(schema.goals.goalId, existingGoal.goalId))
+    .get();
+  if (!refreshed) notFound("Goal", existingGoal.goalId);
+  return attachDerivedProgress(db, refreshed, fetchFn);
+}
 
-  const shouldAdjust = adjustWalletBalance === true;
-  const targetWalletId =
-    typeof walletId === "string" && walletId.trim().length > 0
-      ? walletId.trim()
-      : existingGoal.goalWalletId;
-
-  if (shouldAdjust && targetWalletId) {
-    const w = await db
-      .select()
-      .from(schema.wallets)
-      .where(
-        and(
-          eq(schema.wallets.walletId, targetWalletId),
-          eq(schema.wallets.walletUserId, userId)
-        )
-      )
-      .get();
-    if (w) {
-      await db
-        .update(schema.wallets)
-        .set({ walletBalance: sql`wallet_balance - ${amount}` })
-        .where(
-          and(
-            eq(schema.wallets.walletId, targetWalletId),
-            eq(schema.wallets.walletUserId, userId)
-          )
-        );
-
-      await db.insert(schema.transactions).values({
-        transactionUserId: userId,
-        transactionWalletId: targetWalletId,
-        transactionCategoryId: existingGoal.goalCategoryId,
-        transactionAmount: amount,
-        transactionAdminFee: 0.0,
-        transactionType: "expense",
-        transactionDescription: `Goal contribution: ${existingGoal.goalName}`,
-        transactionIsPlanned: 0,
-        transactionDate: currentIsoTimestamp(),
-      });
-    }
+export async function unlinkGoalWallet(
+  db: DrizzleD1Database<typeof schema>,
+  userId: string,
+  goalId: unknown,
+  walletId: unknown,
+  fetchFn?: typeof fetch
+) {
+  const existingGoal = await requireOwnedGoal(db, userId, goalId);
+  if (!isValidUUID(walletId)) {
+    validationError(
+      "Validation Error: Valid string 'walletId' (UUID) is required for unlink_wallet",
+      "walletId"
+    );
   }
-
-  const pacing = calculateGoalPacing(
-    updated[0].goalTargetAmount,
-    updated[0].goalCurrentAmount,
-    updated[0].goalTargetDate,
-    updated[0].goalStatus
-  );
-
-  return { ...updated[0], pacing };
+  const cleanWalletId = (walletId as string).trim();
+  await db
+    .delete(schema.goalWallets)
+    .where(
+      and(
+        eq(schema.goalWallets.goalId, existingGoal.goalId),
+        eq(schema.goalWallets.walletId, cleanWalletId)
+      )
+    )
+    .run();
+  const refreshed = await db
+    .select()
+    .from(schema.goals)
+    .where(eq(schema.goals.goalId, existingGoal.goalId))
+    .get();
+  if (!refreshed) notFound("Goal", existingGoal.goalId);
+  return attachDerivedProgress(db, refreshed, fetchFn);
 }
 
 export interface UpdateGoalParams {
@@ -334,7 +481,7 @@ export async function updateGoal(
   db: DrizzleD1Database<typeof schema>,
   userId: string,
   goalId: unknown,
-  params: UpdateGoalParams
+  params: UpdateGoalParams & { fetchFn?: typeof fetch }
 ) {
   if (!isValidUUID(goalId)) {
     validationError(
@@ -498,13 +645,7 @@ export async function updateGoal(
   }
 
   if (Object.keys(updateData).length === 0) {
-    const pacing = calculateGoalPacing(
-      existingGoal.goalTargetAmount,
-      existingGoal.goalCurrentAmount,
-      existingGoal.goalTargetDate,
-      existingGoal.goalStatus
-    );
-    return { ...existingGoal, pacing };
+    return attachDerivedProgress(db, existingGoal, params.fetchFn);
   }
 
   const updated = await db
@@ -518,14 +659,7 @@ export async function updateGoal(
     )
     .returning();
 
-  const pacing = calculateGoalPacing(
-    updated[0].goalTargetAmount,
-    updated[0].goalCurrentAmount,
-    updated[0].goalTargetDate,
-    updated[0].goalStatus
-  );
-
-  return { ...updated[0], pacing };
+  return attachDerivedProgress(db, updated[0], params.fetchFn);
 }
 
 export async function deleteGoal(

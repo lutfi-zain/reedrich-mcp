@@ -42,6 +42,8 @@ import {
   contributeGoal,
   updateGoal,
   deleteGoal,
+  linkGoalWallet,
+  unlinkGoalWallet,
 } from "./services/goal";
 import {
   listRecurringTemplates,
@@ -456,8 +458,8 @@ ${!hasCompleteArgs ? `NOTE: The user has not provided complete goal details (goa
 
 Reasoning & Calculation Workflow:
 1. Gather Financial Profile:
-   - Call \`financial_summary\` to determine the user's historical monthly income, monthly expenses, net savings rate, and inspect \`spendableCash\` versus \`lockedCash\`.
-   - Read \`reedrich://wallets/list\` to evaluate available idle spendable balances (\`isLocked: false\`), strictly avoiding unprompted allocation of locked emergency reserves (\`isLocked: true\`).
+   - Call \`financial_summary\` to determine the user's historical monthly income, monthly expenses, net savings rate, and inspect derived goal progress (\`isDerived\`, \`linkedWallets\` breakdown) alongside \`spendableCash\` versus \`lockedCash\`.
+   - Read \`reedrich://wallets/list\` to evaluate available idle spendable balances (\`isLocked: false\`), strictly avoiding unprompted allocation of locked emergency reserves (\`isLocked: true\`). For goals with linked wallets, use the derived \`currentAmount\` (sum of linked balances) as the allocated balance.
    - Read \`reedrich://debts/active\` to factor in monthly debt repayment obligations that reduce disposable savings.
 
 2. Compute Timeline Projection:
@@ -740,23 +742,22 @@ Authentication Note: You are already authenticated via OAuth / Bearer token. Nev
       },
       {
         name: "manage_goal",
-        description: "Manage personal financial goals: create, list, update, contribute funds, or delete goals with automated pacing calculations.",
+        description: "Manage personal financial goals: create, list, update, link/unlink wallets, or delete goals with derived progress computed from linked wallet balances.",
         inputSchema: {
           type: "object",
           properties: {
-            action: { type: "string", enum: ["create", "list", "update", "contribute", "delete"], description: "Action to perform" },
-            goalId: { type: "string", description: "Goal UUID (required for update, contribute, and delete)" },
+            action: { type: "string", enum: ["create", "list", "update", "link_wallet", "unlink_wallet", "delete"], description: "Action to perform" },
+            goalId: { type: "string", description: "Goal UUID (required for update, link_wallet, unlink_wallet, and delete)" },
             name: { type: "string", description: "Goal name (1-100 characters, required for create)" },
             targetAmount: { type: "number", minimum: 0.01, description: "Target savings amount (positive finite number)" },
-            currentAmount: { type: "number", minimum: 0, description: "Initial or updated current amount saved" },
+            currentAmount: { type: "number", minimum: 0, description: "Initial stored amount (used only for goals without linked wallets)" },
             currency: { type: "string", default: "IDR", description: "Currency code (e.g. IDR, USD)" },
             targetDate: { type: "string", description: "Target completion date (YYYY-MM-DD)" },
-            walletId: { type: "string", description: "Optional linked wallet UUID" },
+            walletId: { type: "string", description: "Optional linked wallet UUID (single)" },
+            walletIds: { type: "array", items: { type: "string" }, description: "Optional linked wallet UUIDs (multiple)" },
             categoryId: { type: "string", description: "Optional category UUID" },
             status: { type: "string", enum: ["in_progress", "completed", "cancelled"], description: "Goal status" },
             notes: { type: "string", description: "Optional notes (max 500 chars)" },
-            amount: { type: "number", minimum: 0.01, description: "Contribution amount (required for contribute action)" },
-            adjustWalletBalance: { type: "boolean", default: false, description: "Whether to deduct contribution amount from linked/provided wallet (default false)" },
             apiKey: { type: "string", description: "Optional: Your persistent API Key (rd_live_...) if not set in headers" }
           },
           required: ["action"]
@@ -992,21 +993,28 @@ Authentication Note: You are already authenticated via OAuth / Bearer token. Nev
         const result = await createGoal(db, effectiveUserId, params);
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
-      if (action === "contribute") {
-        const result = await contributeGoal(db, effectiveUserId, goalId, params);
+      if (action === "link_wallet") {
+        const result = await linkGoalWallet(db, effectiveUserId, goalId, params.walletId || (Array.isArray(params.walletIds) ? params.walletIds[0] : undefined), options?.fetchFn);
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      }
+      if (action === "unlink_wallet") {
+        const result = await unlinkGoalWallet(db, effectiveUserId, goalId, params.walletId || (Array.isArray(params.walletIds) ? params.walletIds[0] : undefined), options?.fetchFn);
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
       if (action === "update") {
         const result = await updateGoal(db, effectiveUserId, goalId, params);
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
+      if (action === "contribute") {
+        const result = await contributeGoal(db, effectiveUserId, goalId, params);
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      }
       if (action === "delete") {
         const deleted = await deleteGoal(db, effectiveUserId, goalId);
         return { content: [{ type: "text", text: JSON.stringify({ message: "Goal deleted successfully", goal: deleted }, null, 2) }] };
       }
-      throw new Error(`Invalid action '${action}' for manage_goal. Valid actions: create, list, update, contribute, delete`);
+      throw new Error(`Invalid action '${action}' for manage_goal. Valid actions: create, list, update, link_wallet, unlink_wallet, delete`);
     }
-
     // --- Tool: manage_recurring_template ---
     if (name === "manage_recurring_template") {
       const { action, templateId, ...params } = (args || {}) as any;

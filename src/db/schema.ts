@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { sqliteTable, text, integer, real, index, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, real, index, uniqueIndex, primaryKey } from "drizzle-orm/sqlite-core";
 
 export const users = sqliteTable("users", {
   userId: text("user_id").primaryKey().$defaultFn(() => crypto.randomUUID()),
@@ -165,6 +165,22 @@ export const goals = sqliteTable("goals", {
   index("goals_user_status_idx").on(table.goalUserId, table.goalStatus),
   index("goals_user_target_date_idx").on(table.goalUserId, table.goalTargetDate),
   index("goals_wallet_id_idx").on(table.goalWalletId),
+]);
+
+export const goalWallets = sqliteTable("goal_wallets", {
+  goalId: text("goal_id")
+    .notNull()
+    .references(() => goals.goalId, { onDelete: "cascade" }),
+  walletId: text("wallet_id")
+    .notNull()
+    .references(() => wallets.walletId, { onDelete: "cascade" }),
+  goalWalletCreatedAt: text("goal_wallet_created_at")
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  primaryKey({ columns: [table.goalId, table.walletId] }),
+  index("goal_wallets_goal_id_idx").on(table.goalId),
+  index("goal_wallets_wallet_id_idx").on(table.walletId),
 ]);
 
 export const recurringTemplates = sqliteTable("recurring_templates", {
