@@ -167,9 +167,12 @@ export function generateOpenApiSpec(origin: string): Record<string, unknown> {
             transactionAdminFee: { type: "number", example: 2500 },
             transactionType: { type: "string", enum: ["expense", "income", "transfer"] },
             transactionDescription: { type: "string", nullable: true, example: "Groceries at supermarket" },
-            transactionIsPlanned: { type: "integer", enum: [0, 1] },
+            transactionIsPlanned: { type: "integer", enum: [0, 1], description: "1 = planned forecast (no balance impact), 0 = realized" },
+            transactionTemplateId: { type: "string", format: "uuid", nullable: true, description: "Originating recurring template (materialized or fallback-linked rows)" },
+            transactionOccurrenceDate: { type: "string", format: "date", nullable: true, description: "Scheduled occurrence day (YYYY-MM-DD) for template-linked rows" },
+            transactionRealizedAt: { type: "string", format: "date-time", nullable: true, description: "Timestamp of the 1→0 realize flip; null while still planned" },
+            transactionPlannedAmount: { type: "number", nullable: true, description: "Original planned amount retained when realized with an actualAmount override" },
             transactionDate: { type: "string", format: "date-time" },
-            transactionCreatedAt: { type: "string", format: "date-time" },
           },
           required: ["transactionId", "transactionWalletId", "transactionAmount", "transactionType", "transactionDate"],
         },
@@ -720,8 +723,8 @@ export function generateOpenApiSpec(origin: string): Record<string, unknown> {
       "/api/v1/recurring-templates/{templateId}/apply": {
         post: {
           tags: ["Recurring Templates"],
-          summary: "Execute and Apply Recurring Template",
-          description: "Executes one run of a recurring template, inserts transaction, reconciles balances, and advances nextRunDate.",
+          summary: "Realize a Materialized Planned Occurrence",
+          description: "Flips one planned row (isPlanned 1→0) for the template, stamps realizedAt, moves balances atomically. Prefer transactionId; falls back to templateId+executionDate lookup. Double realization fails with VALIDATION.",
           operationId: "applyRecurringTemplate",
           security: [{ bearerAuth: [] }, { apiKeyHeader: [] }],
           parameters: [
@@ -739,7 +742,9 @@ export function generateOpenApiSpec(origin: string): Record<string, unknown> {
                 schema: {
                   type: "object",
                   properties: {
-                    executionDate: { type: "string", format: "date-time", description: "Optional execution timestamp override" },
+                    transactionId: { type: "string", format: "uuid", description: "Planned transaction UUID to realize (preferred)" },
+                    executionDate: { type: "string", format: "date-time", description: "Occurrence date override for fallback lookup" },
+                    actualAmount: { type: "number", minimum: 0.01, description: "Actual amount override; planned amount retained for variance" },
                   },
                 },
               },

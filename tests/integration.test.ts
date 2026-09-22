@@ -270,9 +270,9 @@ describe('Integration Test: Full User Journey (Deployed Worker + Remote D1)', ()
 
     state.categories = { food, transport, salary };
 
-    // List categories
+    // List categories (3 created + 1 Adjustment system category from Step 7 balance update)
     const cats = await callTool('manage_category', { action: 'list' }, state.userA.token);
-    assert.equal(cats.length, 3, 'Should have 3 categories');
+    assert.equal(cats.length, 4, 'Should have 4 categories (3 created + Adjustment)');
 
     console.log(`    ✓ Created 3 categories (Food, Transport, Salary) and verified list`);
   });
@@ -358,26 +358,26 @@ describe('Integration Test: Full User Journey (Deployed Worker + Remote D1)', ()
   // Step 15-18: List Transactions with Filters
   // -------------------------------------------------------------------------
   it('Step 15-18: List Transactions with Filters (list_transactions)', async () => {
-    // Step 15: No filter — should return all 4
+    // Step 15: No filter — 4 recorded + 1 Step-7 balance adjustment = 5
     const all = await callTool('list_transactions', {}, state.userA.token);
-    assert.equal(all.length, 4, 'Should have 4 total transactions');
+    assert.equal(all.length, 5, 'Should have 5 total transactions (4 recorded + 1 adjustment)');
 
-    // Step 16: Filter by BCA wallet — should return 3
+    // Step 16: Filter by BCA wallet — 3 recorded + 1 adjustment = 4
     const bcaTxs = await callTool('list_transactions', {
       walletId: state.wallets.bca.walletId,
     }, state.userA.token);
-    assert.equal(bcaTxs.length, 3, 'BCA wallet should have 3 transactions');
+    assert.equal(bcaTxs.length, 4, 'BCA wallet should have 4 transactions (3 + adjustment)');
 
-    // Step 17: Filter by type=income — should return 1
+    // Step 17: Filter by type=income — salary 15M + adjustment 2M = 2
     const incomeTxs = await callTool('list_transactions', { type: 'income' }, state.userA.token);
-    assert.equal(incomeTxs.length, 1, 'Should have 1 income transaction');
-    assert.equal(incomeTxs[0].transactionAmount, 15000000);
+    assert.equal(incomeTxs.length, 2, 'Should have 2 income transactions (salary + adjustment)');
+    assert.ok(incomeTxs.some((t: any) => t.transactionAmount === 15000000));
 
     // Step 18: Filter by isPlanned=true — should return 1
     const plannedTxs = await callTool('list_transactions', { isPlanned: true }, state.userA.token);
     assert.equal(plannedTxs.length, 1, 'Should have 1 planned transaction');
 
-    console.log(`    ✓ Filtered transactions: all=4, BCA=3, income=1, planned=1`);
+    console.log(`    ✓ Filtered transactions: all=5, BCA=4, income=2, planned=1`);
   });
 
   // -------------------------------------------------------------------------
@@ -386,13 +386,15 @@ describe('Integration Test: Full User Journey (Deployed Worker + Remote D1)', ()
   it('Step 19: Financial Summary (financial_summary)', async () => {
     const summary = await callTool('financial_summary', {}, state.userA.token);
 
-    // Net worth: BCA (12M - 150K + 15M) + GoPay (500K - 25K) = 26,850,000 + 475,000 = 27,325,000 IDR
+    // Net worth unchanged by ledger-complete adjustment (income row + balance move net to same balance):
+    // BCA (12M - 150K + 15M) + GoPay (500K - 25K) = 26,850,000 + 475,000 = 27,325,000 IDR
     assert.equal(summary.netWorthByCurrency.IDR, 27325000, `Net worth IDR should be 27,325,000, got ${summary.netWorthByCurrency?.IDR}`);
     assert.equal(summary.netWorthByInstitution.BCA, 26850000);
     assert.equal(summary.netWorthByInstitution.GoTo, 475000);
-    assert.equal(summary.totalIncome, 15000000, 'Total income should be 15,000,000');
+    // Income now includes the Step-7 +2M adjustment row: 15M salary + 2M adjustment = 17M
+    assert.equal(summary.totalIncome, 17000000, 'Total income should be 17,000,000 (15M salary + 2M adjustment)');
     assert.equal(summary.totalExpense, 175000, 'Total expense should be 175,000 (150K + 25K)');
-    assert.equal(summary.netSavings, 14825000, 'Net savings should be 14,825,000');
+    assert.equal(summary.netSavings, 16825000, 'Net savings should be 16,825,000');
     assert.ok(summary.categoryBreakdown['Food & Dining'], 'Should have Food & Dining breakdown');
     assert.ok(summary.categoryBreakdown['Transportation'], 'Should have Transportation breakdown');
 
@@ -662,7 +664,7 @@ describe('Integration Test: Full User Journey (Deployed Worker + Remote D1)', ()
       action: 'seed_defaults',
     }, userCToken);
 
-    assert.equal(seedResult.createdCount, 10);
+    assert.equal(seedResult.createdCount, 11);
     assert.equal(seedResult.skippedCount, 0);
 
     // Login check after seeding: wallet still missing
@@ -756,5 +758,92 @@ describe('Integration Test: Full User Journey (Deployed Worker + Remote D1)', ()
     assert.ok(feedbackRes.feedbackId);
 
     console.log(`    ✓ Feedback: submit_feedback internal D1 persistence verified`);
+  });
+
+  // -------------------------------------------------------------------------
+  // Step 31: Recurring Materialization → Realize → Propagate (E2E over D1)
+  // -------------------------------------------------------------------------
+  it('Step 31: Recurring Template Materialization, Realize & Propagation', async () => {
+    const token = state.userA.token;
+
+    // 1. Create monthly template -> materialized planned rows, no balance move
+    const tpl = await callTool('manage_recurring_template', {
+      action: 'create', name: 'E2E Internet Bill',
+      walletId: state.wallets.bca.walletId, categoryId: state.categories.food.categoryId,
+      amount: 450000, type: 'expense', frequency: 'monthly', interval: 1,
+      startDate: '2026-10-05', nextRunDate: '2026-10-05',
+    }, token);
+    assert.ok(tpl.materializedCount > 0, 'create must materialize planned rows');
+    assert.equal(tpl.templateName, 'E2E Internet Bill');
+
+    // 2. Verify N planned rows via list_transactions(isPlanned), paginated
+    // (materializedCount can reach 100; list_transactions caps at 200/req)
+    let tplRows: any[] = [];
+    for (const offset of [0, 200, 400]) {
+      const page = await callTool('list_transactions', {
+        type: 'expense', isPlanned: true, limit: 200, offset,
+      }, token);
+      tplRows = tplRows.concat(page.filter((t: any) => t.transactionTemplateId === tpl.templateId));
+      if (page.length < 200) break;
+    }
+
+    // 3. Realize one row -> flip + balance move, no duplicate row
+    const target = tplRows.find((t: any) => t.transactionOccurrenceDate === '2026-10-05');
+    assert.ok(target, 'planned row for 2026-10-05 must exist');
+    const walletsBefore = await callTool('manage_wallet', { action: 'list' }, token);
+    const bcaBefore = walletsBefore.find((w: any) => w.walletId === state.wallets.bca.walletId);
+    const realized = await callTool('apply_recurring_template', {
+      transactionId: target.transactionId,
+    }, token);
+    assert.equal(realized.transaction.transactionIsPlanned, 0);
+    assert.ok(realized.transaction.transactionRealizedAt);
+    const walletsAfter = await callTool('manage_wallet', { action: 'list' }, token);
+    const bcaAfter = walletsAfter.find((w: any) => w.walletId === state.wallets.bca.walletId);
+    assert.equal(bcaAfter.walletBalance, bcaBefore.walletBalance - 450000);
+    const afterList = await callTool('list_transactions', {
+      type: 'expense', isPlanned: true, limit: 200,
+    }, token);
+    assert.equal(
+      afterList.filter((t: any) => t.transactionTemplateId === tpl.templateId).length,
+      tpl.materializedCount - 1,
+      'one planned row flipped, none reprinted'
+    );
+
+    // 4. Update template (future_only) -> future rewritten, realized intact
+    const updated = await callTool('manage_recurring_template', {
+      action: 'update', templateId: tpl.templateId, amount: 475000,
+    }, token);
+    assert.ok(updated.propagatedCount > 0);
+    const futureList = await callTool('list_transactions', {
+      type: 'expense', isPlanned: true, limit: 200,
+    }, token);
+    const futureRows = futureList.filter((t: any) => t.transactionTemplateId === tpl.templateId);
+    assert.ok(futureRows.every((t: any) => t.transactionAmount === 475000));
+
+    console.log(`    ✓ Recurring: materialized ${tpl.materializedCount}, realized 1 row, propagated ${updated.propagatedCount} future rows`);
+  });
+
+  // -------------------------------------------------------------------------
+  // Step 32: Ledger-Complete Balance Adjustment (E2E over D1)
+  // -------------------------------------------------------------------------
+  it('Step 32: Wallet Balance Adjustment Prints Ledger Row', async () => {
+    const token = state.userA.token;
+    const walletsBefore = await callTool('manage_wallet', { action: 'list' }, token);
+    const gopayBefore = walletsBefore.find((w: any) => w.walletId === state.wallets.gopay.walletId);
+    const targetBalance = gopayBefore.walletBalance + 100000;
+
+    const updated = await callTool('manage_wallet', {
+      action: 'update', walletId: state.wallets.gopay.walletId, balance: targetBalance,
+    }, token);
+    assert.equal(updated.walletBalance, targetBalance);
+
+    const txList = await callTool('list_transactions', { limit: 200 }, token);
+    const adjRows = txList.filter((t: any) =>
+      t.transactionWalletId === state.wallets.gopay.walletId &&
+      t.transactionType === 'income' && t.transactionAmount === 100000
+    );
+    assert.ok(adjRows.length >= 1, 'adjustment income row must be recorded');
+
+    console.log(`    ✓ Ledger: balance adjustment printed traceable income row`);
   });
 });

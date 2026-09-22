@@ -784,23 +784,24 @@ Authentication Note: You are already authenticated via OAuth / Bearer token. Nev
             nextRunDate: { type: "string", description: "Next scheduled execution date (YYYY-MM-DD)" },
             endDate: { type: "string", description: "Optional expiration end date (YYYY-MM-DD)" },
             isActive: { type: "boolean", default: true, description: "Whether the template is active" },
+            propagateScope: { type: "string", enum: ["future_only", "cancel"], default: "future_only", description: "On update affecting occurrence shape: rewrite future unrealized planned rows (future_only) or touch template record only (cancel)" },
             notes: { type: "string", description: "Optional notes/description (max 500 chars)" },
-            apiKey: { type: "string", description: "Optional: Your persistent API Key (rd_live_...) if not set in headers" }
           },
           required: ["action"]
         }
       },
       {
         name: "apply_recurring_template",
-        description: "Apply a recurring template to immediately instantiate an actual transaction, atomically adjust wallet balance, and advance the next run date.",
+        description: "Realize a materialized planned occurrence: flip one planned row to actual, stamp realizedAt, move balance atomically. Prefer transactionId; falls back to templateId+executionDate lookup.",
         inputSchema: {
           type: "object",
           properties: {
-            templateId: { type: "string", description: "Template UUID to apply" },
-            executionDate: { type: "string", description: "Optional transaction date override (defaults to template nextRunDate)" },
+            transactionId: { type: "string", description: "Planned transaction UUID to realize (preferred)" },
+            templateId: { type: "string", description: "Template UUID (fallback lookup by occurrence date)" },
+            executionDate: { type: "string", description: "Occurrence date override for fallback lookup (defaults to template nextRunDate)" },
+            actualAmount: { type: "number", minimum: 0.01, description: "Optional actual amount override; planned amount retained for variance" },
             apiKey: { type: "string", description: "Optional: Your persistent API Key (rd_live_...) if not set in headers" }
-          },
-          required: ["templateId"]
+          }
         }
       }
     ]
@@ -1037,10 +1038,10 @@ Authentication Note: You are already authenticated via OAuth / Bearer token. Nev
       throw new Error(`Invalid action '${action}' for manage_recurring_template. Valid actions: create, list, update, delete`);
     }
 
-    // --- Tool: apply_recurring_template ---
+    // --- Tool: apply_recurring_template (realize) ---
     if (name === "apply_recurring_template") {
-      const { templateId, executionDate } = (args || {}) as any;
-      const result = await applyRecurringTemplate(db, effectiveUserId, templateId, executionDate);
+      const { templateId, executionDate, transactionId, actualAmount } = (args || {}) as any;
+      const result = await applyRecurringTemplate(db, effectiveUserId, templateId, executionDate, { transactionId, actualAmount });
       return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
     }
 

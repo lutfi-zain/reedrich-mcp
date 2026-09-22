@@ -17,6 +17,8 @@ export const DEFAULT_CATEGORIES = [
   { name: "Investasi & Bunga", type: "income", icon: "📈" },
   { name: "Usaha / Freelance", type: "income", icon: "💻" },
   { name: "Pemasukan Lainnya", type: "income", icon: "🎁" },
+  // System category for ledger-complete balance adjustments (protected: matched by name, never user-deleted)
+  { name: "Adjustment", type: "expense", icon: "🧮" },
 ];
 
 export interface CreateCategoryParams {
@@ -74,6 +76,35 @@ export async function createCategory(
     .returning();
 
   return result[0];
+}
+
+export const ADJUSTMENT_CATEGORY_NAME = "Adjustment";
+export const ADJUSTMENT_CATEGORY_ICON = "🧮";
+
+export async function ensureAdjustmentCategory(
+  db: DrizzleD1Database<typeof schema>,
+  userId: string
+) {
+  const existing = await db
+    .select()
+    .from(schema.categories)
+    .where(eq(schema.categories.categoryUserId, userId));
+  const found = existing.find(
+    (c) =>
+      c.categoryName.trim().toLowerCase() === ADJUSTMENT_CATEGORY_NAME.toLowerCase()
+  );
+  if (found) return found;
+  const inserted = await db
+    .insert(schema.categories)
+    .values({
+      categoryUserId: userId,
+      categoryName: ADJUSTMENT_CATEGORY_NAME,
+      categoryType: "expense",
+      categoryIcon: ADJUSTMENT_CATEGORY_ICON,
+      categoryCreatedAt: currentIsoTimestamp(),
+    })
+    .returning();
+  return inserted[0];
 }
 
 export async function seedDefaults(

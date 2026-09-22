@@ -417,7 +417,11 @@ export async function financialSummary(
     plannedExpensesTotal += pTx.transactionAmount + (pTx.transactionAdminFee || 0);
   }
 
-  const recurringExpensesTotal = cashflowProjections?.projectedExpense || 0;
+  // Recurring obligations arrive exclusively as stored planned rows
+  // (materialized at template create, propagated on update).
+  // The virtual projection below is informational display only and
+  // MUST NOT feed the deduction.
+  const recurringExpensesTotal = 0;
 
   // Compute remaining days in the period (or rest of the month)
   let remainingDays = 1;
@@ -433,7 +437,7 @@ export async function financialSummary(
   }
 
   const safeToSpend = Number(
-    (consolidatedSpendableTotal - (plannedExpensesTotal + recurringExpensesTotal + totalDebt)).toFixed(2)
+    (consolidatedSpendableTotal - (plannedExpensesTotal + totalDebt)).toFixed(2)
   );
   const dailySafeToSpend = Number((safeToSpend / remainingDays).toFixed(2));
   const safeToSpendDetails = {
@@ -442,6 +446,7 @@ export async function financialSummary(
     recurringExpensesDeducted: Number(recurringExpensesTotal.toFixed(2)),
     activeDebtDeducted: Number(totalDebt.toFixed(2)),
     isDeficit: safeToSpend < 0,
+    recurringProjectionInformationalOnly: true,
   };
 
 
