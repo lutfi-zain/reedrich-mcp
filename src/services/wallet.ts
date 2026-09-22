@@ -1,6 +1,6 @@
 import { DrizzleD1Database } from "drizzle-orm/d1";
 import * as schema from "../db/schema";
-import { eq, and } from "drizzle-orm";
+import { eq, and, sql } from "drizzle-orm";
 import { currentIsoTimestamp } from "../utils/date";
 import {
   validationError,
@@ -8,6 +8,7 @@ import {
   isValidUUID,
   isValidFiniteNumber,
 } from "./errors";
+import { ensureAdjustmentCategory } from "./category";
 
 export interface CreateWalletParams {
   name: unknown;
@@ -176,7 +177,6 @@ export async function updateWallet(
         "balance"
       );
     }
-    updates.walletBalance = balance;
   }
   if (
     type &&
@@ -203,6 +203,31 @@ export async function updateWallet(
         "Validation Error: 'isLocked' must be a boolean",
         "isLocked"
       );
+    }
+  }
+
+  if (Object.keys(updates).length === 0 && balance === undefined) {
+    return existing;
+  }
+
+  if (balance !== undefined) {
+    const delta = Number((balance - existing.walletBalance).toFixed(2));
+    if (delta !== 0) {
+      const adjustmentCategory = await ensureAdjustmentCategory(db, userId);
+      const isIncrease = delta > 0;
+      const nowIso = currentIsoTimestamp();
+      await db.insert(schema.transactions).values({
+        transactionUserId: userId,
+        transactionWalletId: cleanWalletId,
+        transactionCategoryId: adjustmentCategory.categoryId,
+        transactionAmount: Math.abs(delta),
+        transactionAdminFee: 0,
+        transactionType: isIncrease ? "income" : "expense",
+        transactionDescription: `Balance adjustment: ${existing.walletName} → ${balance}`,
+        transactionIsPlanned: 0,
+        transactionDate: nowIso,
+      });
+      updates.walletBalance = balance;
     }
   }
 

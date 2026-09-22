@@ -11,12 +11,14 @@ echo "║  Reedrich MCP — Local D1 Integration Test (E2E)           ║"
 echo "╚════════════════════════════════════════════════════════════╝"
 echo ""
 
-# 1. Reset and apply migrations to local D1
+# 1. Reset and apply migrations to local D1 (glob from the canonical 0002
+# baseline used by tests/mcp.test.ts; legacy 0000/0001 predate the prefixed
+# schema and must stay excluded)
 echo "📦 Migrating local D1 database..."
-npx wrangler d1 execute finance_db --local --file=./drizzle/0002_table_prefixed_schema_and_tz.sql > /dev/null 2>&1 || true
-npx wrangler d1 execute finance_db --local --file=./drizzle/0003_add_debts_loans.sql > /dev/null 2>&1 || true
-npx wrangler d1 execute finance_db --local --file=./drizzle/0004_add_feedbacks_table.sql > /dev/null 2>&1 || true
-npx wrangler d1 execute finance_db --local --file=./drizzle/0005_add_goals_and_recurring_templates.sql > /dev/null 2>&1 || true
+for migration in $(ls ./drizzle/000[2-9]*.sql ./drizzle/00[1-9][0-9]*.sql 2>/dev/null | sort -u); do
+  echo "  → Applying ${migration}..."
+  npx wrangler d1 execute finance_db --local --file="${migration}" > /dev/null 2>&1 || true
+done
 echo "✅ Local D1 database ready."
 echo ""
 

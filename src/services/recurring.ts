@@ -1,11 +1,13 @@
 import { DrizzleD1Database } from "drizzle-orm/d1";
 import * as schema from "../db/schema";
-import { eq, and, desc, sql } from "drizzle-orm";
+import { eq, and, desc, sql, gt } from "drizzle-orm";
 import {
   normalizeToIsoTimestamp,
   isValidIsoDateOrTimestamp,
+  currentIsoTimestamp,
 } from "../utils/date";
 import { calculateNextRunDate } from "../utils/recurring";
+import { applyBalanceDelta } from "./transaction";
 import {
   validationError,
   notFound,
@@ -31,6 +33,36 @@ export async function listRecurringTemplates(
     .from(schema.recurringTemplates)
     .where(and(...conditions))
     .orderBy(desc(schema.recurringTemplates.templateCreatedAt));
+}
+export const MAX_MATERIALIZED_OCCURRENCES = 100;
+// D1 caps bound parameters at 100 per statement; 16 params/row → max 6 rows.
+// Chunk at 5 for headroom.
+export const MATERIALIZE_CHUNK_SIZE = 5;
+
+export interface MaterializedOccurrence {
+  occurrenceDate: string;
+  transactionDate: string;
+}
+
+export function planOccurrenceDates(
+  nextRunDate: string,
+  frequency: "daily" | "weekly" | "monthly" | "yearly",
+  interval: number,
+  endDate: string | null,
+  maxRows: number = MAX_MATERIALIZED_OCCURRENCES
+) {
+  const dates: MaterializedOccurrence[] = [];
+  let cursor = nextRunDate;
+  let guard = 0;
+  while (dates.length < maxRows && guard < maxRows + 1) {
+    guard += 1;
+    if (endDate && cursor > endDate) break;
+    dates.push({ occurrenceDate: cursor, transactionDate: `${cursor}T12:00:00.000Z` });
+    const next = calculateNextRunDate(cursor, frequency, interval);
+    if (next <= cursor) break;
+    cursor = next;
+  }
+  return dates;
 }
 
 export interface CreateRecurringTemplateParams {
@@ -257,7 +289,42 @@ export async function createRecurringTemplate(
     })
     .returning();
 
-  return newTemplate[0];
+  const created = newTemplate[0];
+  let materializedCount = 0;
+  if (activeFlag === 1) {
+    const occurrences = planOccurrenceDates(
+      created.templateNextRunDate,
+      created.templateFrequency as "daily" | "weekly" | "monthly" | "yearly",
+      created.templateInterval,
+      created.templateEndDate
+    );
+    if (occurrences.length > 0) {
+      // D1 caps bound parameters per statement: insert in small chunks
+      // instead of one 100-row multi-VALUES statement.
+      for (let i = 0; i < occurrences.length; i += MATERIALIZE_CHUNK_SIZE) {
+        const chunk = occurrences.slice(i, i + MATERIALIZE_CHUNK_SIZE);
+        await db.insert(schema.transactions).values(
+          chunk.map((occ) => ({
+            transactionUserId: userId,
+            transactionWalletId: created.templateWalletId,
+            transactionTargetWalletId: created.templateTargetWalletId,
+            transactionCategoryId: created.templateCategoryId,
+            transactionAmount: created.templateAmount,
+            transactionAdminFee: created.templateAdminFee,
+            transactionType: created.templateType,
+            transactionDescription: `[Recurring] ${created.templateName}`,
+            transactionIsPlanned: 1,
+            transactionTemplateId: created.templateId,
+            transactionOccurrenceDate: occ.occurrenceDate,
+            transactionDate: occ.transactionDate,
+          }))
+        );
+      }
+      materializedCount = occurrences.length;
+    }
+  }
+
+  return { ...created, materializedCount };
 }
 
 export interface UpdateRecurringTemplateParams {
@@ -275,6 +342,7 @@ export interface UpdateRecurringTemplateParams {
   endDate?: unknown;
   isActive?: unknown;
   notes?: unknown;
+  propagateScope?: unknown;
 }
 
 export async function updateRecurringTemplate(
@@ -304,7 +372,6 @@ export async function updateRecurringTemplate(
   if (!existingTemplate) {
     notFound("Recurring Template", cleanTemplateId);
   }
-
   const {
     name: templateNameInput,
     walletId,
@@ -320,7 +387,19 @@ export async function updateRecurringTemplate(
     endDate,
     isActive,
     notes,
+    propagateScope,
   } = params;
+
+  let cleanScope: "future_only" | "cancel" = "future_only";
+  if (propagateScope !== undefined) {
+    if (propagateScope !== "future_only" && propagateScope !== "cancel") {
+      validationError(
+        "Validation Error: 'propagateScope' must be 'future_only' or 'cancel'",
+        "propagateScope"
+      );
+    }
+    cleanScope = propagateScope;
+  }
 
   const updateData: Partial<typeof schema.recurringTemplates.$inferInsert> = {};
 
@@ -507,10 +586,24 @@ export async function updateRecurringTemplate(
         ? notes.trim()
         : null;
   }
-
   if (Object.keys(updateData).length === 0) {
     return existingTemplate;
   }
+
+  const shapeKeys = [
+    "templateAmount",
+    "templateAdminFee",
+    "templateWalletId",
+    "templateTargetWalletId",
+    "templateCategoryId",
+    "templateType",
+    "templateFrequency",
+    "templateInterval",
+    "templateStartDate",
+    "templateNextRunDate",
+    "templateEndDate",
+  ];
+  const touchesShape = Object.keys(updateData).some((k) => shapeKeys.includes(k));
 
   const updated = await db
     .update(schema.recurringTemplates)
@@ -523,7 +616,73 @@ export async function updateRecurringTemplate(
     )
     .returning();
 
-  return updated[0];
+  let propagatedCount = 0;
+  const deactivating = updateData.templateIsActive === 0;
+  if (touchesShape && cleanScope === "future_only" && !deactivating) {
+    const nowIso = currentIsoTimestamp();
+    await db
+      .delete(schema.transactions)
+      .where(
+        and(
+          eq(schema.transactions.transactionUserId, userId),
+          eq(schema.transactions.transactionTemplateId, cleanTemplateId),
+          eq(schema.transactions.transactionIsPlanned, 1),
+          gt(schema.transactions.transactionDate, nowIso)
+        )
+      )
+      .run();
+    const fresh = updated[0];
+    const occurrences = planOccurrenceDates(
+      fresh.templateNextRunDate > nowIso.split("T")[0]
+        ? fresh.templateNextRunDate
+        : nowIso.split("T")[0],
+      fresh.templateFrequency as "daily" | "weekly" | "monthly" | "yearly",
+      fresh.templateInterval,
+      fresh.templateEndDate
+    );
+    const futureOccurrences = occurrences.filter(
+      (occ) => `${occ.occurrenceDate}T00:00:00.000Z` > nowIso
+    );
+    if (futureOccurrences.length > 0) {
+      for (let i = 0; i < futureOccurrences.length; i += MATERIALIZE_CHUNK_SIZE) {
+        const chunk = futureOccurrences.slice(i, i + MATERIALIZE_CHUNK_SIZE);
+        await db.insert(schema.transactions).values(
+          chunk.map((occ) => ({
+            transactionUserId: userId,
+            transactionWalletId: fresh.templateWalletId,
+            transactionTargetWalletId: fresh.templateTargetWalletId,
+            transactionCategoryId: fresh.templateCategoryId,
+            transactionAmount: fresh.templateAmount,
+            transactionAdminFee: fresh.templateAdminFee,
+            transactionType: fresh.templateType,
+            transactionDescription: `[Recurring] ${fresh.templateName}`,
+            transactionIsPlanned: 1,
+            transactionTemplateId: cleanTemplateId,
+            transactionOccurrenceDate: occ.occurrenceDate,
+            transactionDate: occ.transactionDate,
+          }))
+        );
+      }
+      propagatedCount = futureOccurrences.length;
+    }
+  }
+
+  if (deactivating) {
+    const nowIso = currentIsoTimestamp();
+    await db
+      .delete(schema.transactions)
+      .where(
+        and(
+          eq(schema.transactions.transactionUserId, userId),
+          eq(schema.transactions.transactionTemplateId, cleanTemplateId),
+          eq(schema.transactions.transactionIsPlanned, 1),
+          gt(schema.transactions.transactionDate, nowIso)
+        )
+      )
+      .run();
+  }
+
+  return { ...updated[0], propagatedCount };
 }
 
 export async function deleteRecurringTemplate(
@@ -538,6 +697,18 @@ export async function deleteRecurringTemplate(
     );
   }
   const cleanTemplateId = templateId.trim();
+  const nowIso = currentIsoTimestamp();
+  await db
+    .delete(schema.transactions)
+    .where(
+      and(
+        eq(schema.transactions.transactionUserId, userId),
+        eq(schema.transactions.transactionTemplateId, cleanTemplateId),
+        eq(schema.transactions.transactionIsPlanned, 1),
+        gt(schema.transactions.transactionDate, nowIso)
+      )
+    )
+    .run();
   const deleted = await db
     .delete(schema.recurringTemplates)
     .where(
@@ -555,19 +726,107 @@ export async function deleteRecurringTemplate(
   return deleted[0];
 }
 
+export interface RealizeRecurringOccurrenceParams {
+  transactionId?: unknown;
+  templateId?: unknown;
+  occurrenceDate?: unknown;
+  actualAmount?: unknown;
+}
+
 export async function applyRecurringTemplate(
   db: DrizzleD1Database<typeof schema>,
   userId: string,
   templateId: unknown,
-  executionDate?: unknown
+  executionDate?: unknown,
+  params: RealizeRecurringOccurrenceParams = {}
 ) {
+  const nowIso = currentIsoTimestamp();
+  const plannedTxId =
+    typeof params.transactionId === "string" && params.transactionId.trim().length > 0
+      ? params.transactionId.trim()
+      : null;
+
+  if (plannedTxId) {
+    if (!isValidUUID(plannedTxId)) {
+      validationError(
+        "Validation Error: Valid string 'transactionId' (UUID) is required for realize",
+        "transactionId"
+      );
+    }
+    const planned = await db
+      .select()
+      .from(schema.transactions)
+      .where(
+        and(
+          eq(schema.transactions.transactionId, plannedTxId),
+          eq(schema.transactions.transactionUserId, userId)
+        )
+      )
+      .get();
+    if (!planned) notFound("Planned transaction", plannedTxId);
+    if (planned.transactionIsPlanned !== 1) {
+      validationError(
+        "Validation Error: transaction is already realized and cannot be realized again",
+        "transactionId"
+      );
+    }
+
+    let realizedAmount = planned.transactionAmount;
+    let plannedSnapshot: number | null = null;
+    if (params.actualAmount !== undefined) {
+      if (!isValidPositiveNumber(params.actualAmount)) {
+        validationError(
+          "Validation Error: 'actualAmount' must be a positive finite number greater than 0",
+          "actualAmount"
+        );
+      }
+      if (params.actualAmount !== planned.transactionAmount) {
+        plannedSnapshot = planned.transactionAmount;
+        realizedAmount = params.actualAmount;
+      }
+    }
+
+    const fee = planned.transactionAdminFee || 0.0;
+    const flipped = await db
+      .update(schema.transactions)
+      .set({
+        transactionIsPlanned: 0,
+        transactionAmount: realizedAmount,
+        transactionPlannedAmount: plannedSnapshot,
+        transactionRealizedAt: nowIso,
+      })
+      .where(
+        and(
+          eq(schema.transactions.transactionId, plannedTxId),
+          eq(schema.transactions.transactionUserId, userId)
+        )
+      )
+      .returning();
+
+    await applyBalanceDelta(
+      db,
+      userId,
+      planned.transactionType,
+      planned.transactionWalletId,
+      planned.transactionTargetWalletId,
+      realizedAmount,
+      fee,
+      1
+    );
+
+    return {
+      message: "Recurring occurrence successfully realized",
+      transaction: flipped[0],
+    };
+  }
+
   if (!isValidUUID(templateId)) {
     validationError(
       "Validation Error: Valid string 'templateId' (UUID) is required for apply_recurring_template",
       "templateId"
     );
   }
-  const cleanTemplateId = templateId.trim();
+  const cleanTemplateId = (templateId as string).trim();
   const template = await db
     .select()
     .from(schema.recurringTemplates)
@@ -595,10 +854,29 @@ export async function applyRecurringTemplate(
   const txDate = executionDate
     ? normalizeToIsoTimestamp(executionDate as string)
     : `${template.templateNextRunDate}T12:00:00.000Z`;
+  const occurrenceDay = txDate.split("T")[0];
+
+  const existingPlanned = await db
+    .select({ transactionId: schema.transactions.transactionId })
+    .from(schema.transactions)
+    .where(
+      and(
+        eq(schema.transactions.transactionUserId, userId),
+        eq(schema.transactions.transactionTemplateId, cleanTemplateId),
+        eq(schema.transactions.transactionIsPlanned, 1),
+        eq(schema.transactions.transactionOccurrenceDate, occurrenceDay)
+      )
+    )
+    .get();
+  if (existingPlanned) {
+    return applyRecurringTemplate(db, userId, templateId, executionDate, {
+      ...params,
+      transactionId: existingPlanned.transactionId,
+    });
+  }
 
   const fee = template.templateAdminFee || 0.0;
   const amt = template.templateAmount;
-  const totalOutflow = amt + fee;
 
   const sourceWallet = await db
     .select()
@@ -626,55 +904,23 @@ export async function applyRecurringTemplate(
       transactionType: template.templateType,
       transactionDescription: `[Recurring] ${template.templateName}`,
       transactionIsPlanned: 0,
+      transactionTemplateId: cleanTemplateId,
+      transactionOccurrenceDate: occurrenceDay,
+      transactionRealizedAt: nowIso,
       transactionDate: txDate,
     })
     .returning();
 
-  if (template.templateType === "expense") {
-    await db
-      .update(schema.wallets)
-      .set({ walletBalance: sql`wallet_balance - ${totalOutflow}` })
-      .where(
-        and(
-          eq(schema.wallets.walletId, template.templateWalletId),
-          eq(schema.wallets.walletUserId, userId)
-        )
-      );
-  } else if (template.templateType === "income") {
-    const netIncome = amt - fee;
-    await db
-      .update(schema.wallets)
-      .set({ walletBalance: sql`wallet_balance + ${netIncome}` })
-      .where(
-        and(
-          eq(schema.wallets.walletId, template.templateWalletId),
-          eq(schema.wallets.walletUserId, userId)
-        )
-      );
-  } else if (
-    template.templateType === "transfer" &&
-    template.templateTargetWalletId
-  ) {
-    await db
-      .update(schema.wallets)
-      .set({ walletBalance: sql`wallet_balance - ${totalOutflow}` })
-      .where(
-        and(
-          eq(schema.wallets.walletId, template.templateWalletId),
-          eq(schema.wallets.walletUserId, userId)
-        )
-      );
-
-    await db
-      .update(schema.wallets)
-      .set({ walletBalance: sql`wallet_balance + ${amt}` })
-      .where(
-        and(
-          eq(schema.wallets.walletId, template.templateTargetWalletId),
-          eq(schema.wallets.walletUserId, userId)
-        )
-      );
-  }
+  await applyBalanceDelta(
+    db,
+    userId,
+    template.templateType,
+    template.templateWalletId,
+    template.templateTargetWalletId,
+    amt,
+    fee,
+    1
+  );
 
   const nextDate = calculateNextRunDate(
     template.templateNextRunDate,

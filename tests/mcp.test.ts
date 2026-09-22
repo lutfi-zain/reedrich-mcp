@@ -4,7 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { drizzle } from 'drizzle-orm/d1';
-import { eq } from 'drizzle-orm';
+import { eq, and, gt } from 'drizzle-orm';
 import * as schema from '../src/db/schema';
 import { createMCPServer } from '../src/mcp';
 import app from '../src/index';
@@ -111,6 +111,7 @@ function createTestDB() {
     '0005_add_goals_and_recurring_templates.sql',
     '0006_add_wallet_lock.sql',
     '0007_goal_wallet_links.sql',
+    '0008_recurring_linkage.sql',
   ];
   for (const file of migrationFiles) {
     const ddlPath = join(__dirname, `../drizzle/${file}`);
@@ -1429,13 +1430,13 @@ describe('Eve Finance MCP Server — Complete Test Suite', () => {
       action: 'seed_defaults',
     });
     const seedData = JSON.parse(seedRes.content[0].text);
-    assert.equal(seedData.createdCount, 10);
+    assert.equal(seedData.createdCount, 11);
     assert.equal(seedData.skippedCount, 0);
-    assert.equal(seedData.categories.length, 10);
+    assert.equal(seedData.categories.length, 11);
 
-    // Verify all 10 categories exist in database
+    // Verify all 11 categories exist in database (10 standard + 1 Adjustment system category)
     const catList = JSON.parse((await callTool(authServer, 'manage_category', { action: 'list' })).content[0].text);
-    assert.equal(catList.length, 10);
+    assert.equal(catList.length, 11);
 
     // 6. Re-seed defaults: should skip all 10 existing categories
     const reseedRes = await callTool(authServer, 'manage_category', {
@@ -1443,7 +1444,7 @@ describe('Eve Finance MCP Server — Complete Test Suite', () => {
     });
     const reseedData = JSON.parse(reseedRes.content[0].text);
     assert.equal(reseedData.createdCount, 0);
-    assert.equal(reseedData.skippedCount, 10);
+    assert.equal(reseedData.skippedCount, 11);
 
     // 7. Check Login Onboarding Status (categories exist, wallet still missing)
     const loginRes1 = await callTool(publicServer, 'login_user', {
@@ -1757,19 +1758,28 @@ describe('Eve Finance MCP Server — Complete Test Suite', () => {
     assert.equal(summary.cashflowProjections.projectedNetChange, 14811500);
     assert.equal(summary.cashflowProjections.events.length, 2);
 
-    // Apply Recurring Template (One-Click Execute)
+    // Realize the materialized planned row for 2026-09-01 (flip, not reprint)
+    const plannedRows = await db.select().from(schema.transactions).where(eq(schema.transactions.transactionTemplateId, template.templateId));
+    assert.equal(plannedRows.length, template.materializedCount);
+    assert.ok(plannedRows.every((r) => r.transactionIsPlanned === 1));
+    const firstRow = plannedRows.find((r) => r.transactionOccurrenceDate === '2026-09-01');
+    assert.ok(firstRow, 'materialized row for 2026-09-01 must exist');
     const applyRes = await callTool(userServer, 'apply_recurring_template', {
-      templateId: template.templateId,
+      transactionId: firstRow.transactionId,
     });
     const applyData = JSON.parse(applyRes.content[0].text);
-    assert.equal(applyData.message, 'Recurring template successfully applied');
+    assert.equal(applyData.message, 'Recurring occurrence successfully realized');
     assert.equal(applyData.transaction.transactionAmount, 186000);
     assert.equal(applyData.transaction.transactionAdminFee, 2500);
-    assert.equal(applyData.template.templateNextRunDate, '2026-10-01');
+    assert.equal(applyData.transaction.transactionIsPlanned, 0);
+    assert.ok(applyData.transaction.transactionRealizedAt);
 
     // Verify wallet balance debited atomically (10M - 186K - 2.5K = 9,811,500)
     const updatedWallet = await db.select().from(schema.wallets).where(eq(schema.wallets.walletId, wallet.walletId));
     assert.equal(updatedWallet[0].walletBalance, 9811500);
+    // Verify still exactly one row for that occurrence (no duplicate print)
+    const occurrenceRows = await db.select().from(schema.transactions).where(eq(schema.transactions.transactionTemplateId, template.templateId));
+    assert.equal(occurrenceRows.filter((r) => r.transactionOccurrenceDate === '2026-09-01').length, 1);
   });
 
   it('18. REST API Endpoints: /api/v1/summary, /api/v1/goals, /api/v1/recurring-templates', async () => {
@@ -1845,15 +1855,20 @@ describe('Eve Finance MCP Server — Complete Test Suite', () => {
     const tplBody: any = await createTplRes.json();
     assert.equal(tplBody.templateName, 'Gym Membership');
 
-    // 4. POST /api/v1/recurring-templates/{templateId}/apply
+    // 4. POST /api/v1/recurring-templates/{templateId}/apply (realize materialized row)
+    const tplRows = await db.select().from(schema.transactions).where(eq(schema.transactions.transactionTemplateId, tplBody.templateId));
+    assert.ok(tplRows.length > 0, 'template create must materialize planned rows');
+    const firstTplRow = tplRows.find((r) => r.transactionIsPlanned === 1);
+    assert.ok(firstTplRow, 'at least one unrealized planned row must exist');
     const applyTplRes = await app.request(`https://example.workers.dev/api/v1/recurring-templates/${tplBody.templateId}/apply`, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${token}` },
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ transactionId: firstTplRow.transactionId }),
     }, env);
     assert.equal(applyTplRes.status, 200);
     const applyBody: any = await applyTplRes.json();
-    assert.equal(applyBody.template.templateNextRunDate, '2026-10-05');
-
+    assert.equal(applyBody.transaction.transactionIsPlanned, 0);
+    assert.ok(applyBody.transaction.transactionRealizedAt);
     // 5. GET /api/v1/summary
     const summaryRes = await app.request('https://example.workers.dev/api/v1/summary?baseCurrency=IDR', {
       headers: { Authorization: `Bearer ${token}` },
@@ -3552,5 +3567,200 @@ describe('Goal Wallet Links & Derived Progress', () => {
         action: 'contribute', goalId: goal.goalId, amount: 1000000,
       });
     }, /deprecated and removed/i);
+  });
+});
+
+describe('Recurring Planned Materialization', () => {
+  async function setupRecurringUser(firstName: string, email: string, phone: string) {
+    const { db } = createTestDB();
+    const publicServer = createMCPServer(db, null, TEST_JWT_SECRET);
+    const reg = JSON.parse((await callTool(publicServer, 'register_user', {
+      firstName, lastName: 'Tester', email, whatsappNumber: phone,
+    })).content[0].text);
+    const userServer = createMCPServer(db, reg.userId, TEST_JWT_SECRET);
+    const wallet = JSON.parse((await callTool(userServer, 'manage_wallet', {
+      action: 'create', name: 'Main Checking', institution: 'Mandiri',
+      balance: 10000000, currency: 'IDR',
+    })).content[0].text);
+    const category = JSON.parse((await callTool(userServer, 'manage_category', {
+      action: 'create', name: 'Bills', type: 'expense',
+    })).content[0].text);
+    return { db, userServer, wallet, category };
+  }
+
+  it('5.1 Materialization: caps, endDate truncation, linkage, zero balance move', async () => {
+    const { db, userServer, wallet, category } = await setupRecurringUser('Mat', 'mat@example.com', '+628111111112');
+
+    // Monthly, no endDate -> capped at exactly 100 rows
+    const tpl = JSON.parse((await callTool(userServer, 'manage_recurring_template', {
+      action: 'create', name: 'Monthly Dues', walletId: wallet.walletId,
+      categoryId: category.categoryId, amount: 100000, type: 'expense',
+      frequency: 'monthly', interval: 1, startDate: '2026-10-01', nextRunDate: '2026-10-01',
+    })).content[0].text);
+    assert.equal(tpl.materializedCount, 100);
+    const rows = await db.select().from(schema.transactions).where(eq(schema.transactions.transactionTemplateId, tpl.templateId));
+    assert.equal(rows.length, 100);
+    assert.ok(rows.every((r) => r.transactionIsPlanned === 1));
+    assert.ok(rows.every((r) => r.transactionOccurrenceDate !== null));
+    assert.equal(rows[0].transactionOccurrenceDate, '2026-10-01');
+
+    // Balance untouched by materialization
+    const wallets = await db.select().from(schema.wallets).where(eq(schema.wallets.walletId, wallet.walletId));
+    assert.equal(wallets[0].walletBalance, 10000000);
+
+    // endDate truncation: 12-month contract -> exactly 12 rows
+    const tpl2 = JSON.parse((await callTool(userServer, 'manage_recurring_template', {
+      action: 'create', name: 'Rent Contract', walletId: wallet.walletId,
+      amount: 4000000, type: 'expense', frequency: 'monthly', interval: 1,
+      startDate: '2026-10-01', endDate: '2027-09-01',
+    })).content[0].text);
+    assert.equal(tpl2.materializedCount, 12);
+
+    // Daily horizon: 100 rows ~ 100 days
+    const tpl3 = JSON.parse((await callTool(userServer, 'manage_recurring_template', {
+      action: 'create', name: 'Daily Coffee', walletId: wallet.walletId,
+      amount: 25000, type: 'expense', frequency: 'daily', interval: 1,
+      startDate: '2026-10-01',
+    })).content[0].text);
+    assert.equal(tpl3.materializedCount, 100);
+    const dailyRows = await db.select().from(schema.transactions).where(eq(schema.transactions.transactionTemplateId, tpl3.templateId));
+    assert.equal(dailyRows[1].transactionOccurrenceDate, '2026-10-02');
+  });
+
+  it('5.2 Realize: flip, override variance, double-reject, fallback print', async () => {
+    const { db, userServer, wallet, category } = await setupRecurringUser('Real', 'real@example.com', '+628111111113');
+
+    const tpl = JSON.parse((await callTool(userServer, 'manage_recurring_template', {
+      action: 'create', name: 'Gym', walletId: wallet.walletId,
+      categoryId: category.categoryId, amount: 350000, adminFee: 0,
+      type: 'expense', frequency: 'monthly', interval: 1, startDate: '2026-10-05',
+    })).content[0].text);
+    const rows = await db.select().from(schema.transactions).where(eq(schema.transactions.transactionTemplateId, tpl.templateId));
+    const first = rows.find((r) => r.transactionOccurrenceDate === '2026-10-05');
+    assert.ok(first);
+
+    // Flip at planned amount
+    const realized = JSON.parse((await callTool(userServer, 'apply_recurring_template', {
+      transactionId: first.transactionId,
+    })).content[0].text);
+    assert.equal(realized.message, 'Recurring occurrence successfully realized');
+    assert.equal(realized.transaction.transactionIsPlanned, 0);
+    assert.ok(realized.transaction.transactionRealizedAt);
+    assert.equal(realized.transaction.transactionPlannedAmount, null);
+
+    // Balance moved exactly once
+    const w1 = await db.select().from(schema.wallets).where(eq(schema.wallets.walletId, wallet.walletId));
+    assert.equal(w1[0].walletBalance, 10000000 - 350000);
+
+    // Still one row for that occurrence (no duplicate print)
+    const sameDay = await db.select().from(schema.transactions).where(
+      and(
+        eq(schema.transactions.transactionTemplateId, tpl.templateId),
+        eq(schema.transactions.transactionOccurrenceDate, '2026-10-05')
+      )
+    );
+    assert.equal(sameDay.length, 1);
+
+    // Double realize rejected
+    await assert.rejects(async () => {
+      await callTool(userServer, 'apply_recurring_template', { transactionId: first.transactionId });
+    }, /already realized/i);
+
+    // Override variance: planned 350k template, realize at 375k
+    const rows2 = await db.select().from(schema.transactions).where(eq(schema.transactions.transactionTemplateId, tpl.templateId));
+    const second = rows2.find((r) => r.transactionIsPlanned === 1);
+    assert.ok(second);
+    const overridden = JSON.parse((await callTool(userServer, 'apply_recurring_template', {
+      transactionId: second.transactionId, actualAmount: 375000,
+    })).content[0].text);
+    assert.equal(overridden.transaction.transactionAmount, 375000);
+    assert.equal(overridden.transaction.transactionPlannedAmount, 350000);
+
+    // Fallback print: templateId + date outside horizon prints linked actual
+    const fallback = JSON.parse((await callTool(userServer, 'apply_recurring_template', {
+      templateId: tpl.templateId, executionDate: '2040-01-15',
+    })).content[0].text);
+    assert.equal(fallback.transaction.transactionIsPlanned, 0);
+    assert.equal(fallback.transaction.transactionTemplateId, tpl.templateId);
+    assert.equal(fallback.transaction.transactionOccurrenceDate, '2040-01-15');
+  });
+
+  it('5.3 Propagation: future-only rewrite, cancel no-op, immutability, deactivate cleanup', async () => {
+    const { db, userServer, wallet, category } = await setupRecurringUser('Prop', 'prop@example.com', '+628111111114');
+
+    // Overdue row: backdate one occurrence by creating with past startDate
+    const tpl = JSON.parse((await callTool(userServer, 'manage_recurring_template', {
+      action: 'create', name: 'Dues', walletId: wallet.walletId,
+      categoryId: category.categoryId, amount: 100000, type: 'expense',
+      frequency: 'monthly', interval: 1, startDate: '2020-01-05',
+    })).content[0].text);
+    // Realize the oldest row to have a realized sample
+    const allRows = await db.select().from(schema.transactions).where(eq(schema.transactions.transactionTemplateId, tpl.templateId));
+    const oldest = allRows.filter((r) => r.transactionIsPlanned === 1).sort((a, b) => a.transactionDate.localeCompare(b.transactionDate))[0];
+    await callTool(userServer, 'apply_recurring_template', { transactionId: oldest.transactionId });
+
+    const countBefore = (await db.select().from(schema.transactions).where(eq(schema.transactions.transactionTemplateId, tpl.templateId))).length;
+
+    // future_only amount change: future rows rewritten, realized + overdue untouched
+    const updated = JSON.parse((await callTool(userServer, 'manage_recurring_template', {
+      action: 'update', templateId: tpl.templateId, amount: 150000,
+    })).content[0].text);
+    assert.ok(updated.propagatedCount > 0);
+    const afterRows = await db.select().from(schema.transactions).where(eq(schema.transactions.transactionTemplateId, tpl.templateId));
+    const realizedAfter = afterRows.filter((r) => r.transactionIsPlanned === 0);
+    assert.equal(realizedAfter.length, 1, 'exactly the one realized row survives');
+    assert.equal(realizedAfter[0].transactionAmount, 100000, 'realized row keeps old amount');
+    const futureAfter = afterRows.filter((r) => r.transactionIsPlanned === 1 && r.transactionDate > new Date().toISOString());
+    assert.ok(futureAfter.length > 0);
+    assert.ok(futureAfter.every((r) => r.transactionAmount === 150000), 'future rows carry new amount');
+
+    // cancel scope: template record changes, zero rows touched
+    const countMid = afterRows.length;
+    await callTool(userServer, 'manage_recurring_template', {
+      action: 'update', templateId: tpl.templateId, notes: 'renamed', propagateScope: 'cancel',
+    });
+    const countAfterCancel = (await db.select().from(schema.transactions).where(eq(schema.transactions.transactionTemplateId, tpl.templateId))).length;
+    assert.equal(countAfterCancel, countMid);
+    assert.ok(countBefore > 0);
+
+    // deactivate: future unrealized gone, realized + overdue preserved
+    await callTool(userServer, 'manage_recurring_template', {
+      action: 'update', templateId: tpl.templateId, isActive: false,
+    });
+    const afterDeactivate = await db.select().from(schema.transactions).where(eq(schema.transactions.transactionTemplateId, tpl.templateId));
+    const nowIso = new Date().toISOString();
+    assert.equal(afterDeactivate.filter((r) => r.transactionIsPlanned === 1 && r.transactionDate > nowIso).length, 0);
+    assert.ok(afterDeactivate.filter((r) => r.transactionIsPlanned === 0).length >= 1, 'realized preserved');
+    assert.ok(afterDeactivate.filter((r) => r.transactionIsPlanned === 1 && r.transactionDate <= nowIso).length >= 1, 'overdue preserved');
+  });
+
+  it('5.4 Ledger-complete adjustment: delta printed, zero no-op, reserved protection', async () => {
+    const { db, userServer, wallet } = await setupRecurringUser('Ledg', 'ledg@example.com', '+628111111115');
+
+    // Upward adjustment prints income row
+    const up = JSON.parse((await callTool(userServer, 'manage_wallet', {
+      action: 'update', walletId: wallet.walletId, balance: 12000000,
+    })).content[0].text);
+    assert.equal(up.walletBalance, 12000000);
+    const adjRows = await db.select().from(schema.transactions).where(eq(schema.transactions.transactionWalletId, wallet.walletId));
+    assert.equal(adjRows.length, 1);
+    assert.equal(adjRows[0].transactionType, 'income');
+    assert.equal(adjRows[0].transactionAmount, 2000000);
+    const adjCat = await db.select().from(schema.categories).where(eq(schema.categories.categoryId, adjRows[0].transactionCategoryId));
+    assert.equal(adjCat[0].categoryName, 'Adjustment');
+
+    // Downward adjustment prints expense row
+    await callTool(userServer, 'manage_wallet', {
+      action: 'update', walletId: wallet.walletId, balance: 11000000,
+    });
+    const adjRows2 = await db.select().from(schema.transactions).where(eq(schema.transactions.transactionWalletId, wallet.walletId));
+    assert.equal(adjRows2.length, 2);
+
+    // Zero delta: no-op, no new row
+    await callTool(userServer, 'manage_wallet', {
+      action: 'update', walletId: wallet.walletId, balance: 11000000,
+    });
+    const adjRows3 = await db.select().from(schema.transactions).where(eq(schema.transactions.transactionWalletId, wallet.walletId));
+    assert.equal(adjRows3.length, 2);
   });
 });

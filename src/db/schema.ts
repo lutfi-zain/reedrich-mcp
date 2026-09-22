@@ -89,6 +89,11 @@ export const transactions = sqliteTable("transactions", {
   transactionType: text("transaction_type").notNull().default("expense"), // "expense" | "income" | "transfer"
   transactionDescription: text("transaction_description"),
   transactionIsPlanned: integer("transaction_is_planned").notNull().default(0), // 0 or 1
+  transactionTemplateId: text("transaction_template_id")
+    .references(() => recurringTemplates.templateId, { onDelete: "set null" }),
+  transactionOccurrenceDate: text("transaction_occurrence_date"), // YYYY-MM-DD
+  transactionRealizedAt: text("transaction_realized_at"), // ISO-8601, set on realize flip
+  transactionPlannedAmount: real("transaction_planned_amount"), // populated only on override realizes
   transactionDate: text("transaction_date").notNull(), // ISO-8601 string with timezone
   transactionCreatedAt: text("transaction_created_at")
     .notNull()
@@ -99,6 +104,7 @@ export const transactions = sqliteTable("transactions", {
   index("transactions_target_wallet_id_idx").on(table.transactionTargetWalletId),
   index("transactions_category_id_idx").on(table.transactionCategoryId),
   index("transactions_budget_id_idx").on(table.transactionBudgetId),
+  index("transactions_template_planned_date_idx").on(table.transactionTemplateId, table.transactionIsPlanned, table.transactionDate),
 ]);
 
 export const debtsLoans = sqliteTable("debts_loans", {

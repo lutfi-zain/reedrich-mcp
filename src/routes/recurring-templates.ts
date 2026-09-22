@@ -38,10 +38,18 @@ recurringTemplates.post("/:templateId/apply", async (c) => {
   const templateId = c.req.param("templateId");
 
   let executionDate: string | undefined = undefined;
+  let transactionId: string | undefined = undefined;
+  let actualAmount: number | undefined = undefined;
   try {
     const body = (await c.req.json()) as Record<string, unknown>;
     if (typeof body?.executionDate === "string") {
       executionDate = body.executionDate;
+    }
+    if (typeof body?.transactionId === "string") {
+      transactionId = body.transactionId;
+    }
+    if (typeof body?.actualAmount === "number") {
+      actualAmount = body.actualAmount;
     }
   } catch {
     // Body optional for apply
@@ -51,7 +59,8 @@ recurringTemplates.post("/:templateId/apply", async (c) => {
     db,
     userId!,
     templateId,
-    executionDate
+    executionDate,
+    { transactionId, actualAmount }
   );
   return c.json(result, 200);
 });
