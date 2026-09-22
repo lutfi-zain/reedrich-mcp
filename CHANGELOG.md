@@ -4,6 +4,24 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/): `Added`, `Changed`,
 `Deprecated`, `Removed`, `Fixed`, `Security` sections per release.
 
+## [Unreleased]
+
+### Added
+- Recurring planned materialization (migration `drizzle/0008_recurring_linkage.sql`):
+  templates print bounded `isPlanned=1` rows at create (max 100, `endDate`-truncated)
+  with `template_id` / `occurrence_date` linkage; `apply_recurring_template` realizes
+  by flipping one row (`1→0`, `realizedAt` stamp, optional `actualAmount` override with
+  variance record); template update accepts `propagateScope` (`future_only` default /
+  `cancel`) rewriting future unrealized rows only; deactivate/delete preserves overdue
+  + realized rows. New reserved `Adjustment` system category for ledger-complete balance
+  corrections.
+
+### Changed
+- `financial_summary`: virtual recurring projection removed from the Safe-to-Spend
+  deduction (display-only, flagged `recurringProjectionInformationalOnly`); stored planned
+  rows are the sole obligation source. `manage_wallet update(balance)` now prints one
+  income/expense adjustment transaction instead of silently overwriting (zero delta = no-op).
+
 ## [1.3.0] — 2026-09-21
 
 ### Added

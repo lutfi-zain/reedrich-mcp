@@ -38,6 +38,17 @@ The error codes SHALL be:
 - **WHEN** the MCP transport adapter catches the error
 - **THEN** it SHALL return `{ content: [{ type: "text", text: "<error message>" }], isError: true }`
 
+#### Scenario: Realize rejects double realization with VALIDATION
+
+- **GIVEN** a planned transaction row already flipped to `isPlanned=0` with `realizedAt` set
+- **WHEN** the realize operation is invoked again for that row
+- **THEN** it SHALL throw an error with code `VALIDATION` and change nothing
+
+#### Scenario: Reserved system category deletion is forbidden
+
+- **GIVEN** the reserved `Adjustment` system category owned by the authenticated user
+- **WHEN** the user attempts to delete it
+- **THEN** it SHALL throw an error with code `FORBIDDEN` and preserve the category
 ### Requirement: Service Function Transport Neutrality
 
 Service functions MUST NOT import, reference, or depend on any HTTP framework (Hono, Request, Response), MCP SDK types, or transport-specific constructs. Service functions SHALL accept only: a database handle, a user identifier, and typed input parameters. Service functions SHALL return plain TypeScript objects or throw `ServiceError`.
@@ -104,3 +115,25 @@ For every MCP tool that delegates to a service function, the MCP transport adapt
 
 - **WHEN** the `manage_wallet` MCP tool is called with `action: "list"`
 - **THEN** the response SHALL be identical in structure and content to the current implementation, with each wallet object additively containing `walletIsLocked` (integer `0` or `1`)
+
+### Requirement: Ledger-Complete Wallet Balance Adjustment
+
+Every wallet balance change initiated through `updateWallet(balance)` MUST print exactly one adjustment transaction row (income when the delta is positive, expense when negative) against the reserved `Adjustment` system category, then move the balance through the existing atomic path. A zero delta SHALL be a no-op returning the existing wallet with no new row. Direct silent overwrites SHALL NOT occur.
+
+#### Scenario: Balance correction prints an adjustment transaction
+
+- **GIVEN** a wallet with balance Rp 10.000.000 owned by the authenticated user
+- **WHEN** the user updates the wallet balance to Rp 12.000.000
+- **THEN** the system SHALL print one income adjustment transaction of Rp 2.000.000 against the reserved `Adjustment` category and set the wallet balance to Rp 12.000.000
+
+#### Scenario: Zero-delta update prints nothing
+
+- **GIVEN** a wallet with balance Rp 10.000.000
+- **WHEN** the user updates the wallet balance to Rp 10.000.000
+- **THEN** the system SHALL return the existing wallet unchanged with zero new transaction rows
+
+#### Scenario: Adjustment on another user's wallet is rejected
+
+- **GIVEN** an authenticated user A and a wallet belonging to user B
+- **WHEN** user A attempts a balance adjustment on that wallet
+- **THEN** the system SHALL return a 404 Not Found error and print no transaction row
