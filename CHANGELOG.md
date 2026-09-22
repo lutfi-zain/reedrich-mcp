@@ -4,7 +4,7 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/): `Added`, `Changed`,
 `Deprecated`, `Removed`, `Fixed`, `Security` sections per release.
 
-## [Unreleased]
+## [1.4.0] — 2026-09-22
 
 ### Added
 - Recurring planned materialization (migration `drizzle/0008_recurring_linkage.sql`):
