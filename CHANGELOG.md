@@ -4,6 +4,20 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/): `Added`, `Changed`,
 `Deprecated`, `Removed`, `Fixed`, `Security` sections per release.
 
+## [1.5.0] — 2026-09-24
+
+### Added
+- Comprehensive Account Snapshot tool `get_account_detail` and REST route `GET /api/v1/account-detail`:
+  delivers an atomic, single-payload snapshot consolidating multi-currency net worth (live FX),
+  partitioned spendable vs locked cash reserves, monthly cashflows with category breakdown,
+  active budgets with spent/remaining tracking, active goals with derived balances and pacing,
+  and active debt/loan obligations.
+- Wallet mutation metadata (`lastTransaction`): `listWallets` and `manage_wallet(action: "list")`
+  now return the latest realized non-planned mutation out-of-the-box (date, type, transfer direction
+  `in`/`out`, amount, description, category).
+- Single-roundtrip SQLite CTE window function: `ROW_NUMBER() OVER (PARTITION BY wallet_id ORDER BY transaction_date DESC)`
+  unpivots source and destination wallets to batch-resolve mutations for all user wallets in one query (< 50ms).
+
 ## [1.4.0] — 2026-09-22
 
 ### Added
