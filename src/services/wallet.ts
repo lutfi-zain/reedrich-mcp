@@ -27,12 +27,118 @@ export interface UpdateWalletParams {
   currency?: unknown;
   isLocked?: unknown;
 }
+export interface WalletLastTransaction {
+  transactionId: string;
+  date: string;
+  type: string;
+  direction: "in" | "out";
+  amount: number;
+  description: string;
+  category: string | null;
+}
+
+export type WalletWithLastTransaction = typeof schema.wallets.$inferSelect & {
+  lastTransaction?: WalletLastTransaction | null;
+};
+
+interface RawWalletLastTxRow {
+  transaction_id: string;
+  wallet_id: string;
+  transaction_amount: number;
+  transaction_type: string;
+  direction: "in" | "out";
+  transaction_description: string;
+  transaction_date: string;
+  category_name: string | null;
+}
+
+export async function fetchLatestTransactionsByWallet(
+  db: DrizzleD1Database<typeof schema>,
+  userId: string
+): Promise<Map<string, WalletLastTransaction>> {
+  const query = sql`
+    WITH WalletMutations AS (
+      SELECT 
+        t.transaction_id,
+        t.transaction_wallet_id AS wallet_id,
+        t.transaction_amount,
+        t.transaction_type,
+        CASE 
+          WHEN t.transaction_type = 'income' THEN 'in'
+          ELSE 'out'
+        END AS direction,
+        t.transaction_description,
+        t.transaction_date,
+        c.category_name
+      FROM transactions t
+      LEFT JOIN categories c ON t.transaction_category_id = c.category_id
+      WHERE t.transaction_user_id = ${userId} AND t.transaction_is_planned = 0
+      
+      UNION ALL
+      
+      SELECT 
+        t.transaction_id,
+        t.transaction_target_wallet_id AS wallet_id,
+        t.transaction_amount,
+        t.transaction_type,
+        'in' AS direction,
+        t.transaction_description,
+        t.transaction_date,
+        c.category_name
+      FROM transactions t
+      LEFT JOIN categories c ON t.transaction_category_id = c.category_id
+      WHERE t.transaction_user_id = ${userId} 
+        AND t.transaction_is_planned = 0 
+        AND t.transaction_target_wallet_id IS NOT NULL
+    ),
+    Ranked AS (
+      SELECT 
+        transaction_id,
+        wallet_id,
+        transaction_amount,
+        transaction_type,
+        direction,
+        transaction_description,
+        transaction_date,
+        category_name,
+        ROW_NUMBER() OVER (PARTITION BY wallet_id ORDER BY transaction_date DESC) as rn
+      FROM WalletMutations
+    )
+    SELECT 
+      transaction_id,
+      wallet_id,
+      transaction_amount,
+      transaction_type,
+      direction,
+      transaction_description,
+      transaction_date,
+      category_name
+    FROM Ranked 
+    WHERE rn = 1
+  `;
+
+  const rows = await db.all<RawWalletLastTxRow>(query);
+  const map = new Map<string, WalletLastTransaction>();
+  for (const row of rows) {
+    map.set(row.wallet_id, {
+      transactionId: row.transaction_id,
+      date: row.transaction_date,
+      type: row.transaction_type,
+      direction: row.direction,
+      amount: row.transaction_amount,
+      description: row.transaction_description,
+      category: row.category_name ?? null,
+    });
+  }
+  return map;
+}
 
 export async function listWallets(
   db: DrizzleD1Database<typeof schema>,
   userId: string,
-  isLockedFilter?: unknown
-) {
+  isLockedFilter?: unknown,
+  includeLastTransaction: boolean = true
+): Promise<WalletWithLastTransaction[]> {
   const conditions = [eq(schema.wallets.walletUserId, userId)];
   if (isLockedFilter !== undefined) {
     if (typeof isLockedFilter === "boolean") {
@@ -43,10 +149,20 @@ export async function listWallets(
       conditions.push(eq(schema.wallets.walletIsLocked, isLockedFilter === "true" ? 1 : 0));
     }
   }
-  return db
+  const wallets = await db
     .select()
     .from(schema.wallets)
     .where(and(...conditions));
+
+  if (!includeLastTransaction || wallets.length === 0) {
+    return wallets;
+  }
+
+  const lastTxMap = await fetchLatestTransactionsByWallet(db, userId);
+  return wallets.map((w) => ({
+    ...w,
+    lastTransaction: lastTxMap.get(w.walletId) ?? null,
+  }));
 }
 
 export async function createWallet(

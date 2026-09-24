@@ -116,6 +116,20 @@ export function generateOpenApiSpec(origin: string): Record<string, unknown> {
               example: 0,
               description: "Whether the wallet is locked (1) for protected savings/emergency reserves or spendable (0)",
             },
+            lastTransaction: {
+              type: "object",
+              nullable: true,
+              description: "Latest non-planned transaction for this wallet, or null if no mutations exist",
+              properties: {
+                transactionId: { type: "string", format: "uuid" },
+                date: { type: "string", format: "date-time" },
+                type: { type: "string", enum: ["expense", "income", "transfer"] },
+                direction: { type: "string", enum: ["in", "out"] },
+                amount: { type: "number" },
+                description: { type: "string" },
+                category: { type: "string", nullable: true },
+              },
+            },
             walletCreatedAt: { type: "string", format: "date-time" },
           },
           required: ["walletId", "walletName", "walletBalance", "walletCurrency"],
@@ -403,9 +417,137 @@ export function generateOpenApiSpec(origin: string): Record<string, unknown> {
           },
           required: ["success", "feedbackId"],
         },
+        AccountDetail: {
+          type: "object",
+          properties: {
+            netWorth: {
+              type: "object",
+              properties: {
+                consolidated: {
+                  type: "object",
+                  properties: {
+                    total: { type: "number" },
+                    currency: { type: "string" },
+                    isEstimated: { type: "boolean" },
+                    fxSource: { type: "string" },
+                  },
+                },
+                byCurrency: { type: "object", additionalProperties: { type: "number" } },
+                byInstitution: { type: "object", additionalProperties: { type: "number" } },
+              },
+            },
+            wallets: {
+              type: "object",
+              properties: {
+                spendable: {
+                  type: "object",
+                  properties: {
+                    total: { type: "number" },
+                    items: { type: "array", items: { $ref: "#/components/schemas/Wallet" } },
+                  },
+                },
+                locked: {
+                  type: "object",
+                  properties: {
+                    total: { type: "number" },
+                    items: { type: "array", items: { $ref: "#/components/schemas/Wallet" } },
+                  },
+                },
+              },
+            },
+            monthlyCashFlow: {
+              type: "object",
+              properties: {
+                period: {
+                  type: "object",
+                  properties: {
+                    start: { type: "string" },
+                    end: { type: "string" },
+                  },
+                },
+                totalIncome: { type: "number" },
+                totalExpense: { type: "number" },
+                netSavings: { type: "number" },
+                categoryBreakdown: {
+                  type: "array",
+                  items: {
+                    type: "object",
+                    properties: {
+                      categoryName: { type: "string" },
+                      amount: { type: "number" },
+                      percentage: { type: "number" },
+                    },
+                  },
+                },
+              },
+            },
+            budgets: { type: "array", items: { type: "object" } },
+            goals: { type: "array", items: { type: "object" } },
+            obligations: {
+              type: "object",
+              properties: {
+                totalDebt: { type: "number" },
+                totalReceivable: { type: "number" },
+                activeDebts: { type: "array", items: { type: "object" } },
+                activeLoans: { type: "array", items: { type: "object" } },
+              },
+            },
+          },
+        },
       },
     },
     paths: {
+      "/api/v1/account-detail": {
+        get: {
+          tags: ["Analytics & Reporting"],
+          summary: "Get Comprehensive Financial Snapshot",
+          description:
+            "Returns a unified, atomic account snapshot: consolidated net worth with live FX, wallets partitioned into spendable and locked with last transaction metadata, monthly cashflow, active budgets, goal pacing, and active obligations.",
+          operationId: "getAccountDetail",
+          security: [{ bearerAuth: [] }, { apiKeyHeader: [] }],
+          parameters: [
+            {
+              name: "startDate",
+              in: "query",
+              required: false,
+              description: "Filter start date (ISO-8601 string, e.g. YYYY-MM-DD)",
+              schema: { type: "string" },
+            },
+            {
+              name: "endDate",
+              in: "query",
+              required: false,
+              description: "Filter end date (ISO-8601 string, e.g. YYYY-MM-DD)",
+              schema: { type: "string" },
+            },
+            {
+              name: "baseCurrency",
+              in: "query",
+              required: false,
+              description: "Base currency for net worth and conversions (default IDR)",
+              schema: { type: "string", default: "IDR" },
+            },
+          ],
+          responses: {
+            "200": {
+              description: "Comprehensive account detail snapshot successfully retrieved.",
+              content: {
+                "application/json": {
+                  schema: { $ref: "#/components/schemas/AccountDetail" },
+                },
+              },
+            },
+            "401": {
+              description: "Authentication required",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+            "400": {
+              description: "Invalid date format",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+          },
+        },
+      },
       "/api/v1/summary": {
         get: {
           tags: ["Analytics & Reporting"],

@@ -846,4 +846,48 @@ describe('Integration Test: Full User Journey (Deployed Worker + Remote D1)', ()
 
     console.log(`    ✓ Ledger: balance adjustment printed traceable income row`);
   });
+
+  // -------------------------------------------------------------------------
+  // Step 33: Comprehensive Account Snapshot & Wallet Last Transaction (E2E over D1)
+  // -------------------------------------------------------------------------
+  it('Step 33: Comprehensive Account Snapshot & Wallet Last Transaction', async () => {
+    const token = state.userA.token;
+
+    // 1. Verify manage_wallet list returns lastTransaction
+    const wallets = await callTool('manage_wallet', { action: 'list' }, token);
+    assert.ok(Array.isArray(wallets));
+    assert.ok(wallets.length >= 2);
+    // Gopay had adjustment transaction from Step 32 -> lastTransaction must not be null
+    const gopay = wallets.find((w: any) => w.walletId === state.wallets.gopay.walletId);
+    assert.ok(gopay);
+    assert.ok(gopay.lastTransaction, 'wallet with mutations must have lastTransaction');
+    assert.equal(gopay.lastTransaction.type, 'income');
+    assert.equal(gopay.lastTransaction.direction, 'in');
+
+    // 2. Call get_account_detail
+    const snapshot = await callTool('get_account_detail', {}, token);
+    assert.ok(snapshot.netWorth, 'must have netWorth');
+    assert.ok(snapshot.netWorth.consolidated.total > 0);
+    assert.equal(snapshot.netWorth.consolidated.currency, 'IDR');
+    assert.ok(snapshot.wallets.spendable.total > 0);
+    assert.ok(Array.isArray(snapshot.wallets.spendable.items));
+    assert.ok(Array.isArray(snapshot.wallets.locked.items));
+    assert.ok(snapshot.monthlyCashFlow);
+    assert.ok(Array.isArray(snapshot.monthlyCashFlow.categoryBreakdown));
+    assert.ok(Array.isArray(snapshot.budgets));
+    assert.ok(Array.isArray(snapshot.goals));
+    assert.ok(snapshot.obligations);
+
+    // 3. Call REST endpoint /api/v1/account-detail
+    const restRes = await fetch(`${WORKER_URL}/api/v1/account-detail`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    assert.equal(restRes.status, 200);
+    const restData: any = await restRes.json();
+    assert.ok(restData.netWorth);
+    assert.ok(restData.wallets);
+    assert.ok(restData.monthlyCashFlow);
+
+    console.log(`    ✓ Snapshot: atomic get_account_detail returned complete payload with wallets, cashflow, budgets, goals, and obligations`);
+  });
 });

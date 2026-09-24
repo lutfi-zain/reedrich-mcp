@@ -30,6 +30,7 @@ import {
 } from "./services/transaction";
 import { transferFunds, InsufficientWalletsError } from "./services/transfer";
 import { financialSummary } from "./services/summary";
+import { getAccountDetail } from "./services/account-snapshot";
 import {
   listDebtsLoans,
   createDebtLoan,
@@ -720,6 +721,19 @@ Authentication Note: You are already authenticated via OAuth / Bearer token. Nev
         }
       },
       {
+        name: "get_account_detail",
+        description: "Retrieve a comprehensive financial snapshot in a single atomic call: consolidated multi-currency net worth, wallets partitioned into spendable and locked with latest transaction metadata, monthly cashflow with category breakdown, active budget statuses, goal pacing with linked wallet balances, and active debt/loan obligations. Eliminates multi-step tool calls for situational planning.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            startDate: { type: "string", description: "Start date filter in ISO format (defaults to start of current month)" },
+            endDate: { type: "string", description: "End date filter in ISO format (defaults to end of current month)" },
+            baseCurrency: { type: "string", description: "Optional base currency override for net worth and conversions (e.g. IDR, USD; defaults to IDR)" },
+            apiKey: { type: "string", description: "Optional: Your persistent API Key (rd_live_...) if not set in headers" }
+          }
+        }
+      },
+      {
         name: "manage_debt_loan",
         description: "Manage personal debts (liabilities/payable) and loans (receivables). Create debt/loan, list with filters, record repayments (full/partial), or update details.",
         inputSchema: {
@@ -958,6 +972,12 @@ Authentication Note: You are already authenticated via OAuth / Bearer token. Nev
     // --- Tool: financial_summary ---
     if (name === "financial_summary") {
       const result = await financialSummary(db, effectiveUserId, (args || {}) as any, options?.fetchFn);
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    }
+
+    // --- Tool: get_account_detail ---
+    if (name === "get_account_detail") {
+      const result = await getAccountDetail(db, effectiveUserId, (args || {}) as any, options?.fetchFn);
       return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
     }
 
