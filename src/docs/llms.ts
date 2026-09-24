@@ -46,6 +46,7 @@ Reedrich supports 3 authorization methods. All data entities enforce strict mult
   1. Register client: \`POST /oauth/register\` (stateless Dynamic Client Registration, RFC 7591).
   2. Authorize: \`GET /oauth/authorize?response_type=code&client_id=...&redirect_uri=...&code_challenge=...&code_challenge_method=S256\`
      * Users can authenticate via interactive web consent page or **Sign in with Google** (\`/oauth/google/start\`).
+     * **Direct Google Login Bypass**: Append \`&provider=google\` (or \`&idp=google\`) to \`GET /oauth/authorize\` to bypass the intermediate consent UI and redirect directly to Google Sign-In in one click.
   3. Exchange Token: \`POST /oauth/token\` with \`grant_type=authorization_code\` and \`code_verifier\`.
      * Returns: \`access_token\` (15-minute stateless HS256 JWT) + \`refresh_token\` (30-day rotatable token).
   4. Refresh: \`POST /oauth/token\` with \`grant_type=refresh_token\` to receive fresh access and refresh tokens without user prompt.

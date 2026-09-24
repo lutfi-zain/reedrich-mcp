@@ -991,6 +991,52 @@ app.get('/oauth/authorize', async (c) => {
   const db = drizzle(c.env.DB, { schema });
   const userId = await extractAuthenticatedUserId(c, db);
   if (!userId) {
+    // Direct IdP routing (e.g. ?provider=google or ?idp=google)
+    const rawProvider = c.req.query('provider') || c.req.query('idp');
+    if (rawProvider) {
+      const provider = rawProvider.trim().toLowerCase();
+      if (provider === 'google') {
+        if (!codeChallenge) {
+          c.header('Cache-Control', 'no-store');
+          c.header('Pragma', 'no-cache');
+          return c.json({ error: 'invalid_request', error_description: 'code_challenge is required' }, 400);
+        }
+        const signedState = await generateGoogleOAuthState(
+          {
+            client_id: clientId,
+            redirect_uri: redirectUri,
+            state: state || '',
+            code_challenge: codeChallenge,
+            code_challenge_method: codeChallengeMethod || 'S256',
+            scope,
+          },
+          secret,
+          origin
+        );
+        const googleClientId = c.env?.GOOGLE_CLIENT_ID || DEFAULT_GOOGLE_CLIENT_ID;
+        const googleCallbackUrl = `${origin}/oauth/google/callback`;
+        const googleAuthUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
+        googleAuthUrl.searchParams.set('client_id', googleClientId);
+        googleAuthUrl.searchParams.set('redirect_uri', googleCallbackUrl);
+        googleAuthUrl.searchParams.set('response_type', 'code');
+        googleAuthUrl.searchParams.set('scope', 'openid email profile');
+        googleAuthUrl.searchParams.set('state', signedState);
+        googleAuthUrl.searchParams.set('prompt', 'select_account');
+
+        return new Response(null, {
+          status: 302,
+          headers: {
+            Location: googleAuthUrl.toString(),
+            'Cache-Control': 'no-store',
+            Pragma: 'no-cache',
+          },
+        });
+      }
+      c.header('Cache-Control', 'no-store');
+      c.header('Pragma', 'no-cache');
+      return c.json({ error: 'invalid_request', error_description: `Unsupported identity provider '${rawProvider}'. Supported providers: google` }, 400);
+    }
+
     // Browser flow: render interactive HTML Consent / Login UI (dark theme #0d1117)
     // This is required for Perplexity/ChatGPT which open /oauth/authorize in a browser without Bearer headers.
     // Check Accept header: if client explicitly expects JSON and not HTML, return 401 JSON for API compatibility.
