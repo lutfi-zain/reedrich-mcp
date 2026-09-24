@@ -4,6 +4,13 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/): `Added`, `Changed`,
 `Deprecated`, `Removed`, `Fixed`, `Security` sections per release.
 
+## [1.6.0] — 2026-09-24
+
+### Added
+- Direct Google OAuth 2.0 Identity Federation bypass: `GET /oauth/authorize` accepts `provider=google` (and alias `idp=google`) to trigger an immediate `302 Found` redirect directly to Google Sign-In with signed state JWT, bypassing the intermediate HTML consent UI for zero-click login from Claude Web/Desktop, ChatGPT Actions, and frontend apps.
+- Unsupported identity providers (e.g. `provider=github`) return a clean HTTP 400 Bad Request with `invalid_request`.
+- Documented `OAuth 2.0 PKCE` tag and `/oauth/authorize` path in `src/docs/openapi.ts` and `src/docs/llms.ts`.
+
 ## [1.5.0] — 2026-09-24
 
 ### Added
