@@ -3764,3 +3764,208 @@ describe('Recurring Planned Materialization', () => {
     assert.equal(adjRows3.length, 2);
   });
 });
+
+describe('Comprehensive Account Snapshot & Wallet Last Transaction', () => {
+  async function setupSnapshotUser(firstName: string, email: string, phone: string) {
+    const { db } = createTestDB();
+    const publicServer = createMCPServer(db, null, TEST_JWT_SECRET);
+    const reg = JSON.parse((await callTool(publicServer, 'register_user', {
+      firstName, lastName: 'Tester', email, whatsappNumber: phone,
+    })).content[0].text);
+    const userServer = createMCPServer(db, reg.userId, TEST_JWT_SECRET);
+    return { db, userServer, userId: reg.userId };
+  }
+
+  it('3.1 Wallet Listing: returns lastTransaction, direction mapping, and null for empty wallet', async () => {
+    const { userServer } = await setupSnapshotUser('Snap1', 'snap1@example.com', '+6281200000001');
+
+    // Create Wallet A (BCA) and Wallet B (Mandiri)
+    const walletA = JSON.parse((await callTool(userServer, 'manage_wallet', {
+      action: 'create', name: 'BCA Main', institution: 'BCA', balance: 5000000, currency: 'IDR',
+    })).content[0].text);
+
+    const walletB = JSON.parse((await callTool(userServer, 'manage_wallet', {
+      action: 'create', name: 'Mandiri Savings', institution: 'Mandiri', balance: 2000000, currency: 'IDR',
+    })).content[0].text);
+
+    // Initial list: zero transactions -> lastTransaction: null
+    const listInit = JSON.parse((await callTool(userServer, 'manage_wallet', { action: 'list' })).content[0].text);
+    const itemAInit = listInit.find((w: any) => w.walletId === walletA.walletId);
+    const itemBInit = listInit.find((w: any) => w.walletId === walletB.walletId);
+    assert.equal(itemAInit.lastTransaction, null);
+    assert.equal(itemBInit.lastTransaction, null);
+
+    // Create Category
+    const cat = JSON.parse((await callTool(userServer, 'manage_category', {
+      action: 'create', name: 'Dining', type: 'expense',
+    })).content[0].text);
+
+    // Record an expense on Wallet A
+    await callTool(userServer, 'record_transaction', {
+      walletId: walletA.walletId, categoryId: cat.categoryId, amount: 150000,
+      type: 'expense', description: 'Lunch', date: '2026-09-24T12:00:00.000Z',
+    });
+
+    const listAfterExpense = JSON.parse((await callTool(userServer, 'manage_wallet', { action: 'list' })).content[0].text);
+    const itemAExpense = listAfterExpense.find((w: any) => w.walletId === walletA.walletId);
+    assert.ok(itemAExpense.lastTransaction);
+    assert.equal(itemAExpense.lastTransaction.type, 'expense');
+    assert.equal(itemAExpense.lastTransaction.direction, 'out');
+    assert.equal(itemAExpense.lastTransaction.amount, 150000);
+    assert.equal(itemAExpense.lastTransaction.description, 'Lunch');
+    assert.equal(itemAExpense.lastTransaction.category, 'Dining');
+
+    // Transfer from Wallet A to Wallet B
+    await callTool(userServer, 'transfer_funds', {
+      sourceWalletId: walletA.walletId, targetWalletId: walletB.walletId, amount: 500000,
+      description: 'Transfer savings', date: '2026-09-24T14:00:00.000Z',
+    });
+
+    const listAfterTransfer = JSON.parse((await callTool(userServer, 'manage_wallet', { action: 'list' })).content[0].text);
+    const itemATx = listAfterTransfer.find((w: any) => w.walletId === walletA.walletId);
+    const itemBTx = listAfterTransfer.find((w: any) => w.walletId === walletB.walletId);
+
+    // Wallet A was sender -> direction: 'out'
+    assert.equal(itemATx.lastTransaction.type, 'transfer');
+    assert.equal(itemATx.lastTransaction.direction, 'out');
+    assert.equal(itemATx.lastTransaction.amount, 500000);
+
+    // Wallet B was receiver -> direction: 'in'
+    assert.equal(itemBTx.lastTransaction.type, 'transfer');
+    assert.equal(itemBTx.lastTransaction.direction, 'in');
+    assert.equal(itemBTx.lastTransaction.amount, 500000);
+
+    // New empty wallet C -> lastTransaction: null
+    const walletC = JSON.parse((await callTool(userServer, 'manage_wallet', {
+      action: 'create', name: 'GoPay', institution: 'GoPay', balance: 50000, currency: 'IDR',
+    })).content[0].text);
+    const listFinal = JSON.parse((await callTool(userServer, 'manage_wallet', { action: 'list' })).content[0].text);
+    const itemC = listFinal.find((w: any) => w.walletId === walletC.walletId);
+    assert.equal(itemC.lastTransaction, null);
+  });
+
+  it('3.2 get_account_detail: default dates, custom range, spendable vs locked, budgets, goals, debts, and validation', async () => {
+    const { userServer } = await setupSnapshotUser('Snap2', 'snap2@example.com', '+6281200000002');
+
+    // Wallets: Spendable (BCA) and Locked (Emergency Deposit)
+    const wSpendable = JSON.parse((await callTool(userServer, 'manage_wallet', {
+      action: 'create', name: 'BCA Spendable', institution: 'BCA', balance: 5000000, currency: 'IDR', isLocked: false,
+    })).content[0].text);
+
+    const wLocked = JSON.parse((await callTool(userServer, 'manage_wallet', {
+      action: 'create', name: 'Deposito Locked', institution: 'BCA', balance: 20000000, currency: 'IDR', isLocked: true,
+    })).content[0].text);
+
+    // Category & Budget
+    const cat = JSON.parse((await callTool(userServer, 'manage_category', {
+      action: 'create', name: 'Groceries', type: 'expense',
+    })).content[0].text);
+
+    const now = new Date();
+    const curYear = now.getUTCFullYear();
+    const curMonth = String(now.getUTCMonth() + 1).padStart(2, '0');
+    const startOfMonth = `${curYear}-${curMonth}-01T00:00:00.000Z`;
+    const endOfMonth = new Date(Date.UTC(curYear, now.getUTCMonth() + 1, 0, 23, 59, 59, 999)).toISOString();
+
+    await callTool(userServer, 'manage_budget', {
+      action: 'create', name: 'Monthly Food', categoryId: cat.categoryId, amount: 2000000,
+      periodStart: startOfMonth, periodEnd: endOfMonth,
+    });
+
+    // Expense transaction in current month
+    await callTool(userServer, 'record_transaction', {
+      walletId: wSpendable.walletId, categoryId: cat.categoryId, amount: 600000,
+      type: 'expense', description: 'Weekly market', date: startOfMonth,
+    });
+
+    // Goal linked to locked wallet
+    await callTool(userServer, 'manage_goal', {
+      action: 'create', name: 'Emergency Fund', targetAmount: 30000000,
+      walletIds: [wLocked.walletId], targetDate: '2027-12-31T23:59:59.000Z',
+    });
+
+    // Active Debt & Loan
+    await callTool(userServer, 'manage_debt_loan', {
+      action: 'create', type: 'debt', personName: 'Bank Loan', amount: 3000000,
+      dueDate: '2026-12-01', adjustWalletBalance: false,
+    });
+    await callTool(userServer, 'manage_debt_loan', {
+      action: 'create', type: 'loan', personName: 'Friend Borrow', amount: 1000000,
+      dueDate: '2026-11-01', adjustWalletBalance: false,
+    });
+
+    // 1. Call get_account_detail with default params
+    const snapDefaultRes = await callTool(userServer, 'get_account_detail', {});
+    assert.equal(snapDefaultRes.isError, undefined);
+    const snap = JSON.parse(snapDefaultRes.content[0].text);
+
+    // Assert Net Worth
+    assert.equal(snap.netWorth.consolidated.currency, 'IDR');
+    assert.ok(snap.netWorth.consolidated.total > 0);
+    assert.equal(snap.netWorth.byCurrency.IDR, 24400000); // 5jt - 600k + 20jt
+    assert.equal(snap.netWorth.byInstitution.BCA, 24400000);
+
+    // Assert Wallets Partitioning
+    assert.equal(snap.wallets.spendable.total, 4400000);
+    assert.equal(snap.wallets.spendable.items.length, 1);
+    assert.equal(snap.wallets.spendable.items[0].lastTransaction.amount, 600000);
+    assert.equal(snap.wallets.locked.total, 20000000);
+    assert.equal(snap.wallets.locked.items.length, 1);
+
+    // Assert Monthly Cashflow
+    assert.equal(snap.monthlyCashFlow.totalExpense, 600000);
+    assert.equal(snap.monthlyCashFlow.categoryBreakdown.length, 1);
+    assert.equal(snap.monthlyCashFlow.categoryBreakdown[0].categoryName, 'Groceries');
+    assert.equal(snap.monthlyCashFlow.categoryBreakdown[0].amount, 600000);
+
+    // Assert Budgets
+    assert.equal(snap.budgets.length, 1);
+    assert.equal(snap.budgets[0].spent, 600000);
+    assert.equal(snap.budgets[0].remaining, 1400000);
+    assert.equal(snap.budgets[0].status, 'on_track');
+
+    // Assert Goals
+    assert.equal(snap.goals.length, 1);
+    assert.equal(snap.goals[0].isDerived, true);
+    assert.equal(snap.goals[0].currentAmount, 20000000);
+    assert.ok(snap.goals[0].linkedWalletsBreakdown.length === 1);
+
+    // Assert Obligations
+    assert.equal(snap.obligations.totalDebt, 3000000);
+    assert.equal(snap.obligations.totalReceivable, 1000000);
+    assert.equal(snap.obligations.activeDebts[0].personName, 'Bank Loan');
+    assert.equal(snap.obligations.activeLoans[0].personName, 'Friend Borrow');
+
+    // 2. Call with custom baseCurrency = USD
+    const snapUsd = JSON.parse((await callTool(userServer, 'get_account_detail', { baseCurrency: 'USD' })).content[0].text);
+    assert.equal(snapUsd.netWorth.consolidated.currency, 'USD');
+
+    // 3. Validation error on malformed date
+    await assert.rejects(async () => {
+      await callTool(userServer, 'get_account_detail', { startDate: 'invalid-date-string' });
+    }, /Validation Error: 'startDate'/);
+
+    // 4. REST endpoint GET /api/v1/account-detail
+    const { d1 } = createTestDB();
+    const restEnv = { DB: d1 as unknown as D1Database, JWT_SECRET: TEST_JWT_SECRET };
+    const restDb = drizzle(d1 as unknown as D1Database, { schema });
+    const restUserId = crypto.randomUUID();
+    const restToken = await generateUserToken({ userId: restUserId }, TEST_JWT_SECRET);
+    await restDb.insert(schema.users).values({
+      userId: restUserId,
+      userFirstName: 'REST',
+      userLastName: 'Snap',
+      userEmail: 'restsnap@example.com',
+      userWhatsappNumber: '+6281234567899',
+      userApiKeyHash: 'hash_rest_snap',
+    });
+    const restRes = await app.request('https://example.workers.dev/api/v1/account-detail', {
+      headers: { Authorization: `Bearer ${restToken}` },
+    }, restEnv);
+    assert.equal(restRes.status, 200);
+    const restBody: any = await restRes.json();
+    assert.ok(restBody.netWorth);
+    assert.ok(restBody.wallets);
+    assert.ok(restBody.monthlyCashFlow);
+  });
+});

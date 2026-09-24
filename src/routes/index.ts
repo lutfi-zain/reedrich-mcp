@@ -14,6 +14,7 @@ import goals from "./goals";
 import recurringTemplates from "./recurring-templates";
 import summary from "./summary";
 import feedback from "./feedback";
+import accountDetail from "./account-detail";
 
 const api = new Hono<AppEnv>();
 
@@ -74,5 +75,5 @@ api.route("/goals", goals);
 api.route("/recurring-templates", recurringTemplates);
 api.route("/summary", summary);
 api.route("/feedback", feedback);
-
+api.route("/account-detail", accountDetail);
 export default api;
