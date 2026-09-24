@@ -58,6 +58,10 @@ export function generateOpenApiSpec(origin: string): Record<string, unknown> {
         name: "Feedback",
         description: "Submit bug reports, feature requests, and developer questions.",
       },
+      {
+        name: "OAuth 2.0 PKCE",
+        description: "Stateless RFC 7636 PKCE authorization with Google Identity Federation.",
+      },
     ],
     components: {
       securitySchemes: {
@@ -497,6 +501,86 @@ export function generateOpenApiSpec(origin: string): Record<string, unknown> {
       },
     },
     paths: {
+      "/oauth/authorize": {
+        get: {
+          tags: ["OAuth 2.0 PKCE"],
+          summary: "Authorize with PKCE S256",
+          description:
+            "RFC 7636 authorization endpoint. Renders interactive HTML consent or, when provider=google (or idp=google) is provided, returns an immediate 302 redirect directly to Google OAuth 2.0.",
+          operationId: "oauthAuthorize",
+          parameters: [
+            {
+              name: "response_type",
+              in: "query",
+              required: true,
+              schema: { type: "string", enum: ["code"] },
+            },
+            {
+              name: "client_id",
+              in: "query",
+              required: true,
+              schema: { type: "string" },
+            },
+            {
+              name: "redirect_uri",
+              in: "query",
+              required: true,
+              schema: { type: "string" },
+            },
+            {
+              name: "code_challenge",
+              in: "query",
+              required: true,
+              schema: { type: "string" },
+            },
+            {
+              name: "code_challenge_method",
+              in: "query",
+              required: true,
+              schema: { type: "string", enum: ["S256"] },
+            },
+            {
+              name: "state",
+              in: "query",
+              required: false,
+              schema: { type: "string" },
+            },
+            {
+              name: "scope",
+              in: "query",
+              required: false,
+              schema: { type: "string", default: "mcp" },
+            },
+            {
+              name: "provider",
+              in: "query",
+              required: false,
+              description: "Direct identity provider bypass (e.g. 'google'). Directs immediately to Google Sign-In without intermediate consent UI.",
+              schema: { type: "string", enum: ["google"] },
+            },
+            {
+              name: "idp",
+              in: "query",
+              required: false,
+              description: "Alias for 'provider'.",
+              schema: { type: "string", enum: ["google"] },
+            },
+          ],
+          responses: {
+            "200": {
+              description: "Interactive HTML consent page rendered when unauthenticated and no provider specified.",
+              content: { "text/html": {} },
+            },
+            "302": {
+              description: "Redirect to downstream redirect_uri with code, or direct redirect to Google when provider=google.",
+            },
+            "400": {
+              description: "Invalid OAuth parameters or unsupported provider.",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+          },
+        },
+      },
       "/api/v1/account-detail": {
         get: {
           tags: ["Analytics & Reporting"],

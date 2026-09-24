@@ -320,4 +320,71 @@ describe('Google OAuth 2.0 Federation Tests', () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  it('6. Direct Google Federation via GET /oauth/authorize?provider=google and idp=google', async () => {
+    const { d1 } = createTestDB();
+    const env = { DB: d1, JWT_SECRET: TEST_JWT_SECRET, GOOGLE_CLIENT_ID: 'test_google_client_id' };
+    const verifier = 'dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk';
+    const challenge = await computeS256Challenge(verifier);
+    const baseUrl = 'https://reedrich-mcp.lutfidmz.workers.dev/oauth/authorize';
+    const params = new URLSearchParams({
+      response_type: 'code',
+      client_id: 'test_client_id',
+      redirect_uri: 'https://chatgpt.com/callback',
+      code_challenge: challenge,
+      code_challenge_method: 'S256',
+      state: 'downstream_state_456',
+      scope: 'mcp',
+      provider: 'google',
+    });
+
+    // 6.1 provider=google triggers immediate 302 to Google auth URL
+    const resGoogle = await app.request(`${baseUrl}?${params.toString()}`, {}, env);
+    assert.equal(resGoogle.status, 302);
+    const locGoogle = resGoogle.headers.get('Location');
+    assert.ok(locGoogle);
+    const urlGoogle = new URL(locGoogle!);
+    assert.equal(urlGoogle.origin, 'https://accounts.google.com');
+    assert.equal(urlGoogle.pathname, '/o/oauth2/v2/auth');
+    assert.equal(urlGoogle.searchParams.get('client_id'), 'test_google_client_id');
+    assert.equal(urlGoogle.searchParams.get('response_type'), 'code');
+    assert.equal(urlGoogle.searchParams.get('prompt'), 'select_account');
+
+    // Verify signed state inside the Google auth URL
+    const stateParam = urlGoogle.searchParams.get('state');
+    assert.ok(stateParam);
+    const verifiedState = await verifyGoogleOAuthState(stateParam!, TEST_JWT_SECRET);
+    assert.ok(verifiedState);
+    assert.equal(verifiedState?.client_id, 'test_client_id');
+    assert.equal(verifiedState?.redirect_uri, 'https://chatgpt.com/callback');
+    assert.equal(verifiedState?.code_challenge, challenge);
+    assert.equal(verifiedState?.state, 'downstream_state_456');
+
+    // 6.2 idp=google alias also triggers immediate 302 to Google
+    params.delete('provider');
+    params.set('idp', 'google');
+    const resIdp = await app.request(`${baseUrl}?${params.toString()}`, {}, env);
+    assert.equal(resIdp.status, 302);
+    const locIdp = resIdp.headers.get('Location');
+    assert.ok(locIdp);
+    assert.ok(locIdp!.startsWith('https://accounts.google.com/o/oauth2/v2/auth'));
+
+    // 6.3 Unsupported provider returns 400 invalid_request
+    params.delete('idp');
+    params.set('provider', 'github');
+    const resBad = await app.request(`${baseUrl}?${params.toString()}`, {}, env);
+    assert.equal(resBad.status, 400);
+    const bodyBad: any = await resBad.json();
+    assert.equal(bodyBad.error, 'invalid_request');
+    assert.match(bodyBad.error_description, /Unsupported identity provider 'github'/);
+
+    // 6.4 Omission of provider parameter renders 200 HTML consent
+    params.delete('provider');
+    const resHtml = await app.request(`${baseUrl}?${params.toString()}`, {}, env);
+    assert.equal(resHtml.status, 200);
+    const contentType = resHtml.headers.get('Content-Type') || '';
+    assert.ok(contentType.includes('text/html'));
+    const htmlText = await resHtml.text();
+    assert.ok(htmlText.includes('Lanjutkan dengan Akun Google'));
+  });
 });
