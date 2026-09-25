@@ -27,6 +27,7 @@ import {
   listTransactions,
   recordTransaction,
   updateTransaction,
+  deleteTransaction,
   WalletRequiredError,
 } from "./services/transaction";
 import { transferFunds, InsufficientWalletsError } from "./services/transfer";
@@ -666,6 +667,18 @@ Authentication Note: You are already authenticated via OAuth / Bearer token. Nev
         }
       },
       {
+        name: "delete_transaction",
+        description: "Permanently delete an existing transaction with automatic atomic balance reversal for realized transactions.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            transactionId: { type: "string", description: "Transaction UUID to delete" },
+            apiKey: { type: "string", description: "Optional: Your persistent API Key (rd_live_...) if not set in headers" }
+          },
+          required: ["transactionId"]
+        }
+      },
+      {
         name: "manage_wallet",
         description: "Create, list, or update wallets. PROACTIVE TIP: For new accounts without wallets, call with action: 'create' to initialize the primary wallet (e.g. BCA, Cash).",
         inputSchema: {
@@ -994,6 +1007,12 @@ Authentication Note: You are already authenticated via OAuth / Bearer token. Nev
     if (name === "update_transaction") {
       const { transactionId, ...params } = (args || {}) as any;
       const result = await updateTransaction(db, effectiveUserId, transactionId, params);
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    }
+    // --- Tool: delete_transaction ---
+    if (name === "delete_transaction") {
+      const { transactionId } = (args || {}) as any;
+      const result = await deleteTransaction(db, effectiveUserId, transactionId);
       return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
     }
 

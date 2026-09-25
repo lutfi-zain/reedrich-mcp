@@ -4,6 +4,17 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/): `Added`, `Changed`,
 `Deprecated`, `Removed`, `Fixed`, `Security` sections per release.
 
+## [1.9.0] — 2026-09-25
+
+### Added
+- Transaction Deletion with Atomic Balance Reversal:
+  - **Service**: Added `deleteTransaction(db, userId, transactionId)` in `src/services/transaction.ts` with multi-tenant row-level verification (`eq(transactionUserId, userId)`) and atomic balance reversal via `applyBalanceDelta(..., -1)` for realized transactions (expenses refunded, income debited, transfers restored). Planned transactions are removed without balance mutation.
+  - **REST Route**: `DELETE /api/v1/transactions/:transactionId` returning HTTP `200 OK` with confirmation message.
+  - **MCP Tool**: Added `delete_transaction` in `src/mcp.ts` tool registry and execution handler with required `transactionId` parameter.
+  - **OpenAPI**: Documented `delete` operation on `/api/v1/transactions/{transactionId}` in `src/docs/openapi.ts`.
+  - **LLM Manifest**: Updated `src/docs/llms.ts` with transaction delete route and tool reference.
+  - **Tests**: Added full unit test suite `Delete Transaction & Balance Reversal Parity` in `tests/mcp.test.ts` and E2E verification in `tests/integration.test.ts`.
+
 ## [1.8.0] — 2026-09-25
 
 ### Added

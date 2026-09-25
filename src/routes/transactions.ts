@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { drizzle } from "drizzle-orm/d1";
 import * as schema from "../db/schema";
-import { listTransactions, recordTransaction, updateTransaction } from "../services/transaction";
+import { listTransactions, recordTransaction, updateTransaction, deleteTransaction } from "../services/transaction";
 import type { AppEnv } from "../index";
 
 const transactions = new Hono<AppEnv>();
@@ -54,6 +54,14 @@ transactions.patch("/:transactionId", async (c) => {
     transactionDate: body.transactionDate ?? body.date,
   };
   const result = await updateTransaction(db, userId!, transactionId, payload as any);
+  return c.json(result, 200);
+});
+
+transactions.delete("/:transactionId", async (c) => {
+  const userId = c.get("userId");
+  const db = drizzle(c.env.DB, { schema });
+  const transactionId = c.req.param("transactionId");
+  const result = await deleteTransaction(db, userId!, transactionId);
   return c.json(result, 200);
 });
 
