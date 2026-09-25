@@ -51,4 +51,4 @@
 - [x] 10.1 Run `npm run typecheck` to verify zero type errors
 - [x] 10.2 Run `npm test` to verify all existing unit tests pass
 - [x] 10.3 Run `npm run test:local` to verify full local E2E integration (existing + new endpoints)
-- [ ] 10.4 Run `npm run test:remote` against deployed Cloudflare Workers to verify production parity
+- [x] 10.4 Run `npm run test:remote` against deployed Cloudflare Workers to verify production parity
