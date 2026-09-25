@@ -900,6 +900,27 @@ describe('Integration Test: Full User Journey (Deployed Worker + Remote D1)', ()
       'Authorization': `Bearer ${token}`,
       'Content-Type': 'application/json',
     };
+    // 0. User Profile: GET /api/v1/me and GET /api/v1/user/profile
+    const meRes = await fetch(`${WORKER_URL}/api/v1/me`, { headers: authHeaders });
+    assert.equal(meRes.status, 200);
+    const meData: any = await meRes.json();
+    assert.equal(meData.userId, state.userA.userId);
+    assert.equal(meData.email, state.userA.email);
+    assert.equal(meData.fullName, 'Budi Setiawan');
+    assert.equal(meData.userApiKeyHash, undefined);
+
+    const aliasRes = await fetch(`${WORKER_URL}/api/v1/user/profile`, { headers: authHeaders });
+    assert.equal(aliasRes.status, 200);
+    const aliasData: any = await aliasRes.json();
+    assert.deepEqual(aliasData, meData);
+
+    // Also check MCP tool get_user_profile and resource reedrich://user/profile
+    const toolProfile = await callTool('get_user_profile', {}, token);
+    assert.equal(toolProfile.userId, state.userA.userId);
+    assert.equal(toolProfile.fullName, 'Budi Setiawan');
+
+    const resProfile = await readResource('reedrich://user/profile', token);
+    assert.equal(resProfile.userId, state.userA.userId);
 
     // 1. Wallets: POST & PATCH
     const createWalletRes = await fetch(`${WORKER_URL}/api/v1/wallets`, {

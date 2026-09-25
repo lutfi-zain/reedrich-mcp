@@ -4,6 +4,16 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/): `Added`, `Changed`,
 `Deprecated`, `Removed`, `Fixed`, `Security` sections per release.
 
+## [1.8.0] — 2026-09-25
+
+### Added
+- Authenticated User Profile & Identity endpoints:
+  - **REST API**: `GET /api/v1/me` (and semantic alias `GET /api/v1/user/profile`) returns sanitized user profile (`userId`, `firstName`, `lastName`, `fullName`, `email`, `whatsappNumber`, `createdAt`) while strictly omitting `userApiKeyHash`.
+  - **MCP Tool**: `get_user_profile` allows AI agents to inspect the active authenticated user's profile with zero required arguments.
+  - **MCP Resource**: `reedrich://user/profile` exposes readable user profile data.
+  - **OpenAPI**: Documented `/api/v1/me` and `/api/v1/user/profile` under new `User Profile` tag with `UserProfile` schema.
+  - **LLM Manifest**: Updated `src/docs/llms.ts` with User Profile section and tools/resources reference.
+
 ## [1.7.0] — 2026-09-25
 
 ### Added

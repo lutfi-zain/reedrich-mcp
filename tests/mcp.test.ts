@@ -563,7 +563,7 @@ describe('Eve Finance MCP Server — Complete Test Suite', () => {
     const authServer = createMCPServer(db, user.userId, TEST_JWT_SECRET);
 
     const resourcesList = await listResources(authServer);
-    assert.equal(resourcesList.resources.length, 4);
+    assert.equal(resourcesList.resources.length, 5);
 
     const schemaRes = await readResource(authServer, 'reedrich://db/schema');
     const schemaJson = JSON.parse(schemaRes.contents[0].text);
@@ -4272,5 +4272,75 @@ describe('REST API Write Endpoints Parity', () => {
     const err: any = await res.json();
     assert.equal(err.error, 'VALIDATION');
     assert.equal(err.field, 'name');
+  });
+});
+describe('User Profile & Identity Endpoint Parity', () => {
+  async function setupProfileUser() {
+    const { d1 } = createTestDB();
+    const env = { DB: d1 as unknown as D1Database, JWT_SECRET: TEST_JWT_SECRET };
+    const db = drizzle(d1 as unknown as D1Database, { schema });
+    const userId = crypto.randomUUID();
+    const token = await generateUserToken({ userId }, TEST_JWT_SECRET);
+    await db.insert(schema.users).values({
+      userId,
+      userFirstName: 'Lutfi',
+      userLastName: 'Zain',
+      userEmail: `lutfi_${userId}@example.com`,
+      userWhatsappNumber: '+6281234567899',
+      userApiKeyHash: `hash_secret_${userId}`,
+    });
+    return { d1, db, env, userId, token };
+  }
+
+  it('1. GET /api/v1/me and GET /api/v1/user/profile return sanitized profile DTO', async () => {
+    const { env, token, userId } = await setupProfileUser();
+
+    // 1.1 GET /api/v1/me
+    const resMe = await app.request('https://example.workers.dev/api/v1/me', {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal(resMe.status, 200);
+    const profileMe: any = await resMe.json();
+    assert.equal(profileMe.userId, userId);
+    assert.equal(profileMe.firstName, 'Lutfi');
+    assert.equal(profileMe.lastName, 'Zain');
+    assert.equal(profileMe.fullName, 'Lutfi Zain');
+    assert.equal(profileMe.email, `lutfi_${userId}@example.com`);
+    assert.equal(profileMe.whatsappNumber, '+6281234567899');
+    assert.ok(profileMe.createdAt);
+    assert.equal((profileMe as any).userApiKeyHash, undefined, 'Sensitive API key hash must never be returned');
+
+    // 1.2 GET /api/v1/user/profile (semantic alias)
+    const resAlias = await app.request('https://example.workers.dev/api/v1/user/profile', {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal(resAlias.status, 200);
+    const profileAlias: any = await resAlias.json();
+    assert.deepEqual(profileAlias, profileMe);
+
+    // 1.3 Unauthenticated request returns 401
+    const unauthRes = await app.request('https://example.workers.dev/api/v1/me', {}, env);
+    assert.equal(unauthRes.status, 401);
+  });
+
+  it('2. MCP tool get_user_profile and resource reedrich://user/profile', async () => {
+    const { db, userId, token } = await setupProfileUser();
+    const server = createMCPServer(db, userId, TEST_JWT_SECRET);
+
+    // 2.1 Call get_user_profile tool
+    const toolRes = await callTool(server, 'get_user_profile', {});
+    assert.ok(toolRes.content?.[0]?.text);
+    const profileData = JSON.parse(toolRes.content[0].text);
+    assert.equal(profileData.userId, userId);
+    assert.equal(profileData.fullName, 'Lutfi Zain');
+    assert.equal(profileData.email, `lutfi_${userId}@example.com`);
+    assert.equal(profileData.userApiKeyHash, undefined);
+
+    // 2.2 Read reedrich://user/profile resource
+    const resRead = await readResource(server, 'reedrich://user/profile');
+    assert.ok(resRead.contents?.[0]?.text);
+    const resourceData = JSON.parse(resRead.contents[0].text);
+    assert.equal(resourceData.userId, userId);
+    assert.equal(resourceData.fullName, 'Lutfi Zain');
   });
 });
