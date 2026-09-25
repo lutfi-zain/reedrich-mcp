@@ -4,6 +4,22 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/): `Added`, `Changed`,
 `Deprecated`, `Removed`, `Fixed`, `Security` sections per release.
 
+## [1.7.0] — 2026-09-25
+
+### Added
+- Complete 1:1 REST API parity with MCP tool write operations:
+  - **Wallets**: `POST /api/v1/wallets` (create wallet) and `PATCH /api/v1/wallets/:walletId` (update wallet).
+  - **Categories**: `POST /api/v1/categories` (create custom category) and `POST /api/v1/categories/seed` (seed standard default categories).
+  - **Budgets**: `POST /api/v1/budgets` (create budget limit for category and date range).
+  - **Transactions**: `POST /api/v1/transactions` (record expense/income with atomic wallet balance updates) and `PATCH /api/v1/transactions/:transactionId` (update transaction and reconcile balance delta). Accepts both `date` and `transactionDate`.
+  - **Transfers**: `POST /api/v1/transfers` (dedicated endpoint to atomically debit source wallet and credit target wallet with optional fee).
+  - **Debts & Loans**: `POST /api/v1/debts-loans` (create liability/receivable), `POST /api/v1/debts-loans/:debtLoanId/repay` (record partial/full repayment), and `PATCH /api/v1/debts-loans/:debtLoanId` (update record).
+  - **Goals**: `PATCH /api/v1/goals/:goalId` (update goal), `DELETE /api/v1/goals/:goalId` (delete goal), `POST /api/v1/goals/:goalId/contribute` (returns validation error guiding callers to linked wallets), `POST /api/v1/goals/:goalId/wallets` (link dedicated wallet), and `DELETE /api/v1/goals/:goalId/wallets/:walletId` (unlink wallet).
+  - **Recurring Templates**: `PATCH /api/v1/recurring-templates/:templateId` (update template) and `DELETE /api/v1/recurring-templates/:templateId` (delete template).
+- Added `Transfers` tag and all 14 new write endpoints to OpenAPI specification (`src/docs/openapi.ts`).
+- Updated REST API directory in LLM manifest (`src/docs/llms.ts`).
+- Added `Step 34` E2E user journey to `tests/integration.test.ts` covering all REST write operations.
+
 ## [1.6.0] — 2026-09-24
 
 ### Added
