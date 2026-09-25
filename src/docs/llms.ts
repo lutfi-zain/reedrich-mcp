@@ -122,6 +122,8 @@ All REST endpoints return JSON with standard HTTP status codes. Common headers:
 - **\`PATCH /api/v1/transactions/:transactionId\`** *(HTTP 200)*
   - JSON Body: Any combination of \`amount\`, \`adminFee\`, \`walletId\`, \`targetWalletId\`, \`categoryId\`, \`budgetId\`, \`description\`, \`date\`, \`isPlanned\`.
   - Atomically calculates delta and reconciles wallet balances.
+- **\`DELETE /api/v1/transactions/:transactionId\`** *(HTTP 200)*
+  - Permanently deletes transaction with automatic atomic balance reversal for realized transactions.
 - **\`POST /api/v1/transfers\`** *(HTTP 201)*
   - JSON Body: \`sourceWalletId\` (required), \`targetWalletId\` (required), \`amount\` (required positive number), \`adminFee\` (number, default 0), \`description\` (string), \`categoryId\` (UUID), \`date\` (ISO-8601).
   - Atomically debits source wallet \`(amount + adminFee)\` and credits target wallet \`amount\`.
@@ -350,7 +352,7 @@ For autonomous coding agents (Claude Desktop, OpenCode, Pi, OMP):
   * \`get_user_profile\` (Current User Profile: name, email, WhatsApp, createdAt)
   * \`register_user\`, \`login_user\` (Auth & Onboarding)
   * \`manage_wallet\`, \`manage_category\`, \`manage_budget\`, \`manage_debt_loan\`, \`manage_goal\`, \`manage_recurring_template\` (Entity Management)
-  * \`record_transaction\`, \`transfer_funds\`, \`update_transaction\`, \`list_transactions\` (Financial Transactions)
+  * \`record_transaction\`, \`transfer_funds\`, \`update_transaction\`, \`delete_transaction\`, \`list_transactions\` (Financial Transactions)
   * \`financial_summary\`, \`get_account_detail\` (Consolidated Net Worth & Health Report)
   * \`submit_feedback\` (Feedback to internal D1)
 - **MCP Resources**:

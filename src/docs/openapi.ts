@@ -1136,6 +1136,42 @@ export function generateOpenApiSpec(origin: string): Record<string, unknown> {
             },
           },
         },
+        delete: {
+          tags: ["Transactions"],
+          summary: "Delete Transaction",
+          description: "Permanently deletes a transaction with automatic atomic balance reversal for realized transactions.",
+          operationId: "deleteTransaction",
+          security: [{ bearerAuth: [] }, { apiKeyHeader: [] }],
+          parameters: [
+            { name: "transactionId", in: "path", required: true, schema: { type: "string", format: "uuid" } },
+          ],
+          responses: {
+            "200": {
+              description: "Transaction deleted successfully",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      success: { type: "boolean", example: true },
+                      message: { type: "string" },
+                      deletedTransactionId: { type: "string", format: "uuid" },
+                    },
+                    required: ["success", "message", "deletedTransactionId"],
+                  },
+                },
+              },
+            },
+            "404": {
+              description: "Transaction not found",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+            "401": {
+              description: "Authentication required",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+          },
+        },
       },
       "/api/v1/transfers": {
         post: {

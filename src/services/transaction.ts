@@ -562,3 +562,58 @@ export async function updateTransaction(
 
   return updated[0];
 }
+
+export async function deleteTransaction(
+  db: DrizzleD1Database<typeof schema>,
+  userId: string,
+  transactionId: unknown
+): Promise<{ success: boolean; message: string; deletedTransactionId: string }> {
+  if (!isValidUUID(transactionId)) {
+    validationError("Validation Error: Valid string 'transactionId' (UUID) is required", "transactionId");
+  }
+
+  const cleanTxId = (transactionId as string).trim();
+  const existingTx = await db
+    .select()
+    .from(schema.transactions)
+    .where(
+      and(
+        eq(schema.transactions.transactionId, cleanTxId),
+        eq(schema.transactions.transactionUserId, userId)
+      )
+    )
+    .get();
+
+  if (!existingTx) {
+    notFound("Transaction", cleanTxId);
+  }
+
+  // Atomic Balance Reversal for realized transactions
+  if (existingTx.transactionIsPlanned === 0) {
+    await applyBalanceDelta(
+      db,
+      userId,
+      existingTx.transactionType,
+      existingTx.transactionWalletId,
+      existingTx.transactionTargetWalletId,
+      existingTx.transactionAmount,
+      existingTx.transactionAdminFee,
+      -1
+    );
+  }
+
+  await db
+    .delete(schema.transactions)
+    .where(
+      and(
+        eq(schema.transactions.transactionId, cleanTxId),
+        eq(schema.transactions.transactionUserId, userId)
+      )
+    );
+
+  return {
+    success: true,
+    message: `Transaction ${cleanTxId} successfully deleted and balance reconciled.`,
+    deletedTransactionId: cleanTxId,
+  };
+}

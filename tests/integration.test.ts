@@ -992,6 +992,43 @@ describe('Integration Test: Full User Journey (Deployed Worker + Remote D1)', ()
     assert.equal(patchTxRes.status, 200);
     const patchedTx: any = await patchTxRes.json();
     assert.equal(patchedTx.transactionAmount, 80000);
+    // 4b. Transaction Deletion: DELETE /api/v1/transactions/:transactionId
+    const tempTxRes = await fetch(`${WORKER_URL}/api/v1/transactions`, {
+      method: 'POST',
+      headers: authHeaders,
+      body: JSON.stringify({
+        walletId: createdWallet.walletId,
+        categoryId: createdCat.categoryId,
+        amount: 25000,
+        type: 'expense',
+        description: 'Temporary expense to delete',
+      }),
+    });
+    assert.equal(tempTxRes.status, 201);
+    const tempTx: any = await tempTxRes.json();
+
+    const delTxRes = await fetch(`${WORKER_URL}/api/v1/transactions/${tempTx.transactionId}`, {
+      method: 'DELETE',
+      headers: authHeaders,
+    });
+    assert.equal(delTxRes.status, 200);
+    const delTxBody: any = await delTxRes.json();
+    assert.equal(delTxBody.success, true);
+
+    // MCP delete_transaction tool verification
+    const mcpTx = await callTool('record_transaction', {
+      walletId: createdWallet.walletId,
+      categoryId: createdCat.categoryId,
+      amount: 15000,
+      type: 'expense',
+      description: 'MCP expense to delete',
+    }, token);
+    assert.ok(mcpTx.transactionId);
+
+    const mcpDel = await callTool('delete_transaction', {
+      transactionId: mcpTx.transactionId,
+    }, token);
+    assert.equal(mcpDel.success, true);
 
     // 5. Transfers: POST
     const transferRes = await fetch(`${WORKER_URL}/api/v1/transfers`, {

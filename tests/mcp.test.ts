@@ -4344,3 +4344,217 @@ describe('User Profile & Identity Endpoint Parity', () => {
     assert.equal(resourceData.fullName, 'Lutfi Zain');
   });
 });
+describe('Delete Transaction & Balance Reversal Parity', () => {
+  async function setupTxUser() {
+    const { d1 } = createTestDB();
+    const env = { DB: d1 as unknown as D1Database, JWT_SECRET: TEST_JWT_SECRET };
+    const db = drizzle(d1 as unknown as D1Database, { schema });
+    const userId = crypto.randomUUID();
+    const token = await generateUserToken({ userId }, TEST_JWT_SECRET);
+    await db.insert(schema.users).values({
+      userId,
+      userFirstName: 'Delete',
+      userLastName: 'Tester',
+      userEmail: `del_${userId}@example.com`,
+      userWhatsappNumber: '+6281111222333',
+      userApiKeyHash: `hash_del_${userId}`,
+    });
+    const [w1] = await db.insert(schema.wallets).values({
+      walletUserId: userId,
+      walletName: 'Main Cash',
+      walletBalance: 1000000,
+      walletCurrency: 'IDR',
+    }).returning();
+    const [w2] = await db.insert(schema.wallets).values({
+      walletUserId: userId,
+      walletName: 'Bank Jago',
+      walletBalance: 2000000,
+      walletCurrency: 'IDR',
+    }).returning();
+    const [cat] = await db.insert(schema.categories).values({
+      categoryUserId: userId,
+      categoryName: 'General',
+      categoryType: 'expense',
+    }).returning();
+    return { d1, db, env, userId, token, w1, w2, cat };
+  }
+
+  it('1. Delete Expense reverses wallet balance via REST DELETE /api/v1/transactions/:id', async () => {
+    const { env, db, token, w1, cat } = await setupTxUser();
+
+    // Create an expense transaction: 100,000 + 2,500 fee
+    const txRes = await app.request('https://example.workers.dev/api/v1/transactions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        walletId: w1.walletId,
+        categoryId: cat.categoryId,
+        amount: 100000,
+        adminFee: 2500,
+        type: 'expense',
+        description: 'Snacks',
+      }),
+    }, env);
+    assert.equal(txRes.status, 201);
+    const tx: any = await txRes.json();
+
+    // Wallet balance should be 1,000,000 - 102,500 = 897,500
+    const wBefore = await db.select().from(schema.wallets).where(eq(schema.wallets.walletId, w1.walletId)).get();
+    assert.equal(wBefore!.walletBalance, 897500);
+
+    // DELETE /api/v1/transactions/:transactionId
+    const delRes = await app.request(`https://example.workers.dev/api/v1/transactions/${tx.transactionId}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal(delRes.status, 200);
+    const delBody: any = await delRes.json();
+    assert.equal(delBody.success, true);
+
+    // Wallet balance must be restored to 1,000,000
+    const wAfter = await db.select().from(schema.wallets).where(eq(schema.wallets.walletId, w1.walletId)).get();
+    assert.equal(wAfter!.walletBalance, 1000000);
+
+    // Record must be gone
+    const txCheck = await db.select().from(schema.transactions).where(eq(schema.transactions.transactionId, tx.transactionId)).get();
+    assert.equal(txCheck, undefined);
+  });
+
+  it('2. Delete Income reverses wallet balance', async () => {
+    const { env, db, token, w1, cat } = await setupTxUser();
+
+    // Create income: 500,000 with 0 fee -> balance becomes 1,500,000
+    const txRes = await app.request('https://example.workers.dev/api/v1/transactions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        walletId: w1.walletId,
+        categoryId: cat.categoryId,
+        amount: 500000,
+        adminFee: 0,
+        type: 'income',
+        description: 'Bonus',
+      }),
+    }, env);
+    assert.equal(txRes.status, 201);
+    const tx: any = await txRes.json();
+
+    const wBefore = await db.select().from(schema.wallets).where(eq(schema.wallets.walletId, w1.walletId)).get();
+    assert.equal(wBefore!.walletBalance, 1500000);
+
+    // Delete transaction
+    const delRes = await app.request(`https://example.workers.dev/api/v1/transactions/${tx.transactionId}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal(delRes.status, 200);
+
+    // Balance must be debited back to 1,000,000
+    const wAfter = await db.select().from(schema.wallets).where(eq(schema.wallets.walletId, w1.walletId)).get();
+    assert.equal(wAfter!.walletBalance, 1000000);
+  });
+
+  it('3. Delete Transfer reverses both source and target wallets', async () => {
+    const { env, db, token, w1, w2 } = await setupTxUser();
+
+    // Transfer 300,000 from w1 (1,000,000) to w2 (2,000,000) with 5,000 fee
+    const trfRes = await app.request('https://example.workers.dev/api/v1/transfers', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sourceWalletId: w1.walletId,
+        targetWalletId: w2.walletId,
+        amount: 300000,
+        adminFee: 5000,
+        description: 'Topup Jago',
+      }),
+    }, env);
+    assert.equal(trfRes.status, 201);
+    const trf: any = await trfRes.json();
+
+    // w1: 695,000, w2: 2,300,000
+    const w1Before = await db.select().from(schema.wallets).where(eq(schema.wallets.walletId, w1.walletId)).get();
+    const w2Before = await db.select().from(schema.wallets).where(eq(schema.wallets.walletId, w2.walletId)).get();
+    assert.equal(w1Before!.walletBalance, 695000);
+    assert.equal(w2Before!.walletBalance, 2300000);
+
+    // Delete transfer
+    const delRes = await app.request(`https://example.workers.dev/api/v1/transactions/${trf.transactionId}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal(delRes.status, 200);
+
+    // Restored: w1: 1,000,000, w2: 2,000,000
+    const w1After = await db.select().from(schema.wallets).where(eq(schema.wallets.walletId, w1.walletId)).get();
+    const w2After = await db.select().from(schema.wallets).where(eq(schema.wallets.walletId, w2.walletId)).get();
+    assert.equal(w1After!.walletBalance, 1000000);
+    assert.equal(w2After!.walletBalance, 2000000);
+  });
+
+  it('4. Delete Planned Transaction leaves balances untouched', async () => {
+    const { env, db, token, w1, cat } = await setupTxUser();
+
+    // Create planned transaction
+    const txRes = await app.request('https://example.workers.dev/api/v1/transactions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        walletId: w1.walletId,
+        categoryId: cat.categoryId,
+        amount: 450000,
+        type: 'expense',
+        description: 'Planned shopping',
+        isPlanned: true,
+      }),
+    }, env);
+    assert.equal(txRes.status, 201);
+    const tx: any = await txRes.json();
+
+    // Balance untouched
+    const wBefore = await db.select().from(schema.wallets).where(eq(schema.wallets.walletId, w1.walletId)).get();
+    assert.equal(wBefore!.walletBalance, 1000000);
+
+    // Delete planned transaction
+    const delRes = await app.request(`https://example.workers.dev/api/v1/transactions/${tx.transactionId}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal(delRes.status, 200);
+
+    // Balance still 1,000,000
+    const wAfter = await db.select().from(schema.wallets).where(eq(schema.wallets.walletId, w1.walletId)).get();
+    assert.equal(wAfter!.walletBalance, 1000000);
+  });
+
+  it('5. Delete non-existent transaction returns 404', async () => {
+    const { env, token } = await setupTxUser();
+    const delRes = await app.request('https://example.workers.dev/api/v1/transactions/00000000-0000-0000-0000-000000000000', {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal(delRes.status, 404);
+  });
+
+  it('6. MCP tool delete_transaction executes successfully', async () => {
+    const { db, userId, w1, cat } = await setupTxUser();
+    const server = createMCPServer(db, userId, TEST_JWT_SECRET);
+
+    // Record transaction via MCP
+    const recRes = await callTool(server, 'record_transaction', {
+      walletId: w1.walletId,
+      categoryId: cat.categoryId,
+      amount: 50000,
+      type: 'expense',
+      description: 'Coffee',
+    });
+    const tx = JSON.parse(recRes.content[0].text);
+    assert.ok(tx.transactionId);
+
+    // Delete via MCP tool
+    const delRes = JSON.parse((await callTool(server, 'delete_transaction', {
+      transactionId: tx.transactionId,
+    })).content[0].text);
+    assert.equal(delRes.success, true);
+  });
+});
