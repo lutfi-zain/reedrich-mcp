@@ -890,4 +890,199 @@ describe('Integration Test: Full User Journey (Deployed Worker + Remote D1)', ()
 
     console.log(`    ✓ Snapshot: atomic get_account_detail returned complete payload with wallets, cashflow, budgets, goals, and obligations`);
   });
+
+  // -------------------------------------------------------------------------
+  // Step 34: 1:1 REST API Write Endpoints Parity
+  // -------------------------------------------------------------------------
+  it('Step 34: 1:1 REST API Write Endpoints Parity (Wallets, Categories, Budgets, Transactions, Transfers, Debts, Goals, Recurring)', async () => {
+    const token = state.userA.token;
+    const authHeaders = {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    };
+
+    // 1. Wallets: POST & PATCH
+    const createWalletRes = await fetch(`${WORKER_URL}/api/v1/wallets`, {
+      method: 'POST',
+      headers: authHeaders,
+      body: JSON.stringify({ name: 'REST Test Wallet', balance: 5000000, currency: 'IDR' }),
+    });
+    assert.equal(createWalletRes.status, 201);
+    const createdWallet: any = await createWalletRes.json();
+    assert.equal(createdWallet.walletName, 'REST Test Wallet');
+
+    const patchWalletRes = await fetch(`${WORKER_URL}/api/v1/wallets/${createdWallet.walletId}`, {
+      method: 'PATCH',
+      headers: authHeaders,
+      body: JSON.stringify({ name: 'REST Updated Wallet', isLocked: true }),
+    });
+    assert.equal(patchWalletRes.status, 200);
+    const patchedWallet: any = await patchWalletRes.json();
+    assert.equal(patchedWallet.walletName, 'REST Updated Wallet');
+    assert.equal(patchedWallet.walletIsLocked, 1);
+
+    // 2. Categories: POST
+    const createCatRes = await fetch(`${WORKER_URL}/api/v1/categories`, {
+      method: 'POST',
+      headers: authHeaders,
+      body: JSON.stringify({ name: 'REST Utilities', type: 'expense', icon: '⚡' }),
+    });
+    assert.equal(createCatRes.status, 201);
+    const createdCat: any = await createCatRes.json();
+    assert.equal(createdCat.categoryName, 'REST Utilities');
+
+    // 3. Budgets: POST
+    const createBudgetRes = await fetch(`${WORKER_URL}/api/v1/budgets`, {
+      method: 'POST',
+      headers: authHeaders,
+      body: JSON.stringify({
+        name: 'REST Utility Budget',
+        categoryId: createdCat.categoryId,
+        amount: 500000,
+        periodStart: '2026-09-01T00:00:00.000Z',
+        periodEnd: '2026-09-30T23:59:59.000Z',
+      }),
+    });
+    assert.equal(createBudgetRes.status, 201);
+    const createdBudget: any = await createBudgetRes.json();
+    assert.equal(createdBudget.budgetName, 'REST Utility Budget');
+
+    // 4. Transactions: POST & PATCH
+    const createTxRes = await fetch(`${WORKER_URL}/api/v1/transactions`, {
+      method: 'POST',
+      headers: authHeaders,
+      body: JSON.stringify({
+        walletId: createdWallet.walletId,
+        categoryId: createdCat.categoryId,
+        amount: 75000,
+        type: 'expense',
+        description: 'Electricity bill',
+      }),
+    });
+    assert.equal(createTxRes.status, 201);
+    const createdTx: any = await createTxRes.json();
+    assert.equal(createdTx.transactionAmount, 75000);
+
+    const patchTxRes = await fetch(`${WORKER_URL}/api/v1/transactions/${createdTx.transactionId}`, {
+      method: 'PATCH',
+      headers: authHeaders,
+      body: JSON.stringify({ amount: 80000 }),
+    });
+    assert.equal(patchTxRes.status, 200);
+    const patchedTx: any = await patchTxRes.json();
+    assert.equal(patchedTx.transactionAmount, 80000);
+
+    // 5. Transfers: POST
+    const transferRes = await fetch(`${WORKER_URL}/api/v1/transfers`, {
+      method: 'POST',
+      headers: authHeaders,
+      body: JSON.stringify({
+        sourceWalletId: state.wallets.bca.walletId,
+        targetWalletId: createdWallet.walletId,
+        amount: 200000,
+        description: 'REST Transfer',
+      }),
+    });
+    assert.equal(transferRes.status, 201);
+    const transferTx: any = await transferRes.json();
+    assert.equal(transferTx.transactionType, 'transfer');
+
+    // 6. Debts & Loans: POST, PATCH, POST /repay
+    const createDlRes = await fetch(`${WORKER_URL}/api/v1/debts-loans`, {
+      method: 'POST',
+      headers: authHeaders,
+      body: JSON.stringify({ personName: 'REST Debt Contact', amount: 300000, type: 'debt' }),
+    });
+    assert.equal(createDlRes.status, 201);
+    const createdDl: any = await createDlRes.json();
+    assert.equal(createdDl.debtLoanPersonName, 'REST Debt Contact');
+
+    const repayDlRes = await fetch(`${WORKER_URL}/api/v1/debts-loans/${createdDl.debtLoanId}/repay`, {
+      method: 'POST',
+      headers: authHeaders,
+      body: JSON.stringify({ amount: 100000 }),
+    });
+    assert.equal(repayDlRes.status, 200);
+    const repaidDl: any = await repayDlRes.json();
+    assert.equal(repaidDl.debtLoanRemainingAmount, 200000);
+
+    const patchDlRes = await fetch(`${WORKER_URL}/api/v1/debts-loans/${createdDl.debtLoanId}`, {
+      method: 'PATCH',
+      headers: authHeaders,
+      body: JSON.stringify({ notes: 'Repaid 100k via REST' }),
+    });
+    assert.equal(patchDlRes.status, 200);
+
+    // 7. Goals: POST, PATCH, contribute, wallets link/unlink, DELETE
+    const createGoalRes = await fetch(`${WORKER_URL}/api/v1/goals`, {
+      method: 'POST',
+      headers: authHeaders,
+      body: JSON.stringify({
+        name: 'REST Vacation Fund',
+        targetAmount: 15000000,
+        currency: 'IDR',
+      }),
+    });
+    assert.equal(createGoalRes.status, 201);
+    const createdGoal: any = await createGoalRes.json();
+
+    const patchGoalRes = await fetch(`${WORKER_URL}/api/v1/goals/${createdGoal.goalId}`, {
+      method: 'PATCH',
+      headers: authHeaders,
+      body: JSON.stringify({ notes: 'Target changed for summer' }),
+    });
+    assert.equal(patchGoalRes.status, 200);
+
+    const linkGoalRes = await fetch(`${WORKER_URL}/api/v1/goals/${createdGoal.goalId}/wallets`, {
+      method: 'POST',
+      headers: authHeaders,
+      body: JSON.stringify({ walletId: createdWallet.walletId }),
+    });
+    assert.equal(linkGoalRes.status, 200);
+
+    const unlinkGoalRes = await fetch(`${WORKER_URL}/api/v1/goals/${createdGoal.goalId}/wallets/${createdWallet.walletId}`, {
+      method: 'DELETE',
+      headers: authHeaders,
+    });
+    assert.equal(unlinkGoalRes.status, 200);
+
+    const deleteGoalRes = await fetch(`${WORKER_URL}/api/v1/goals/${createdGoal.goalId}`, {
+      method: 'DELETE',
+      headers: authHeaders,
+    });
+    assert.equal(deleteGoalRes.status, 200);
+
+    // 8. Recurring Templates: POST, PATCH, DELETE
+    const createTplRes = await fetch(`${WORKER_URL}/api/v1/recurring-templates`, {
+      method: 'POST',
+      headers: authHeaders,
+      body: JSON.stringify({
+        name: 'REST Cloud Subscription',
+        walletId: createdWallet.walletId,
+        amount: 150000,
+        type: 'expense',
+        frequency: 'monthly',
+        interval: 1,
+        startDate: '2026-10-01',
+        nextRunDate: '2026-10-01',
+      }),
+    });
+    assert.equal(createTplRes.status, 201);
+    const createdTpl: any = await createTplRes.json();
+
+    const patchTplRes = await fetch(`${WORKER_URL}/api/v1/recurring-templates/${createdTpl.templateId}`, {
+      method: 'PATCH',
+      headers: authHeaders,
+      body: JSON.stringify({ isActive: false }),
+    });
+    assert.equal(patchTplRes.status, 200);
+
+    const deleteTplRes = await fetch(`${WORKER_URL}/api/v1/recurring-templates/${createdTpl.templateId}`, {
+      method: 'DELETE',
+      headers: authHeaders,
+    });
+    assert.equal(deleteTplRes.status, 200);
+
+    console.log(`    ✓ REST Write Parity: verified POST/PATCH wallets, categories, budgets, transactions, transfers, debts-loans, goals, and recurring-templates`);
+  });
 });
