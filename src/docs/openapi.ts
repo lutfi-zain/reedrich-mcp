@@ -63,6 +63,10 @@ export function generateOpenApiSpec(origin: string): Record<string, unknown> {
         description: "Fund transfers between user accounts and wallets with atomic reconciliation.",
       },
       {
+        name: "User Profile",
+        description: "Authenticated user identity, profile details, and account metadata.",
+      },
+      {
         name: "OAuth 2.0 PKCE",
         description: "Stateless RFC 7636 PKCE authorization with Google Identity Federation.",
       },
@@ -103,6 +107,19 @@ export function generateOpenApiSpec(origin: string): Record<string, unknown> {
             },
           },
           required: ["error", "message"],
+        },
+        UserProfile: {
+          type: "object",
+          properties: {
+            userId: { type: "string", format: "uuid" },
+            firstName: { type: "string", example: "Budi" },
+            lastName: { type: "string", example: "Setiawan" },
+            fullName: { type: "string", example: "Budi Setiawan" },
+            email: { type: "string", format: "email", example: "budi@example.com" },
+            whatsappNumber: { type: "string", example: "+6281234567890" },
+            createdAt: { type: "string", format: "date-time" },
+          },
+          required: ["userId", "firstName", "lastName", "fullName", "email", "whatsappNumber", "createdAt"],
         },
         Wallet: {
           type: "object",
@@ -580,6 +597,52 @@ export function generateOpenApiSpec(origin: string): Record<string, unknown> {
             },
             "400": {
               description: "Invalid OAuth parameters or unsupported provider.",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+          },
+        },
+      },
+      "/api/v1/me": {
+        get: {
+          tags: ["User Profile"],
+          summary: "Get Current User Profile",
+          description: "Returns the profile details (name, email, WhatsApp number, registration timestamp) of the currently authenticated principal.",
+          operationId: "getCurrentUserProfile",
+          security: [{ bearerAuth: [] }, { apiKeyHeader: [] }],
+          responses: {
+            "200": {
+              description: "Current user profile",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/UserProfile" } } },
+            },
+            "401": {
+              description: "Authentication required",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+            "404": {
+              description: "User not found",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+          },
+        },
+      },
+      "/api/v1/user/profile": {
+        get: {
+          tags: ["User Profile"],
+          summary: "Get Current User Profile (Alias)",
+          description: "Semantic resource alias for GET /api/v1/me.",
+          operationId: "getUserProfileAlias",
+          security: [{ bearerAuth: [] }, { apiKeyHeader: [] }],
+          responses: {
+            "200": {
+              description: "Current user profile",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/UserProfile" } } },
+            },
+            "401": {
+              description: "Authentication required",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+            "404": {
+              description: "User not found",
               content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
             },
           },

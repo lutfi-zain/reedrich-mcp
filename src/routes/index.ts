@@ -16,6 +16,7 @@ import summary from "./summary";
 import feedback from "./feedback";
 import accountDetail from "./account-detail";
 import transfers from "./transfers";
+import me from "./me";
 
 const api = new Hono<AppEnv>();
 
@@ -78,4 +79,6 @@ api.route("/summary", summary);
 api.route("/feedback", feedback);
 api.route("/account-detail", accountDetail);
 api.route("/transfers", transfers);
+api.route("/me", me);
+api.route("/user/profile", me);
 export default api;

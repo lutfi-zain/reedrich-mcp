@@ -66,6 +66,10 @@ All REST endpoints return JSON with standard HTTP status codes. Common headers:
 - \`Authorization: Bearer <token | rd_live_apiKey>\` (or \`X-API-Key: <rd_live_apiKey>\`)
 - \`X-Request-ID\`: Distributed trace ID (incoming echoed, or generated UUID)
 - \`X-Response-Time\`: Execution duration in milliseconds (e.g. \`12ms\`)
+### 0. User Profile & Identity
+- **\`GET /api/v1/me\`** (and alias **\`GET /api/v1/user/profile\`**)
+  - Returns: Current authenticated user profile.
+  - Fields: \`userId\`, \`firstName\`, \`lastName\`, \`fullName\`, \`email\`, \`whatsappNumber\`, \`createdAt\`.
 
 ### 1. Analytics & Summary
 - **\`GET /api/v1/summary\`**
@@ -342,18 +346,19 @@ For autonomous coding agents (Claude Desktop, OpenCode, Pi, OMP):
 
 - **Remote Streamable HTTP URL**: \`${origin}/mcp\`
 - **SSE Fallback URL**: \`${origin}/sse\`
-- **12 Available Tools**:
+- **Tools Reference**:
+  * \`get_user_profile\` (Current User Profile: name, email, WhatsApp, createdAt)
   * \`register_user\`, \`login_user\` (Auth & Onboarding)
   * \`manage_wallet\`, \`manage_category\`, \`manage_budget\`, \`manage_debt_loan\`, \`manage_goal\`, \`manage_recurring_template\` (Entity Management)
   * \`record_transaction\`, \`transfer_funds\`, \`update_transaction\`, \`list_transactions\` (Financial Transactions)
-  * \`financial_summary\` (Consolidated Net Worth & Health Report)
+  * \`financial_summary\`, \`get_account_detail\` (Consolidated Net Worth & Health Report)
   * \`submit_feedback\` (Feedback to internal D1)
-- **4 MCP Resources**:
+- **MCP Resources**:
+  * \`reedrich://user/profile\` (Authenticated user profile details)
   * \`reedrich://db/schema\` (Database relationship definitions)
   * \`reedrich://wallets/list\` (User wallets & balances)
   * \`reedrich://budgets/active\` (Active budget spending limits)
   * \`reedrich://debts/active\` (Liabilities and receivables)
-- **4 MCP Prompts**:
   * \`onboarding_assistant\`, \`daily_briefing\`, \`financial_planning\`, \`debt_loan_advisor\`
 `;
 }

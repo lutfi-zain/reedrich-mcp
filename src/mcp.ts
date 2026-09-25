@@ -13,6 +13,7 @@ import { eq, and, desc, gte, lte, sql } from "drizzle-orm";
 import { currentIsoTimestamp } from "./utils/date";
 import { resolveUserId } from "./middleware/auth";
 import { registerUser, loginUser, evaluateOnboarding } from "./services/auth";
+import { getUserProfile } from "./services/user";
 import { submitFeedback } from "./services/feedback";
 import { listWallets, createWallet, updateWallet } from "./services/wallet";
 import {
@@ -112,6 +113,12 @@ export function createMCPServer(
         name: "Active Debts and Loans",
         mimeType: "application/json",
         description: "Returns active/unpaid debts and loans with calculated totals for the authenticated user."
+      },
+      {
+        uri: "reedrich://user/profile",
+        name: "User Profile",
+        mimeType: "application/json",
+        description: "Returns profile details (name, email, whatsapp, registration date) for the authenticated user."
       }
     ]
   }));
@@ -207,6 +214,18 @@ export function createMCPServer(
             uri,
             mimeType: "application/json",
             text: JSON.stringify(userWallets, null, 2)
+          }
+        ]
+      };
+    }
+    if (uri === "reedrich://user/profile") {
+      const profile = await getUserProfile(db, effectiveUserId);
+      return {
+        contents: [
+          {
+            uri,
+            mimeType: "application/json",
+            text: JSON.stringify(profile, null, 2)
           }
         ]
       };
@@ -552,6 +571,16 @@ Authentication Note: You are already authenticated via OAuth / Bearer token. Nev
           required: ["apiKey"]
         }
       },
+      {
+        name: "get_user_profile",
+        description: "Retrieve profile details (first name, last name, full name, email, WhatsApp number, account created date) for the currently authenticated user. PROACTIVE TIP: Call this to discover user identity and personalize greetings.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            apiKey: { type: "string", description: "Optional: Your persistent API Key (rd_live_...) if not set in headers" }
+          }
+        }
+      },
       // Feedback & Support Tool
       {
         name: "submit_feedback",
@@ -855,6 +884,11 @@ Authentication Note: You are already authenticated via OAuth / Bearer token. Nev
       throw new Error(
         "Unauthorized: Please provide your 'apiKey' in tool arguments (e.g. apiKey: 'fp_live_...'), or set 'Authorization: Bearer <apiKey>' in your MCP client headers, or call 'register_user' to create an account."
       );
+    }
+    // --- Tool: get_user_profile ---
+    if (name === "get_user_profile") {
+      const result = await getUserProfile(db, effectiveUserId);
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
     }
 
     // --- Tool: manage_wallet ---
