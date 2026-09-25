@@ -1745,8 +1745,8 @@ describe('Eve Finance MCP Server — Complete Test Suite', () => {
       type: 'income',
       frequency: 'monthly',
       interval: 1,
-      startDate: '2026-09-25',
-      nextRunDate: '2026-09-25',
+      startDate: '2026-09-28',
+      nextRunDate: '2026-09-28',
     });
 
     // Check Cashflow Projections via financial_summary
@@ -3967,5 +3967,310 @@ describe('Comprehensive Account Snapshot & Wallet Last Transaction', () => {
     assert.ok(restBody.netWorth);
     assert.ok(restBody.wallets);
     assert.ok(restBody.monthlyCashFlow);
+  });
+});
+describe('REST API Write Endpoints Parity', () => {
+  async function setupRestUser() {
+    const { d1 } = createTestDB();
+    const env = { DB: d1 as unknown as D1Database, JWT_SECRET: TEST_JWT_SECRET };
+    const db = drizzle(d1 as unknown as D1Database, { schema });
+    const userId = crypto.randomUUID();
+    const token = await generateUserToken({ userId }, TEST_JWT_SECRET);
+    await db.insert(schema.users).values({
+      userId,
+      userFirstName: 'REST',
+      userLastName: 'Parity',
+      userEmail: `rest_${userId}@example.com`,
+      userWhatsappNumber: '+6281234567888',
+      userApiKeyHash: `hash_${userId}`,
+    });
+    return { d1, db, env, userId, token };
+  }
+
+  it('1. Wallets: POST /api/v1/wallets and PATCH /api/v1/wallets/:walletId', async () => {
+    const { env, token } = await setupRestUser();
+
+    // 1.1 POST /api/v1/wallets
+    const createRes = await app.request('https://example.workers.dev/api/v1/wallets', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'BCA Main', balance: 5000000, currency: 'IDR' }),
+    }, env);
+    assert.equal(createRes.status, 201);
+    const wallet: any = await createRes.json();
+    assert.equal(wallet.walletName, 'BCA Main');
+    assert.equal(wallet.walletBalance, 5000000);
+
+    // 1.2 PATCH /api/v1/wallets/:walletId
+    const patchRes = await app.request(`https://example.workers.dev/api/v1/wallets/${wallet.walletId}`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'BCA Primary', isLocked: true }),
+    }, env);
+    assert.equal(patchRes.status, 200);
+    const patchedWallet: any = await patchRes.json();
+    assert.equal(patchedWallet.walletName, 'BCA Primary');
+    assert.equal(patchedWallet.walletIsLocked, 1);
+  });
+
+  it('2. Categories: POST /api/v1/categories and POST /api/v1/categories/seed', async () => {
+    const { env, token } = await setupRestUser();
+
+    // 2.1 POST /api/v1/categories
+    const createRes = await app.request('https://example.workers.dev/api/v1/categories', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Groceries', type: 'expense', icon: '🛒' }),
+    }, env);
+    assert.equal(createRes.status, 201);
+    const category: any = await createRes.json();
+    assert.equal(category.categoryName, 'Groceries');
+
+    // 2.2 POST /api/v1/categories/seed
+    const seedRes = await app.request('https://example.workers.dev/api/v1/categories/seed', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal(seedRes.status, 200);
+    const seeded: any = await seedRes.json();
+    assert.ok(Array.isArray(seeded.categories));
+    assert.ok(seeded.categories.length > 0);
+  });
+
+  it('3. Budgets: POST /api/v1/budgets', async () => {
+    const { env, token, db, userId } = await setupRestUser();
+    const [cat] = await db.insert(schema.categories).values({
+      categoryUserId: userId,
+      categoryName: 'Food',
+      categoryType: 'expense',
+    }).returning();
+
+    const createRes = await app.request('https://example.workers.dev/api/v1/budgets', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Monthly Food',
+        categoryId: cat.categoryId,
+        amount: 2000000,
+        periodStart: '2026-09-01T00:00:00.000Z',
+        periodEnd: '2026-09-30T23:59:59.000Z',
+      }),
+    }, env);
+    assert.equal(createRes.status, 201);
+    const budget: any = await createRes.json();
+    assert.equal(budget.budgetName, 'Monthly Food');
+    assert.equal(budget.budgetAmount, 2000000);
+  });
+
+  it('4. Transactions & Transfers: POST & PATCH /transactions, POST /transfers', async () => {
+    const { env, token, db, userId } = await setupRestUser();
+    const [w1] = await db.insert(schema.wallets).values({
+      walletUserId: userId,
+      walletName: 'W1',
+      walletBalance: 10000000,
+      walletCurrency: 'IDR',
+    }).returning();
+    const [w2] = await db.insert(schema.wallets).values({
+      walletUserId: userId,
+      walletName: 'W2',
+      walletBalance: 1000000,
+      walletCurrency: 'IDR',
+    }).returning();
+    const [cat] = await db.insert(schema.categories).values({
+      categoryUserId: userId,
+      categoryName: 'Dining',
+      categoryType: 'expense',
+    }).returning();
+
+    // 4.1 POST /api/v1/transactions (record expense)
+    const txRes = await app.request('https://example.workers.dev/api/v1/transactions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        walletId: w1.walletId,
+        categoryId: cat.categoryId,
+        amount: 250000,
+        type: 'expense',
+        description: 'Team Dinner',
+      }),
+    }, env);
+    assert.equal(txRes.status, 201);
+    const tx: any = await txRes.json();
+    assert.equal(tx.transactionAmount, 250000);
+
+    // Verify balance debited
+    const checkW1 = await db.select().from(schema.wallets).where(eq(schema.wallets.walletId, w1.walletId)).get();
+    assert.equal(checkW1!.walletBalance, 9750000);
+
+    // 4.2 PATCH /api/v1/transactions/:transactionId
+    const patchTxRes = await app.request(`https://example.workers.dev/api/v1/transactions/${tx.transactionId}`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ amount: 300000 }),
+    }, env);
+    assert.equal(patchTxRes.status, 200);
+    const patchedTx: any = await patchTxRes.json();
+    assert.equal(patchedTx.transactionAmount, 300000);
+
+    // 4.3 POST /api/v1/transfers
+    const transferRes = await app.request('https://example.workers.dev/api/v1/transfers', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sourceWalletId: w1.walletId,
+        targetWalletId: w2.walletId,
+        amount: 1000000,
+        adminFee: 5000,
+        description: 'Pocket Transfer',
+      }),
+    }, env);
+    assert.equal(transferRes.status, 201);
+    const transferTx: any = await transferRes.json();
+    assert.equal(transferTx.transactionType, 'transfer');
+  });
+
+  it('5. Debts & Loans: POST, PATCH, and POST /repay', async () => {
+    const { env, token } = await setupRestUser();
+
+    // 5.1 POST /api/v1/debts-loans
+    const createDlRes = await app.request('https://example.workers.dev/api/v1/debts-loans', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ personName: 'Charlie', amount: 1500000, type: 'loan' }),
+    }, env);
+    assert.equal(createDlRes.status, 201);
+    const dl: any = await createDlRes.json();
+    assert.equal(dl.debtLoanPersonName, 'Charlie');
+    assert.equal(dl.debtLoanRemainingAmount, 1500000);
+
+    // 5.2 POST /api/v1/debts-loans/:debtLoanId/repay
+    const repayRes = await app.request(`https://example.workers.dev/api/v1/debts-loans/${dl.debtLoanId}/repay`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ amount: 500000 }),
+    }, env);
+    assert.equal(repayRes.status, 200);
+    const repaid: any = await repayRes.json();
+    assert.equal(repaid.debtLoanRemainingAmount, 1000000);
+    assert.equal(repaid.debtLoanStatus, 'partially_paid');
+
+    // 5.3 PATCH /api/v1/debts-loans/:debtLoanId
+    const patchDlRes = await app.request(`https://example.workers.dev/api/v1/debts-loans/${dl.debtLoanId}`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ notes: 'Installment 1 received' }),
+    }, env);
+    assert.equal(patchDlRes.status, 200);
+    const patchedDl: any = await patchDlRes.json();
+    assert.equal(patchedDl.debtLoanNotes, 'Installment 1 received');
+  });
+
+  it('6. Goals: PATCH, DELETE, contribute, and wallet link/unlink', async () => {
+    const { env, token, db, userId } = await setupRestUser();
+    const [goal] = await db.insert(schema.goals).values({
+      goalUserId: userId,
+      goalName: 'House Down Payment',
+      goalTargetAmount: 100000000,
+      goalCurrentAmount: 20000000,
+      goalCurrency: 'IDR',
+      goalStatus: 'in_progress',
+    }).returning();
+    const [wallet] = await db.insert(schema.wallets).values({
+      walletUserId: userId,
+      walletName: 'Savings Pocket',
+      walletBalance: 25000000,
+      walletCurrency: 'IDR',
+    }).returning();
+
+    // 6.1 PATCH /api/v1/goals/:goalId
+    const patchRes = await app.request(`https://example.workers.dev/api/v1/goals/${goal.goalId}`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ notes: 'Updated target milestone' }),
+    }, env);
+    assert.equal(patchRes.status, 200);
+
+    // 6.2 POST /api/v1/goals/:goalId/contribute
+    const contRes = await app.request(`https://example.workers.dev/api/v1/goals/${goal.goalId}/contribute`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ amount: 5000000 }),
+    }, env);
+    assert.equal(contRes.status, 400);
+    const contErr: any = await contRes.json();
+    assert.equal(contErr.error, 'VALIDATION');
+    const linkRes = await app.request(`https://example.workers.dev/api/v1/goals/${goal.goalId}/wallets`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ walletId: wallet.walletId }),
+    }, env);
+    assert.equal(linkRes.status, 200);
+
+    // 6.4 DELETE /api/v1/goals/:goalId/wallets/:walletId (unlink wallet)
+    const unlinkRes = await app.request(`https://example.workers.dev/api/v1/goals/${goal.goalId}/wallets/${wallet.walletId}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal(unlinkRes.status, 200);
+
+    // 6.5 DELETE /api/v1/goals/:goalId
+    const deleteRes = await app.request(`https://example.workers.dev/api/v1/goals/${goal.goalId}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal(deleteRes.status, 200);
+  });
+
+  it('7. Recurring Templates: PATCH and DELETE', async () => {
+    const { env, token, db, userId } = await setupRestUser();
+    const [wallet] = await db.insert(schema.wallets).values({
+      walletUserId: userId,
+      walletName: 'Bank',
+      walletBalance: 10000000,
+      walletCurrency: 'IDR',
+    }).returning();
+    const [tpl] = await db.insert(schema.recurringTemplates).values({
+      templateUserId: userId,
+      templateWalletId: wallet.walletId,
+      templateName: 'Gym Membership',
+      templateAmount: 350000,
+      templateType: 'expense',
+      templateFrequency: 'monthly',
+      templateInterval: 1,
+      templateStartDate: '2026-10-01',
+      templateNextRunDate: '2026-10-01',
+    }).returning();
+
+    // 7.1 PATCH /api/v1/recurring-templates/:templateId
+    const patchRes = await app.request(`https://example.workers.dev/api/v1/recurring-templates/${tpl.templateId}`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ isActive: false, name: 'Gym (Cancelled)' }),
+    }, env);
+    assert.equal(patchRes.status, 200);
+    const patchedTpl: any = await patchRes.json();
+    assert.equal(patchedTpl.templateIsActive, 0);
+
+    // 7.2 DELETE /api/v1/recurring-templates/:templateId
+    const deleteRes = await app.request(`https://example.workers.dev/api/v1/recurring-templates/${tpl.templateId}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal(deleteRes.status, 200);
+  });
+
+  it('8. Validation Error: HTTP 400 with VALIDATION code', async () => {
+    const { env, token } = await setupRestUser();
+
+    // POST /api/v1/wallets with missing required name
+    const res = await app.request('https://example.workers.dev/api/v1/wallets', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    }, env);
+    assert.equal(res.status, 400);
+    const err: any = await res.json();
+    assert.equal(err.error, 'VALIDATION');
+    assert.equal(err.field, 'name');
   });
 });

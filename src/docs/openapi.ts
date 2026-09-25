@@ -59,6 +59,10 @@ export function generateOpenApiSpec(origin: string): Record<string, unknown> {
         description: "Submit bug reports, feature requests, and developer questions.",
       },
       {
+        name: "Transfers",
+        description: "Fund transfers between user accounts and wallets with atomic reconciliation.",
+      },
+      {
         name: "OAuth 2.0 PKCE",
         description: "Stateless RFC 7636 PKCE authorization with Google Identity Federation.",
       },
@@ -705,6 +709,94 @@ export function generateOpenApiSpec(origin: string): Record<string, unknown> {
             },
           },
         },
+        post: {
+          tags: ["Wallets"],
+          summary: "Create User Wallet",
+          description: "Creates a new personal account, bank account, or digital wallet for the authenticated user.",
+          operationId: "createWallet",
+          security: [{ bearerAuth: [] }, { apiKeyHeader: [] }],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    name: { type: "string", description: "Wallet name (1-100 chars)" },
+                    institution: { type: "string", description: "Bank or platform institution (e.g. BCA, Jago, Cash)", default: "General" },
+                    type: { type: "string", enum: ["bank", "cash", "e-wallet", "credit", "crypto", "investment"], default: "bank" },
+                    balance: { type: "number", description: "Initial balance", default: 0 },
+                    currency: { type: "string", description: "Currency code (default IDR)", default: "IDR" },
+                    isLocked: { type: "boolean", description: "Lock wallet from daily Safe-to-Spend runway", default: false },
+                  },
+                  required: ["name"],
+                },
+              },
+            },
+          },
+          responses: {
+            "201": {
+              description: "Wallet created successfully",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/Wallet" } } },
+            },
+            "400": {
+              description: "Validation error",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+            "401": {
+              description: "Authentication required",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+          },
+        },
+      },
+      "/api/v1/wallets/{walletId}": {
+        patch: {
+          tags: ["Wallets"],
+          summary: "Update User Wallet",
+          description: "Updates an existing wallet's name, institution, type, balance, currency, or lock status.",
+          operationId: "updateWallet",
+          security: [{ bearerAuth: [] }, { apiKeyHeader: [] }],
+          parameters: [
+            { name: "walletId", in: "path", required: true, schema: { type: "string", format: "uuid" } },
+          ],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    name: { type: "string" },
+                    institution: { type: "string" },
+                    type: { type: "string", enum: ["bank", "cash", "e-wallet", "credit", "crypto", "investment"] },
+                    balance: { type: "number" },
+                    currency: { type: "string" },
+                    isLocked: { type: "boolean" },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            "200": {
+              description: "Wallet updated successfully",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/Wallet" } } },
+            },
+            "404": {
+              description: "Wallet not found",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+            "400": {
+              description: "Validation error",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+            "401": {
+              description: "Authentication required",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+          },
+        },
       },
       "/api/v1/categories": {
         get: {
@@ -728,6 +820,62 @@ export function generateOpenApiSpec(origin: string): Record<string, unknown> {
             },
           },
         },
+        post: {
+          tags: ["Categories"],
+          summary: "Create Category",
+          description: "Creates a new custom expense or income category for the authenticated user.",
+          operationId: "createCategory",
+          security: [{ bearerAuth: [] }, { apiKeyHeader: [] }],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    name: { type: "string", description: "Category name (1-100 chars)" },
+                    type: { type: "string", enum: ["expense", "income"], default: "expense" },
+                    icon: { type: "string", description: "Emoji icon", nullable: true },
+                  },
+                  required: ["name"],
+                },
+              },
+            },
+          },
+          responses: {
+            "201": {
+              description: "Category created successfully",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/Category" } } },
+            },
+            "400": {
+              description: "Validation error",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+            "401": {
+              description: "Authentication required",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+          },
+        },
+      },
+      "/api/v1/categories/seed": {
+        post: {
+          tags: ["Categories"],
+          summary: "Seed Default Categories",
+          description: "Seeds standard recommended default categories (food, transportation, shopping, bills, entertainment, health, salary, etc.) for the user.",
+          operationId: "seedDefaultCategories",
+          security: [{ bearerAuth: [] }, { apiKeyHeader: [] }],
+          responses: {
+            "200": {
+              description: "Default categories seeded successfully",
+              content: { "application/json": { schema: { type: "array", items: { $ref: "#/components/schemas/Category" } } } },
+            },
+            "401": {
+              description: "Authentication required",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+          },
+        },
       },
       "/api/v1/budgets": {
         get: {
@@ -744,6 +892,45 @@ export function generateOpenApiSpec(origin: string): Record<string, unknown> {
                   schema: { type: "array", items: { $ref: "#/components/schemas/Budget" } },
                 },
               },
+            },
+            "401": {
+              description: "Authentication required",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+          },
+        },
+        post: {
+          tags: ["Budgets"],
+          summary: "Create Budget",
+          description: "Creates a spending limit for a specific category and date range.",
+          operationId: "createBudget",
+          security: [{ bearerAuth: [] }, { apiKeyHeader: [] }],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    name: { type: "string", description: "Budget title" },
+                    categoryId: { type: "string", format: "uuid", nullable: true },
+                    amount: { type: "number", minimum: 0.01, description: "Budget limit amount" },
+                    periodStart: { type: "string", format: "date-time" },
+                    periodEnd: { type: "string", format: "date-time" },
+                  },
+                  required: ["name", "amount", "periodStart", "periodEnd"],
+                },
+              },
+            },
+          },
+          responses: {
+            "201": {
+              description: "Budget created successfully",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/Budget" } } },
+            },
+            "400": {
+              description: "Validation error",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
             },
             "401": {
               description: "Authentication required",
@@ -790,6 +977,146 @@ export function generateOpenApiSpec(origin: string): Record<string, unknown> {
             },
           },
         },
+        post: {
+          tags: ["Transactions"],
+          summary: "Record Transaction",
+          description: "Records an expense or income transaction. Automatically reconciles wallet balance unless isPlanned is true.",
+          operationId: "recordTransaction",
+          security: [{ bearerAuth: [] }, { apiKeyHeader: [] }],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    walletId: { type: "string", format: "uuid" },
+                    categoryId: { type: "string", format: "uuid" },
+                    budgetId: { type: "string", format: "uuid", nullable: true },
+                    amount: { type: "number", minimum: 0.01 },
+                    adminFee: { type: "number", minimum: 0, default: 0 },
+                    type: { type: "string", enum: ["expense", "income"], default: "expense" },
+                    description: { type: "string", maxLength: 500 },
+                    isPlanned: { type: "boolean", default: false },
+                    date: { type: "string", format: "date-time", description: "ISO timestamp (alias: transactionDate)" },
+                    transactionDate: { type: "string", format: "date-time" },
+                  },
+                  required: ["walletId", "categoryId", "amount"],
+                },
+              },
+            },
+          },
+          responses: {
+            "201": {
+              description: "Transaction recorded successfully",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/Transaction" } } },
+            },
+            "400": {
+              description: "Validation error or wallet required",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+            "401": {
+              description: "Authentication required",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+          },
+        },
+      },
+      "/api/v1/transactions/{transactionId}": {
+        patch: {
+          tags: ["Transactions"],
+          summary: "Update Transaction",
+          description: "Updates an existing transaction and atomically reconciles wallet balance delta.",
+          operationId: "updateTransaction",
+          security: [{ bearerAuth: [] }, { apiKeyHeader: [] }],
+          parameters: [
+            { name: "transactionId", in: "path", required: true, schema: { type: "string", format: "uuid" } },
+          ],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    amount: { type: "number", minimum: 0.01 },
+                    adminFee: { type: "number", minimum: 0 },
+                    walletId: { type: "string", format: "uuid" },
+                    targetWalletId: { type: "string", format: "uuid", nullable: true },
+                    categoryId: { type: "string", format: "uuid" },
+                    budgetId: { type: "string", format: "uuid", nullable: true },
+                    description: { type: "string", maxLength: 500 },
+                    date: { type: "string", format: "date-time" },
+                    transactionDate: { type: "string", format: "date-time" },
+                    isPlanned: { type: "boolean" },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            "200": {
+              description: "Transaction updated successfully",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/Transaction" } } },
+            },
+            "404": {
+              description: "Transaction not found",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+            "400": {
+              description: "Validation error",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+            "401": {
+              description: "Authentication required",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+          },
+        },
+      },
+      "/api/v1/transfers": {
+        post: {
+          tags: ["Transfers"],
+          summary: "Transfer Funds Between Wallets",
+          description: "Atomically debits source wallet (amount + fee) and credits target wallet (amount).",
+          operationId: "transferFunds",
+          security: [{ bearerAuth: [] }, { apiKeyHeader: [] }],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    sourceWalletId: { type: "string", format: "uuid" },
+                    targetWalletId: { type: "string", format: "uuid" },
+                    amount: { type: "number", minimum: 0.01 },
+                    adminFee: { type: "number", minimum: 0, default: 0 },
+                    description: { type: "string", maxLength: 500 },
+                    categoryId: { type: "string", format: "uuid", nullable: true },
+                    date: { type: "string", format: "date-time" },
+                    transactionDate: { type: "string", format: "date-time" },
+                  },
+                  required: ["sourceWalletId", "targetWalletId", "amount"],
+                },
+              },
+            },
+          },
+          responses: {
+            "201": {
+              description: "Transfer recorded successfully",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/Transaction" } } },
+            },
+            "400": {
+              description: "Validation error or insufficient wallets",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+            "401": {
+              description: "Authentication required",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+          },
+        },
       },
       "/api/v1/debts-loans": {
         get: {
@@ -810,6 +1137,138 @@ export function generateOpenApiSpec(origin: string): Record<string, unknown> {
                   schema: { type: "array", items: { $ref: "#/components/schemas/DebtLoan" } },
                 },
               },
+            },
+            "401": {
+              description: "Authentication required",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+          },
+        },
+        post: {
+          tags: ["Debts & Loans"],
+          summary: "Create Debt or Loan",
+          description: "Records a liability (debt user owes) or receivable (loan user gave to others).",
+          operationId: "createDebtLoan",
+          security: [{ bearerAuth: [] }, { apiKeyHeader: [] }],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    personName: { type: "string" },
+                    amount: { type: "number", minimum: 0.01 },
+                    type: { type: "string", enum: ["debt", "loan"], default: "debt" },
+                    walletId: { type: "string", format: "uuid", nullable: true },
+                    dueDate: { type: "string", format: "date", nullable: true },
+                    notes: { type: "string", nullable: true },
+                    adjustWalletBalance: { type: "boolean", default: false },
+                  },
+                  required: ["personName", "amount"],
+                },
+              },
+            },
+          },
+          responses: {
+            "201": {
+              description: "Debt or loan recorded successfully",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/DebtLoan" } } },
+            },
+            "400": {
+              description: "Validation error",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+            "401": {
+              description: "Authentication required",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+          },
+        },
+      },
+      "/api/v1/debts-loans/{debtLoanId}": {
+        patch: {
+          tags: ["Debts & Loans"],
+          summary: "Update Debt or Loan",
+          description: "Updates an existing debt or loan record.",
+          operationId: "updateDebtLoan",
+          security: [{ bearerAuth: [] }, { apiKeyHeader: [] }],
+          parameters: [
+            { name: "debtLoanId", in: "path", required: true, schema: { type: "string", format: "uuid" } },
+          ],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    personName: { type: "string" },
+                    dueDate: { type: "string", format: "date" },
+                    notes: { type: "string" },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            "200": {
+              description: "Record updated successfully",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/DebtLoan" } } },
+            },
+            "404": {
+              description: "Record not found",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+            "400": {
+              description: "Validation error",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+            "401": {
+              description: "Authentication required",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+          },
+        },
+      },
+      "/api/v1/debts-loans/{debtLoanId}/repay": {
+        post: {
+          tags: ["Debts & Loans"],
+          summary: "Repay Debt or Loan",
+          description: "Records a repayment towards a debt or loan, updating remaining amount and status.",
+          operationId: "repayDebtLoan",
+          security: [{ bearerAuth: [] }, { apiKeyHeader: [] }],
+          parameters: [
+            { name: "debtLoanId", in: "path", required: true, schema: { type: "string", format: "uuid" } },
+          ],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    amount: { type: "number", minimum: 0.01 },
+                    walletId: { type: "string", format: "uuid", nullable: true },
+                    adjustWalletBalance: { type: "boolean", default: false },
+                  },
+                  required: ["amount"],
+                },
+              },
+            },
+          },
+          responses: {
+            "200": {
+              description: "Repayment recorded successfully",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/DebtLoan" } } },
+            },
+            "404": {
+              description: "Record not found",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+            "400": {
+              description: "Validation error or overpayment",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
             },
             "401": {
               description: "Authentication required",
@@ -882,6 +1341,191 @@ export function generateOpenApiSpec(origin: string): Record<string, unknown> {
           },
         },
       },
+      "/api/v1/goals/{goalId}": {
+        patch: {
+          tags: ["Goals"],
+          summary: "Update Financial Goal",
+          description: "Updates an existing savings goal.",
+          operationId: "updateGoal",
+          security: [{ bearerAuth: [] }, { apiKeyHeader: [] }],
+          parameters: [
+            { name: "goalId", in: "path", required: true, schema: { type: "string", format: "uuid" } },
+          ],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    name: { type: "string" },
+                    targetAmount: { type: "number", minimum: 0.01 },
+                    currentAmount: { type: "number", minimum: 0 },
+                    currency: { type: "string" },
+                    targetDate: { type: "string", format: "date", nullable: true },
+                    status: { type: "string", enum: ["in_progress", "completed", "cancelled"] },
+                    notes: { type: "string", nullable: true },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            "200": {
+              description: "Goal updated successfully",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/Goal" } } },
+            },
+            "404": {
+              description: "Goal not found",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+            "400": {
+              description: "Validation error",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+            "401": {
+              description: "Authentication required",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+          },
+        },
+        delete: {
+          tags: ["Goals"],
+          summary: "Delete Financial Goal",
+          description: "Deletes a financial goal and its wallet associations.",
+          operationId: "deleteGoal",
+          security: [{ bearerAuth: [] }, { apiKeyHeader: [] }],
+          parameters: [
+            { name: "goalId", in: "path", required: true, schema: { type: "string", format: "uuid" } },
+          ],
+          responses: {
+            "200": {
+              description: "Goal deleted successfully",
+              content: { "application/json": { schema: { type: "object", properties: { message: { type: "string" } } } } },
+            },
+            "404": {
+              description: "Goal not found",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+            "401": {
+              description: "Authentication required",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+          },
+        },
+      },
+      "/api/v1/goals/{goalId}/contribute": {
+        post: {
+          tags: ["Goals"],
+          summary: "Contribute to Goal",
+          description: "Contributes savings toward a goal, updating current amount and pacing metrics.",
+          operationId: "contributeGoal",
+          security: [{ bearerAuth: [] }, { apiKeyHeader: [] }],
+          parameters: [
+            { name: "goalId", in: "path", required: true, schema: { type: "string", format: "uuid" } },
+          ],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    amount: { type: "number", minimum: 0.01 },
+                    walletId: { type: "string", format: "uuid", nullable: true },
+                  },
+                  required: ["amount"],
+                },
+              },
+            },
+          },
+          responses: {
+            "200": {
+              description: "Contribution recorded successfully",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/Goal" } } },
+            },
+            "404": {
+              description: "Goal not found",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+            "400": {
+              description: "Validation error",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+            "401": {
+              description: "Authentication required",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+          },
+        },
+      },
+      "/api/v1/goals/{goalId}/wallets": {
+        post: {
+          tags: ["Goals"],
+          summary: "Link Wallet to Goal",
+          description: "Links a dedicated wallet to a financial goal for automatic balance tracking.",
+          operationId: "linkGoalWallet",
+          security: [{ bearerAuth: [] }, { apiKeyHeader: [] }],
+          parameters: [
+            { name: "goalId", in: "path", required: true, schema: { type: "string", format: "uuid" } },
+          ],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    walletId: { type: "string", format: "uuid" },
+                  },
+                  required: ["walletId"],
+                },
+              },
+            },
+          },
+          responses: {
+            "200": {
+              description: "Wallet linked to goal successfully",
+              content: { "application/json": { schema: { type: "object", properties: { message: { type: "string" }, goalId: { type: "string" }, walletId: { type: "string" } } } } },
+            },
+            "404": {
+              description: "Goal or wallet not found",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+            "401": {
+              description: "Authentication required",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+          },
+        },
+      },
+      "/api/v1/goals/{goalId}/wallets/{walletId}": {
+        delete: {
+          tags: ["Goals"],
+          summary: "Unlink Wallet from Goal",
+          description: "Removes a wallet link from a financial goal.",
+          operationId: "unlinkGoalWallet",
+          security: [{ bearerAuth: [] }, { apiKeyHeader: [] }],
+          parameters: [
+            { name: "goalId", in: "path", required: true, schema: { type: "string", format: "uuid" } },
+            { name: "walletId", in: "path", required: true, schema: { type: "string", format: "uuid" } },
+          ],
+          responses: {
+            "200": {
+              description: "Wallet unlinked from goal successfully",
+              content: { "application/json": { schema: { type: "object", properties: { message: { type: "string" }, goalId: { type: "string" }, walletId: { type: "string" } } } } },
+            },
+            "404": {
+              description: "Goal or wallet link not found",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+            "401": {
+              description: "Authentication required",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+          },
+        },
+      },
       "/api/v1/recurring-templates": {
         get: {
           tags: ["Recurring Templates"],
@@ -937,6 +1581,82 @@ export function generateOpenApiSpec(origin: string): Record<string, unknown> {
             },
             "400": {
               description: "Validation error",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+            "401": {
+              description: "Authentication required",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+          },
+        },
+      },
+      "/api/v1/recurring-templates/{templateId}": {
+        patch: {
+          tags: ["Recurring Templates"],
+          summary: "Update Recurring Template",
+          description: "Updates an existing recurring transaction template.",
+          operationId: "updateRecurringTemplate",
+          security: [{ bearerAuth: [] }, { apiKeyHeader: [] }],
+          parameters: [
+            { name: "templateId", in: "path", required: true, schema: { type: "string", format: "uuid" } },
+          ],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    name: { type: "string" },
+                    amount: { type: "number", minimum: 0.01 },
+                    frequency: { type: "string", enum: ["daily", "weekly", "monthly", "yearly"] },
+                    nextRunDate: { type: "string", format: "date" },
+                    walletId: { type: "string", format: "uuid" },
+                    categoryId: { type: "string", format: "uuid" },
+                    type: { type: "string", enum: ["expense", "income", "transfer"] },
+                    description: { type: "string" },
+                    isActive: { type: "boolean" },
+                    adminFee: { type: "number", minimum: 0 },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            "200": {
+              description: "Template updated successfully",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/RecurringTemplate" } } },
+            },
+            "404": {
+              description: "Template not found",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+            "400": {
+              description: "Validation error",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+            "401": {
+              description: "Authentication required",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+          },
+        },
+        delete: {
+          tags: ["Recurring Templates"],
+          summary: "Delete Recurring Template",
+          description: "Deletes a recurring transaction template.",
+          operationId: "deleteRecurringTemplate",
+          security: [{ bearerAuth: [] }, { apiKeyHeader: [] }],
+          parameters: [
+            { name: "templateId", in: "path", required: true, schema: { type: "string", format: "uuid" } },
+          ],
+          responses: {
+            "200": {
+              description: "Template deleted successfully",
+              content: { "application/json": { schema: { type: "object", properties: { message: { type: "string" } } } } },
+            },
+            "404": {
+              description: "Template not found",
               content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
             },
             "401": {

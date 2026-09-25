@@ -5,6 +5,8 @@ import {
   listRecurringTemplates,
   createRecurringTemplate,
   applyRecurringTemplate,
+  updateRecurringTemplate,
+  deleteRecurringTemplate,
 } from "../services/recurring";
 import type { AppEnv } from "../index";
 
@@ -62,6 +64,23 @@ recurringTemplates.post("/:templateId/apply", async (c) => {
     executionDate,
     { transactionId, actualAmount }
   );
+  return c.json(result, 200);
+});
+
+recurringTemplates.patch("/:templateId", async (c) => {
+  const userId = c.get("userId");
+  const db = drizzle(c.env.DB, { schema });
+  const templateId = c.req.param("templateId");
+  const body = (await c.req.json()) as Record<string, unknown>;
+  const result = await updateRecurringTemplate(db, userId!, templateId, body as any);
+  return c.json(result, 200);
+});
+
+recurringTemplates.delete("/:templateId", async (c) => {
+  const userId = c.get("userId");
+  const db = drizzle(c.env.DB, { schema });
+  const templateId = c.req.param("templateId");
+  const result = await deleteRecurringTemplate(db, userId!, templateId);
   return c.json(result, 200);
 });
 

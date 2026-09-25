@@ -86,27 +86,53 @@ All REST endpoints return JSON with standard HTTP status codes. Common headers:
 ### 2. Wallets
 - **\`GET /api/v1/wallets\`**
   - Returns: Array of user wallets.
-  - Fields: \`walletId\`, \`walletName\`, \`walletInstitution\`, \`walletType\` (bank, cash, e-wallet, crypto, investment), \`walletBalance\`, \`walletCurrency\`, \`walletCreatedAt\`.
+  - Fields: \`walletId\`, \`walletName\`, \`walletInstitution\`, \`walletType\` (bank, cash, e-wallet, crypto, investment), \`walletBalance\`, \`walletCurrency\`, \`walletIsLocked\`, \`lastTransaction\`, \`walletCreatedAt\`.
+- **\`POST /api/v1/wallets\`** *(HTTP 201)*
+  - JSON Body: \`name\` (required, string), \`institution\` (string, default "General"), \`type\` (bank|cash|e-wallet|credit|crypto|investment, default "bank"), \`balance\` (number, default 0), \`currency\` (string, default "IDR"), \`isLocked\` (boolean, default false).
+- **\`PATCH /api/v1/wallets/:walletId\`** *(HTTP 200)*
+  - JSON Body: Any combination of \`name\`, \`institution\`, \`type\`, \`balance\`, \`currency\`, \`isLocked\`.
 
 ### 3. Categories
 - **\`GET /api/v1/categories\`**
   - Returns: Array of categories.
   - Fields: \`categoryId\`, \`categoryName\`, \`categoryType\` (expense | income), \`categoryIcon\`, \`categoryCreatedAt\`.
+- **\`POST /api/v1/categories\`** *(HTTP 201)*
+  - JSON Body: \`name\` (required, string), \`type\` (expense|income, default "expense"), \`icon\` (string emoji, optional).
+- **\`POST /api/v1/categories/seed\`** *(HTTP 200)*
+  - Seeds recommended standard categories (Food, Transportation, Shopping, Bills, Entertainment, Health, Salary, etc.).
 
 ### 4. Budgets
 - **\`GET /api/v1/budgets\`**
   - Returns: Array of active budgets with live spending utilization.
   - Fields: \`budget\` (\`budgetId\`, \`budgetName\`, \`budgetAmount\`, \`budgetPeriodStart\`, \`budgetPeriodEnd\`), \`spent\`, \`remaining\`, \`percentUsed\`.
+- **\`POST /api/v1/budgets\`** *(HTTP 201)*
+  - JSON Body: \`name\` (required), \`amount\` (required positive number), \`periodStart\` (required ISO-8601), \`periodEnd\` (required ISO-8601), \`categoryId\` (optional UUID).
 
-### 5. Transactions
+### 5. Transactions & Transfers
 - **\`GET /api/v1/transactions\`**
   - Query Params: \`walletId\`, \`targetWalletId\`, \`categoryId\`, \`budgetId\`, \`type\` (expense|income|transfer), \`isPlanned\` (boolean), \`startDate\`, \`endDate\`, \`limit\` (default 50, max 200), \`offset\` (default 0).
   - Returns: Array of transactions ordered by date descending.
+- **\`POST /api/v1/transactions\`** *(HTTP 201)*
+  - JSON Body: \`walletId\` (required), \`categoryId\` (required), \`amount\` (required positive number), \`type\` (expense|income, default "expense"), \`description\` (string), \`adminFee\` (number, default 0), \`budgetId\` (UUID), \`isPlanned\` (boolean, default false), \`date\` / \`transactionDate\` (ISO-8601).
+  - Automatically and atomically modifies wallet balance (unless \`isPlanned: true\`).
+- **\`PATCH /api/v1/transactions/:transactionId\`** *(HTTP 200)*
+  - JSON Body: Any combination of \`amount\`, \`adminFee\`, \`walletId\`, \`targetWalletId\`, \`categoryId\`, \`budgetId\`, \`description\`, \`date\`, \`isPlanned\`.
+  - Atomically calculates delta and reconciles wallet balances.
+- **\`POST /api/v1/transfers\`** *(HTTP 201)*
+  - JSON Body: \`sourceWalletId\` (required), \`targetWalletId\` (required), \`amount\` (required positive number), \`adminFee\` (number, default 0), \`description\` (string), \`categoryId\` (UUID), \`date\` (ISO-8601).
+  - Atomically debits source wallet \`(amount + adminFee)\` and credits target wallet \`amount\`.
 
 ### 6. Debts & Loans
 - **\`GET /api/v1/debts-loans\`**
   - Query Params: \`status\` (unpaid|partially_paid|paid), \`type\` (debt|loan).
   - Returns: Array of debt/loan records with remaining balances and due dates.
+- **\`POST /api/v1/debts-loans\`** *(HTTP 201)*
+  - JSON Body: \`personName\` (required), \`amount\` (required positive number), \`type\` (debt|loan, default "debt"), \`walletId\` (UUID), \`dueDate\` (YYYY-MM-DD), \`notes\` (string), \`adjustWalletBalance\` (boolean, default false).
+- **\`POST /api/v1/debts-loans/:debtLoanId/repay\`** *(HTTP 200)*
+  - JSON Body: \`amount\` (required positive number), \`walletId\` (UUID), \`adjustWalletBalance\` (boolean, default false).
+  - Decrements remaining balance, updates status to \`partially_paid\` or \`paid\`.
+- **\`PATCH /api/v1/debts-loans/:debtLoanId\`** *(HTTP 200)*
+  - JSON Body: Any combination of \`personName\`, \`dueDate\`, \`notes\`.
 
 ### 7. Goals
 - **\`GET /api/v1/goals\`**
@@ -114,12 +140,26 @@ All REST endpoints return JSON with standard HTTP status codes. Common headers:
   - Returns: Array of goals with pacing data (\`progressPercentage\`, \`remainingAmount\`, \`daysRemaining\`, \`requiredMonthlySavings\`).
 - **\`POST /api/v1/goals\`** *(HTTP 201)*
   - JSON Body: \`name\` (required), \`targetAmount\` (required), \`currentAmount\` (default 0), \`currency\` (default "IDR"), \`targetDate\` ("YYYY-MM-DD"), \`walletId\`, \`categoryId\`, \`notes\`.
+- **\`PATCH /api/v1/goals/:goalId\`** *(HTTP 200)*
+  - JSON Body: Any combination of \`name\`, \`targetAmount\`, \`currentAmount\`, \`currency\`, \`targetDate\`, \`status\`, \`notes\`.
+- **\`DELETE /api/v1/goals/:goalId\`** *(HTTP 200)*
+  - Deletes a goal and its associated wallet links.
+- **\`POST /api/v1/goals/:goalId/contribute\`** *(HTTP 200)*
+  - JSON Body: \`amount\` (required positive number), \`walletId\` (UUID).
+- **\`POST /api/v1/goals/:goalId/wallets\`** *(HTTP 200)*
+  - JSON Body: \`walletId\` (required UUID). Links a dedicated wallet to the goal.
+- **\`DELETE /api/v1/goals/:goalId/wallets/:walletId\`** *(HTTP 200)*
+  - Unlinks a wallet from the goal.
 
 ### 8. Recurring Templates
 - **\`GET /api/v1/recurring-templates\`**
   - Query Params: \`isActive\` (boolean).
 - **\`POST /api/v1/recurring-templates\`** *(HTTP 201)*
   - JSON Body: \`name\`, \`walletId\`, \`targetWalletId\` (for transfers), \`categoryId\`, \`amount\`, \`adminFee\`, \`type\` (expense|income|transfer), \`frequency\` (daily|weekly|monthly|yearly), \`interval\` (integer >= 1), \`startDate\`, \`nextRunDate\`, \`endDate\`, \`notes\`.
+- **\`PATCH /api/v1/recurring-templates/:templateId\`** *(HTTP 200)*
+  - JSON Body: Any combination of \`name\`, \`amount\`, \`frequency\`, \`nextRunDate\`, \`walletId\`, \`categoryId\`, \`type\`, \`description\`, \`isActive\`, \`adminFee\`.
+- **\`DELETE /api/v1/recurring-templates/:templateId\`** *(HTTP 200)*
+  - Deletes a recurring template.
 - **\`POST /api/v1/recurring-templates/:templateId/apply\`** *(HTTP 200)*
   - Atomically creates the scheduled transaction, updates wallet balances, and advances \`templateNextRunDate\`.
 
