@@ -1,8 +1,8 @@
 import { DrizzleD1Database } from "drizzle-orm/d1";
 import * as schema from "../db/schema";
-import { eq } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 import { currentIsoTimestamp } from "../utils/date";
-import { validationError } from "./errors";
+import { validationError, notFound, isValidUUID } from "./errors";
 
 export const DEFAULT_CATEGORIES = [
   // Expense categories
@@ -35,6 +35,31 @@ export async function listCategories(
     .select()
     .from(schema.categories)
     .where(eq(schema.categories.categoryUserId, userId));
+}
+export async function getCategoryById(
+  db: DrizzleD1Database<typeof schema>,
+  userId: string,
+  categoryId: unknown
+) {
+  if (!isValidUUID(categoryId)) {
+    validationError("Validation Error: Valid string 'categoryId' (UUID) is required", "categoryId");
+  }
+  const cleanId = (categoryId as string).trim();
+  const category = await db
+    .select()
+    .from(schema.categories)
+    .where(
+      and(
+        eq(schema.categories.categoryId, cleanId),
+        eq(schema.categories.categoryUserId, userId)
+      )
+    )
+    .get();
+
+  if (!category) {
+    notFound("Category", cleanId);
+  }
+  return category;
 }
 
 export async function createCategory(
@@ -76,6 +101,99 @@ export async function createCategory(
     .returning();
 
   return result[0];
+}
+export interface UpdateCategoryParams {
+  name?: unknown;
+  icon?: unknown;
+}
+
+export async function updateCategory(
+  db: DrizzleD1Database<typeof schema>,
+  userId: string,
+  categoryId: unknown,
+  params: UpdateCategoryParams
+) {
+  const existing = await getCategoryById(db, userId, categoryId);
+
+  const { name: catName, icon } = params;
+
+  if (
+    existing.categoryName.trim().toLowerCase() === ADJUSTMENT_CATEGORY_NAME.toLowerCase() &&
+    catName !== undefined &&
+    typeof catName === "string" &&
+    catName.trim().toLowerCase() !== ADJUSTMENT_CATEGORY_NAME.toLowerCase()
+  ) {
+    validationError("Validation Error: System category 'Adjustment' cannot be renamed", "name");
+  }
+
+  const updates: Partial<typeof schema.categories.$inferInsert> = {};
+
+  if (catName !== undefined) {
+    if (
+      typeof catName !== "string" ||
+      catName.trim().length === 0 ||
+      catName.trim().length > 100
+    ) {
+      validationError("Validation Error: Category 'name' must be 1-100 characters", "name");
+    }
+    updates.categoryName = (catName as string).trim();
+  }
+
+  if (icon !== undefined) {
+    if (icon === null || icon === "") {
+      updates.categoryIcon = null;
+    } else if (typeof icon === "string" && icon.trim().length <= 10) {
+      updates.categoryIcon = icon.trim();
+    } else {
+      validationError("Validation Error: 'icon' must be at most 10 characters", "icon");
+    }
+  }
+
+  if (Object.keys(updates).length === 0) {
+    return existing;
+  }
+
+  const result = await db
+    .update(schema.categories)
+    .set(updates)
+    .where(
+      and(
+        eq(schema.categories.categoryId, existing.categoryId),
+        eq(schema.categories.categoryUserId, userId)
+      )
+    )
+    .returning();
+
+  return result[0];
+}
+export async function deleteCategory(
+  db: DrizzleD1Database<typeof schema>,
+  userId: string,
+  categoryId: unknown
+) {
+  const existing = await getCategoryById(db, userId, categoryId);
+
+  if (existing.categoryName.trim().toLowerCase() === ADJUSTMENT_CATEGORY_NAME.toLowerCase()) {
+    validationError(
+      "Validation Error: System category 'Adjustment' is protected and cannot be deleted.",
+      "categoryId"
+    );
+  }
+
+  await db
+    .delete(schema.categories)
+    .where(
+      and(
+        eq(schema.categories.categoryId, existing.categoryId),
+        eq(schema.categories.categoryUserId, userId)
+      )
+    );
+
+  return {
+    success: true,
+    message: `Category '${existing.categoryName}' (${existing.categoryId}) successfully deleted.`,
+    deletedCategoryId: existing.categoryId,
+  };
 }
 
 export const ADJUSTMENT_CATEGORY_NAME = "Adjustment";

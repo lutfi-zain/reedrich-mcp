@@ -1141,6 +1141,72 @@ describe('Integration Test: Full User Journey (Deployed Worker + Remote D1)', ()
     });
     assert.equal(deleteTplRes.status, 200);
 
-    console.log(`    ✓ REST Write Parity: verified POST/PATCH wallets, categories, budgets, transactions, transfers, debts-loans, goals, and recurring-templates`);
+    // 9. Single-Resource Retrieval (GET /:id) verification
+    const getWRes = await fetch(`${WORKER_URL}/api/v1/wallets/${createdWallet.walletId}`, { headers: authHeaders });
+    assert.equal(getWRes.status, 200);
+    const getWData: any = await getWRes.json();
+    assert.equal(getWData.walletId, createdWallet.walletId);
+
+    const getCatRes = await fetch(`${WORKER_URL}/api/v1/categories/${createdCat.categoryId}`, { headers: authHeaders });
+    assert.equal(getCatRes.status, 200);
+    const getCatData: any = await getCatRes.json();
+    assert.equal(getCatData.categoryId, createdCat.categoryId);
+
+    // 10. Category & Budget Mutation (PATCH) verification
+    const patchCatRes = await fetch(`${WORKER_URL}/api/v1/categories/${createdCat.categoryId}`, {
+      method: 'PATCH',
+      headers: authHeaders,
+      body: JSON.stringify({ name: 'REST Updated Utilities', icon: '🔋' }),
+    });
+    assert.equal(patchCatRes.status, 200);
+    const patchCatData: any = await patchCatRes.json();
+    assert.equal(patchCatData.categoryName, 'REST Updated Utilities');
+
+    const patchBRes = await fetch(`${WORKER_URL}/api/v1/budgets/${createdBudget.budgetId}`, {
+      method: 'PATCH',
+      headers: authHeaders,
+      body: JSON.stringify({ amount: 750000 }),
+    });
+    assert.equal(patchBRes.status, 200);
+    const patchBData: any = await patchBRes.json();
+    assert.equal(patchBData.budget.budgetAmount, 750000);
+
+    // 11. User Profile Mutation (PATCH /api/v1/me) verification
+    const patchMeRes = await fetch(`${WORKER_URL}/api/v1/me`, {
+      method: 'PATCH',
+      headers: authHeaders,
+      body: JSON.stringify({ firstName: 'Budi', lastName: 'Updated' }),
+    });
+    assert.equal(patchMeRes.status, 200);
+    const patchMeData: any = await patchMeRes.json();
+    assert.equal(patchMeData.fullName, 'Budi Updated');
+
+    // 12. Deletion Lifecycle (Budgets, Debts-Loans, Categories)
+    const delBRes = await fetch(`${WORKER_URL}/api/v1/budgets/${createdBudget.budgetId}`, {
+      method: 'DELETE',
+      headers: authHeaders,
+    });
+    assert.equal(delBRes.status, 200);
+
+    const delDlRes = await fetch(`${WORKER_URL}/api/v1/debts-loans/${createdDl.debtLoanId}`, {
+      method: 'DELETE',
+      headers: authHeaders,
+    });
+    assert.equal(delDlRes.status, 200);
+
+    const delCatRes = await fetch(`${WORKER_URL}/api/v1/categories/${createdCat.categoryId}`, {
+      method: 'DELETE',
+      headers: authHeaders,
+    });
+    assert.equal(delCatRes.status, 200);
+
+    // 13. Wallet Deletion with Balance Guard (rejects non-zero balance)
+    const delFailWallet = await fetch(`${WORKER_URL}/api/v1/wallets/${createdWallet.walletId}`, {
+      method: 'DELETE',
+      headers: authHeaders,
+    });
+    assert.equal(delFailWallet.status, 400); // Has balance > 0
+
+    console.log(`    ✓ Comprehensive CRUD Parity: verified GET /:id, PATCH categories/budgets/me, DELETE wallets/categories/budgets/debts-loans with financial guards`);
   });
 });

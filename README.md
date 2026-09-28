@@ -10,30 +10,39 @@ Stateless Model Context Protocol (MCP) server for personal finance & determinist
 - **Pure MCP-Native Authentication**: Register and login directly using MCP tools (`register_user` & `login_user`) without external REST endpoints.
 - **15-Minute Self-Contained JWT**: Cryptographic token verification with **zero database queries** required for auth on finance tool calls.
 - **Multi-Tenant Row-Level Security (RLS)**: Automatically isolates user data via `userId` extracted directly from JWT token payload.
-- **12 MCP Tools**:
-  - `register_user`: Register with `firstName`, `lastName`, `email`, and `whatsappNumber` (with country code `+...`) → returns persistent `apiKey` (`rd_live_...`), 15-minute JWT, and dynamic `onboarding` status.
-  - `login_user`: Authenticate with `apiKey` → returns fresh 15-minute JWT and dynamic `onboarding` status.
-  - `submit_feedback`: Submit user feedback, bug reports, questions, or feature requests → directly recorded in Cloudflare D1 internal database with submitter tracking.
-  - `manage_wallet`: Create, list, update wallets.
-  - `manage_category`: Create, list, and bulk-seed standard expense and income categories (`action: "seed_defaults"`).
-  - `manage_budget`: Create, list, and compute real-time budget utilization status.
-  - `manage_debt_loan`: Manage debts (*hutang*) and loans given (*piutang*), counterparty tracking, full/partial repayments, and wallet sync.
-  - `record_transaction`: Record income/expenses with optional admin fee, automatic atomic wallet balance sync, and walletless guardrails.
-  - `transfer_funds`: Transfer money between wallets with optional admin fees, atomic dual-wallet balance adjustment, and walletless guardrails.
-  - `update_transaction`: Update transactions (amount, fee, wallet, category, budget, date, memo, planned status) with automatic balance reconciliation.
-  - `list_transactions`: Dynamic filtering across date ranges, wallets, categories, budgets, and planning status.
-  - `financial_summary`: Aggregate net worth, income, expense, savings, admin fees, category breakdowns, total debt, and total receivable.
-- **4 MCP Resources**:
-  - `reedrich://db/schema`: Database schema and relationship documentation.
-  - `reedrich://wallets/list`: Live list of authenticated user wallets and balances.
-  - `reedrich://budgets/active`: Current active budgets with spending utilization percentages.
-  - `reedrich://debts/active`: Active liabilities and receivables with total remaining balances.
+- **Full CRUD & Entity Lifecycle Parity**: Complete symmetric lifecycle management (List, Get by ID, Create, Update, Delete) across both Model Context Protocol (MCP) and REST API (\`/api/v1/*\`) transports.
+- **Financial Invariants & Integrity Guards**:
+  - Wallet deletion guard: rejects deletion if balance != 0 or if actively linked to in-progress goals or active recurring templates.
+  - System category protection: internal \`"Adjustment"\` category cannot be renamed or deleted.
+  - Transaction deletion: automatically executes atomic balance reversal (\`applyBalanceDelta(..., -1)\`).
+- **MCP Tools Registry**:
+  - \`get_user_profile\`: Discover authenticated user identity (name, email, WhatsApp, registration date) with zero required arguments.
+  - \`register_user\` & \`login_user\`: Pure MCP user onboarding and persistent API key authentication.
+  - \`submit_feedback\`: Submit user feedback, bug reports, questions, or feature requests directly to internal D1 database.
+  - \`manage_wallet\`: Create, list, update, or delete wallets (with balance/link zero-guards).
+  - \`manage_category\`: Create, list, update, delete, or bulk-seed standard categories (\`action: "seed_defaults"\`).
+  - \`manage_budget\`: Create, list, check status, update, or delete spending budgets.
+  - \`manage_debt_loan\`: Create, list, record repayments, update, or delete liabilities and receivables.
+  - \`manage_goal\`: Create, list, update, delete, or link/unlink dedicated wallets with derived balance calculations.
+  - \`manage_recurring_template\`: Create, list, update, delete, or materialize recurring income, expense, and transfer schedules.
+  - \`record_transaction\`, \`transfer_funds\`, \`update_transaction\`, \`delete_transaction\`: Complete financial transaction lifecycle with automatic atomic balance synchronization.
+  - \`list_transactions\`: Dynamic filtering across date ranges, wallets, categories, budgets, and planning status with pagination.
+  - \`financial_summary\` & \`get_account_detail\`: Comprehensive situational reporting, multi-currency net worth (live FX), Safe-to-Spend runway, and cashflow breakdowns.
+- **5 MCP Resources**:
+  - \`reedrich://user/profile\`: Authenticated user profile and contact metadata.
+  - \`reedrich://db/schema\`: Database schema and relationship documentation.
+  - \`reedrich://wallets/list\`: Live list of authenticated user wallets and balances.
+  - \`reedrich://budgets/active\`: Current active budgets with spending utilization percentages.
+  - \`reedrich://debts/active\`: Active liabilities and receivables with total remaining balances.
 - **4 MCP Prompts (AI Workflow Playbooks)**:
-  - `onboarding_assistant`: Step-by-step guidance for setting up initial wallets and standard categories.
-  - `daily_briefing`: Comprehensive financial health overview (balances, active budgets, upcoming debt/loan due dates).
-  - `financial_planning`: Goal timeline projection (e.g. "Kapan bisa beli laptop Rp 15jt?") with deterministic math based on net savings and debt commitments.
-  - `debt_loan_advisor`: Prioritization and repayment strategy for active debts and loan collections.
-- **Interactive Scalar API Docs & OpenAPI 3.0**: Full interactive Scalar API Reference UI served at `/docs` (and `/reference`) with machine-readable OpenAPI 3.0 specification at `/openapi.json`.
+  - \`onboarding_assistant\`: Step-by-step guidance for setting up initial wallets and standard categories.
+  - \`daily_briefing\`: Comprehensive financial health overview (balances, active budgets, upcoming debt/loan due dates).
+  - \`financial_planning\`: Goal timeline projection with deterministic math based on net savings and debt commitments.
+  - \`debt_loan_advisor\`: Prioritization and repayment strategy for active debts and loan collections.
+- **REST API (\`/api/v1/*\`)**:
+  - Full single-resource retrieval (\`GET /:id\`) for all 7 domain resources.
+  - Full mutation parity (\`PATCH\`) and deletion (\`DELETE\`) with HTTP standard status codes (\`200\`, \`201\`, \`400\`, \`401\`, \`404\`).
+- **Interactive Scalar API Docs & OpenAPI 3.0**: Full interactive Scalar API Reference UI served at \`/docs\` (and \`/reference\`) with machine-readable OpenAPI 3.0 specification at \`/openapi.json\`.
 ---
 ## ⚡ Quick Install: Claude Code Plugin & Desktop
 

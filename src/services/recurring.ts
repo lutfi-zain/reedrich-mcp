@@ -34,6 +34,31 @@ export async function listRecurringTemplates(
     .where(and(...conditions))
     .orderBy(desc(schema.recurringTemplates.templateCreatedAt));
 }
+export async function getRecurringTemplateById(
+  db: DrizzleD1Database<typeof schema>,
+  userId: string,
+  templateId: unknown
+) {
+  if (!isValidUUID(templateId)) {
+    validationError("Validation Error: Valid string 'templateId' (UUID) is required", "templateId");
+  }
+  const cleanId = (templateId as string).trim();
+  const template = await db
+    .select()
+    .from(schema.recurringTemplates)
+    .where(
+      and(
+        eq(schema.recurringTemplates.templateId, cleanId),
+        eq(schema.recurringTemplates.templateUserId, userId)
+      )
+    )
+    .get();
+
+  if (!template) {
+    notFound("Recurring Template", cleanId);
+  }
+  return template;
+}
 export const MAX_MATERIALIZED_OCCURRENCES = 100;
 // D1 caps bound parameters at 100 per statement; 16 params/row → max 6 rows.
 // Chunk at 5 for headroom.

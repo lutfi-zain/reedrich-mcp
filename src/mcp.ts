@@ -15,14 +15,16 @@ import { resolveUserId } from "./middleware/auth";
 import { registerUser, loginUser, evaluateOnboarding } from "./services/auth";
 import { getUserProfile } from "./services/user";
 import { submitFeedback } from "./services/feedback";
-import { listWallets, createWallet, updateWallet } from "./services/wallet";
+import { listWallets, createWallet, updateWallet, deleteWallet } from "./services/wallet";
 import {
   DEFAULT_CATEGORIES,
   listCategories,
   createCategory,
+  updateCategory,
+  deleteCategory,
   seedDefaults,
 } from "./services/category";
-import { listBudgets, createBudget, budgetStatus } from "./services/budget";
+import { listBudgets, createBudget, updateBudget, deleteBudget, budgetStatus } from "./services/budget";
 import {
   listTransactions,
   recordTransaction,
@@ -38,6 +40,7 @@ import {
   createDebtLoan,
   repayDebtLoan,
   updateDebtLoan,
+  deleteDebtLoan,
 } from "./services/debt-loan";
 import {
   listGoals,
@@ -680,18 +683,18 @@ Authentication Note: You are already authenticated via OAuth / Bearer token. Nev
       },
       {
         name: "manage_wallet",
-        description: "Create, list, or update wallets. PROACTIVE TIP: For new accounts without wallets, call with action: 'create' to initialize the primary wallet (e.g. BCA, Cash).",
+        description: "Create, list, update, or delete wallets. PROACTIVE TIP: For new accounts without wallets, call with action: 'create' to initialize the primary wallet (e.g. BCA, Cash).",
         inputSchema: {
           type: "object",
           properties: {
-            action: { type: "string", enum: ["list", "create", "update"], description: "Action to perform" },
+            action: { type: "string", enum: ["list", "create", "update", "delete"], description: "Action to perform" },
             name: { type: "string", description: "Wallet / Pocket name (1-100 characters)" },
             institution: { type: "string", description: "Bank or Platform institution (e.g. 'BCA', 'Bank Jago', 'Bitget', 'OCBC', 'Cash')" },
             type: { type: "string", enum: ["bank", "cash", "e-wallet", "credit", "crypto", "investment"], description: "Wallet type" },
             balance: { type: "number", description: "Initial balance or updated balance (finite number)" },
             currency: { type: "string", default: "IDR", description: "Currency code (e.g. IDR, USD, USDT)" },
             isLocked: { type: "boolean", description: "Optional: Lock wallet (true) to protect savings/emergency funds from daily Safe-to-Spend runway calculations, or unlock (false)" },
-            walletId: { type: "string", description: "Required for update action (Wallet UUID)" },
+            walletId: { type: "string", description: "Required for update and delete actions (Wallet UUID)" },
             apiKey: { type: "string", description: "Optional: Your persistent API Key (fp_live_...) if not set in headers" }
           },
           required: ["action"]
@@ -703,7 +706,8 @@ Authentication Note: You are already authenticated via OAuth / Bearer token. Nev
         inputSchema: {
           type: "object",
           properties: {
-            action: { type: "string", enum: ["list", "create", "seed_defaults"], description: "Action to perform" },
+            action: { type: "string", enum: ["list", "create", "seed_defaults", "update", "delete"], description: "Action to perform" },
+            categoryId: { type: "string", description: "Category UUID (required for update and delete actions)" },
             name: { type: "string", description: "Category name (1-100 characters, required for create)" },
             type: { type: "string", enum: ["expense", "income"], default: "expense" },
             icon: { type: "string", description: "Emoji icon representation (max 10 characters)" },
@@ -718,7 +722,8 @@ Authentication Note: You are already authenticated via OAuth / Bearer token. Nev
         inputSchema: {
           type: "object",
           properties: {
-            action: { type: "string", enum: ["list", "create", "status"], description: "Action to perform" },
+            action: { type: "string", enum: ["list", "create", "status", "update", "delete"], description: "Action to perform" },
+            budgetId: { type: "string", description: "Budget UUID (required for update and delete actions)" },
             name: { type: "string", description: "Budget title (1-100 characters)" },
             categoryId: { type: "string", description: "Optional category filter UUID" },
             amount: { type: "number", minimum: 0.01, description: "Budget target limit amount (positive finite number)" },
@@ -781,8 +786,8 @@ Authentication Note: You are already authenticated via OAuth / Bearer token. Nev
         inputSchema: {
           type: "object",
           properties: {
-            action: { type: "string", enum: ["create", "list", "repay", "update"], description: "Action to perform" },
-            debtLoanId: { type: "string", description: "Debt/Loan UUID (required for repay and update)" },
+            action: { type: "string", enum: ["create", "list", "repay", "update", "delete"], description: "Action to perform" },
+            debtLoanId: { type: "string", description: "Debt/Loan UUID (required for repay, update, and delete actions)" },
             type: { type: "string", enum: ["debt", "loan"], description: "Type: 'debt' (we owe) or 'loan' (counterparty owes us)" },
             personName: { type: "string", description: "Counterparty person/institution name (1-100 chars)" },
             amount: { type: "number", minimum: 0.01, description: "Principal amount for create, or repayment amount for repay (positive finite number)" },
@@ -919,7 +924,11 @@ Authentication Note: You are already authenticated via OAuth / Bearer token. Nev
         const result = await updateWallet(db, effectiveUserId, walletId, params);
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
-      throw new Error(`Invalid action '${action}' for manage_wallet. Valid actions: list, create, update`);
+      if (action === "delete") {
+        const result = await deleteWallet(db, effectiveUserId, walletId);
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      }
+      throw new Error(`Invalid action '${action}' for manage_wallet. Valid actions: list, create, update, delete`);
     }
 
     // --- Tool: manage_category ---
@@ -937,7 +946,17 @@ Authentication Note: You are already authenticated via OAuth / Bearer token. Nev
         const result = await seedDefaults(db, effectiveUserId);
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
-      throw new Error(`Invalid action '${action}' for manage_category. Valid actions: list, create, seed_defaults`);
+      if (action === "update") {
+        const { categoryId, ...updateParams } = params;
+        const result = await updateCategory(db, effectiveUserId, categoryId, updateParams);
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      }
+      if (action === "delete") {
+        const { categoryId } = params;
+        const result = await deleteCategory(db, effectiveUserId, categoryId);
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      }
+      throw new Error(`Invalid action '${action}' for manage_category. Valid actions: list, create, seed_defaults, update, delete`);
     }
 
     // --- Tool: manage_budget ---
@@ -955,7 +974,17 @@ Authentication Note: You are already authenticated via OAuth / Bearer token. Nev
         const result = await budgetStatus(db, effectiveUserId);
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
-      throw new Error(`Invalid action '${action}' for manage_budget. Valid actions: list, create, status`);
+      if (action === "update") {
+        const { budgetId, ...updateParams } = params;
+        const result = await updateBudget(db, effectiveUserId, budgetId, updateParams);
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      }
+      if (action === "delete") {
+        const { budgetId } = params;
+        const result = await deleteBudget(db, effectiveUserId, budgetId);
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      }
+      throw new Error(`Invalid action '${action}' for manage_budget. Valid actions: list, create, status, update, delete`);
     }
 
     // --- Tool: record_transaction ---
@@ -1053,7 +1082,11 @@ Authentication Note: You are already authenticated via OAuth / Bearer token. Nev
         const result = await updateDebtLoan(db, effectiveUserId, debtLoanId, params);
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
-      throw new Error(`Invalid action '${action}' for manage_debt_loan. Valid actions: create, list, repay, update`);
+      if (action === "delete") {
+        const result = await deleteDebtLoan(db, effectiveUserId, debtLoanId);
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      }
+      throw new Error(`Invalid action '${action}' for manage_debt_loan. Valid actions: create, list, repay, update, delete`);
     }
 
     // --- Tool: manage_goal ---

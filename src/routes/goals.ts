@@ -3,6 +3,7 @@ import { drizzle } from "drizzle-orm/d1";
 import * as schema from "../db/schema";
 import {
   listGoals,
+  getGoalById,
   createGoal,
   updateGoal,
   deleteGoal,
@@ -20,6 +21,14 @@ goals.get("/", async (c) => {
   const status = c.req.query("status");
 
   const result = await listGoals(db, userId!, status);
+  return c.json(result, 200);
+});
+
+goals.get("/:goalId", async (c) => {
+  const userId = c.get("userId");
+  const db = drizzle(c.env.DB, { schema });
+  const goalId = c.req.param("goalId");
+  const result = await getGoalById(db, userId!, goalId, fetch);
   return c.json(result, 200);
 });
 

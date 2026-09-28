@@ -1745,8 +1745,8 @@ describe('Eve Finance MCP Server — Complete Test Suite', () => {
       type: 'income',
       frequency: 'monthly',
       interval: 1,
-      startDate: '2026-09-28',
-      nextRunDate: '2026-09-28',
+      startDate: '2026-10-05',
+      nextRunDate: '2026-10-05',
     });
 
     // Check Cashflow Projections via financial_summary
@@ -4556,5 +4556,378 @@ describe('Delete Transaction & Balance Reversal Parity', () => {
       transactionId: tx.transactionId,
     })).content[0].text);
     assert.equal(delRes.success, true);
+  });
+});
+describe('Comprehensive CRUD Lifecycle Parity Suite', () => {
+  async function setupLifecycleUser() {
+    const { d1 } = createTestDB();
+    const env = { DB: d1 as unknown as D1Database, JWT_SECRET: TEST_JWT_SECRET };
+    const db = drizzle(d1 as unknown as D1Database, { schema });
+    const userId = crypto.randomUUID();
+    const token = await generateUserToken({ userId }, TEST_JWT_SECRET);
+    await db.insert(schema.users).values({
+      userId,
+      userFirstName: 'Lifecycle',
+      userLastName: 'Tester',
+      userEmail: `life_${userId}@example.com`,
+      userWhatsappNumber: '+6281234567888',
+      userApiKeyHash: `hash_life_${userId}`,
+    });
+    const [w1] = await db.insert(schema.wallets).values({
+      walletUserId: userId,
+      walletName: 'Primary Wallet',
+      walletBalance: 0,
+      walletCurrency: 'IDR',
+    }).returning();
+    const [w2] = await db.insert(schema.wallets).values({
+      walletUserId: userId,
+      walletName: 'Funded Wallet',
+      walletBalance: 5000000,
+      walletCurrency: 'IDR',
+    }).returning();
+    const [cat] = await db.insert(schema.categories).values({
+      categoryUserId: userId,
+      categoryName: 'Custom Cat',
+      categoryType: 'expense',
+      categoryIcon: '🏷️',
+    }).returning();
+    const [adjCat] = await db.insert(schema.categories).values({
+      categoryUserId: userId,
+      categoryName: 'Adjustment',
+      categoryType: 'expense',
+      categoryIcon: '🧮',
+    }).returning();
+    const [b1] = await db.insert(schema.budgets).values({
+      budgetUserId: userId,
+      budgetName: 'Test Budget',
+      budgetAmount: 1000000,
+      budgetPeriodStart: '2026-09-01T00:00:00.000Z',
+      budgetPeriodEnd: '2026-09-30T23:59:59.000Z',
+      budgetCategoryId: cat.categoryId,
+    }).returning();
+    const [tx1] = await db.insert(schema.transactions).values({
+      transactionUserId: userId,
+      transactionWalletId: w2.walletId,
+      transactionCategoryId: cat.categoryId,
+      transactionBudgetId: b1.budgetId,
+      transactionAmount: 250000,
+      transactionAdminFee: 0,
+      transactionType: 'expense',
+      transactionDescription: 'Initial Expense',
+      transactionDate: '2026-09-15T10:00:00.000Z',
+    }).returning();
+    const [dl1] = await db.insert(schema.debtsLoans).values({
+      debtLoanUserId: userId,
+      debtLoanPersonName: 'Contact A',
+      debtLoanAmount: 1000000,
+      debtLoanRemainingAmount: 1000000,
+      debtLoanType: 'debt',
+      debtLoanStatus: 'unpaid',
+    }).returning();
+    const [g1] = await db.insert(schema.goals).values({
+      goalUserId: userId,
+      goalName: 'Vacation',
+      goalTargetAmount: 10000000,
+      goalCurrentAmount: 0,
+      goalCurrency: 'IDR',
+      goalStatus: 'in_progress',
+    }).returning();
+    const [t1] = await db.insert(schema.recurringTemplates).values({
+      templateUserId: userId,
+      templateWalletId: w2.walletId,
+      templateName: 'Streaming',
+      templateAmount: 150000,
+      templateType: 'expense',
+      templateFrequency: 'monthly',
+      templateInterval: 1,
+      templateStartDate: '2026-10-01',
+      templateNextRunDate: '2026-10-01',
+      templateIsActive: 1,
+    }).returning();
+
+    return { d1, db, env, userId, token, w1, w2, cat, adjCat, b1, tx1, dl1, g1, t1 };
+  }
+
+  it('1. Single-Item Retrieval (GET /:id) across all 7 domain resources', async () => {
+    const { env, token, w1, cat, b1, tx1, dl1, g1, t1 } = await setupLifecycleUser();
+
+    // 1.1 GET /api/v1/wallets/:walletId
+    const resW = await app.request(`https://example.workers.dev/api/v1/wallets/${w1.walletId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal(resW.status, 200);
+    const dataW: any = await resW.json();
+    assert.equal(dataW.walletId, w1.walletId);
+    assert.equal(dataW.walletName, 'Primary Wallet');
+
+    // 1.2 GET /api/v1/categories/:categoryId
+    const resCat = await app.request(`https://example.workers.dev/api/v1/categories/${cat.categoryId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal(resCat.status, 200);
+    const dataCat: any = await resCat.json();
+    assert.equal(dataCat.categoryId, cat.categoryId);
+    assert.equal(dataCat.categoryName, 'Custom Cat');
+
+    // 1.3 GET /api/v1/budgets/:budgetId
+    const resB = await app.request(`https://example.workers.dev/api/v1/budgets/${b1.budgetId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal(resB.status, 200);
+    const dataB: any = await resB.json();
+    assert.equal(dataB.budget.budgetId, b1.budgetId);
+    assert.equal(dataB.spent, 250000);
+    assert.equal(dataB.remaining, 750000);
+    assert.equal(dataB.percentUsed, 25.0);
+
+    // 1.4 GET /api/v1/transactions/:transactionId
+    const resTx = await app.request(`https://example.workers.dev/api/v1/transactions/${tx1.transactionId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal(resTx.status, 200);
+    const dataTx: any = await resTx.json();
+    assert.equal(dataTx.transactionId, tx1.transactionId);
+    assert.equal(dataTx.transactionAmount, 250000);
+
+    // 1.5 GET /api/v1/debts-loans/:debtLoanId
+    const resDl = await app.request(`https://example.workers.dev/api/v1/debts-loans/${dl1.debtLoanId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal(resDl.status, 200);
+    const dataDl: any = await resDl.json();
+    assert.equal(dataDl.debtLoanId, dl1.debtLoanId);
+    assert.equal(dataDl.debtLoanPersonName, 'Contact A');
+
+    // 1.6 GET /api/v1/goals/:goalId
+    const resG = await app.request(`https://example.workers.dev/api/v1/goals/${g1.goalId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal(resG.status, 200);
+    const dataG: any = await resG.json();
+    assert.equal(dataG.goalId, g1.goalId);
+    assert.equal(dataG.goalName, 'Vacation');
+    assert.ok(dataG.pacing);
+
+    // 1.7 GET /api/v1/recurring-templates/:templateId
+    const resT = await app.request(`https://example.workers.dev/api/v1/recurring-templates/${t1.templateId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal(resT.status, 200);
+    const dataT: any = await resT.json();
+    assert.equal(dataT.templateId, t1.templateId);
+    assert.equal(dataT.templateName, 'Streaming');
+  });
+
+  it('2. Category & Budget Mutations via REST and MCP', async () => {
+    const { env, token, db, userId, cat, adjCat, b1 } = await setupLifecycleUser();
+    const server = createMCPServer(db, userId, TEST_JWT_SECRET);
+
+    // 2.1 PATCH /api/v1/categories/:id
+    const patchCatRes = await app.request(`https://example.workers.dev/api/v1/categories/${cat.categoryId}`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Hobbies & Games', icon: '🎮' }),
+    }, env);
+    assert.equal(patchCatRes.status, 200);
+    const patchedCat: any = await patchCatRes.json();
+    assert.equal(patchedCat.categoryName, 'Hobbies & Games');
+    assert.equal(patchedCat.categoryIcon, '🎮');
+
+    // 2.2 Reject renaming system Adjustment category
+    const failAdjRes = await app.request(`https://example.workers.dev/api/v1/categories/${adjCat.categoryId}`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Renamed Adjustment' }),
+    }, env);
+    assert.equal(failAdjRes.status, 400);
+
+    // 2.3 MCP manage_category update action
+    const mcpCatRes = await callTool(server, 'manage_category', {
+      action: 'update',
+      categoryId: cat.categoryId,
+      name: 'Gaming',
+    });
+    const mcpCat = JSON.parse(mcpCatRes.content[0].text);
+    assert.equal(mcpCat.categoryName, 'Gaming');
+
+    // 2.4 PATCH /api/v1/budgets/:id
+    const patchBRes = await app.request(`https://example.workers.dev/api/v1/budgets/${b1.budgetId}`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ amount: 2000000, name: 'Expanded Budget' }),
+    }, env);
+    assert.equal(patchBRes.status, 200);
+    const patchedB: any = await patchBRes.json();
+    assert.equal(patchedB.budget.budgetAmount, 2000000);
+    assert.equal(patchedB.budget.budgetName, 'Expanded Budget');
+
+    // 2.5 MCP manage_budget update action
+    const mcpBRes = await callTool(server, 'manage_budget', {
+      action: 'update',
+      budgetId: b1.budgetId,
+      amount: 3000000,
+    });
+    const mcpB = JSON.parse(mcpBRes.content[0].text);
+    assert.equal(mcpB.budget.budgetAmount, 3000000);
+  });
+
+  it('3. User Profile Mutation (PATCH /api/v1/me)', async () => {
+    const { env, token, userId } = await setupLifecycleUser();
+
+    // 3.1 Update first name, last name, phone
+    const resPatch = await app.request('https://example.workers.dev/api/v1/me', {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ firstName: 'Alexander', lastName: 'Pierce', whatsappNumber: '+6281987654321' }),
+    }, env);
+    assert.equal(resPatch.status, 200);
+    const profile: any = await resPatch.json();
+    assert.equal(profile.userId, userId);
+    assert.equal(profile.firstName, 'Alexander');
+    assert.equal(profile.lastName, 'Pierce');
+    assert.equal(profile.fullName, 'Alexander Pierce');
+    assert.equal(profile.whatsappNumber, '+6281987654321');
+
+    // 3.2 Rejects invalid whatsapp phone
+    const resBadPhone = await app.request('https://example.workers.dev/api/v1/me', {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ whatsappNumber: 'invalid_number' }),
+    }, env);
+    assert.equal(resBadPhone.status, 400);
+  });
+
+  it('4. Wallet Deletion Lifecycle & Financial Integrity Guards', async () => {
+    const { env, token, db, userId, w1, w2, g1, t1 } = await setupLifecycleUser();
+    const server = createMCPServer(db, userId, TEST_JWT_SECRET);
+
+    // 4.1 Reject deleting funded wallet (balance == 5,000,000)
+    const resFunded = await app.request(`https://example.workers.dev/api/v1/wallets/${w2.walletId}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal(resFunded.status, 400);
+    const fundedErr: any = await resFunded.json();
+    assert.equal(fundedErr.field, 'walletBalance');
+
+    // 4.2 Link w1 (balance 0) to active goal -> rejection
+    await db.insert(schema.goalWallets).values({ goalId: g1.goalId, walletId: w1.walletId });
+    const resLinkedGoal = await app.request(`https://example.workers.dev/api/v1/wallets/${w1.walletId}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal(resLinkedGoal.status, 400);
+
+    // Unlink from goal
+    await db.delete(schema.goalWallets).where(eq(schema.goalWallets.walletId, w1.walletId));
+
+    // 4.3 Successfully delete empty unlinked wallet via REST
+    const resDelW1 = await app.request(`https://example.workers.dev/api/v1/wallets/${w1.walletId}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal(resDelW1.status, 200);
+    const delW1Data: any = await resDelW1.json();
+    assert.equal(delW1Data.success, true);
+
+    // 4.4 MCP manage_wallet delete action on freshly created wallet
+    const [freshW] = await db.insert(schema.wallets).values({
+      walletUserId: userId,
+      walletName: 'MCP Delete Target',
+      walletBalance: 0,
+      walletCurrency: 'IDR',
+    }).returning();
+
+    const mcpDelW = await callTool(server, 'manage_wallet', {
+      action: 'delete',
+      walletId: freshW.walletId,
+    });
+    const mcpDelWData = JSON.parse(mcpDelW.content[0].text);
+    assert.equal(mcpDelWData.success, true);
+  });
+
+  it('5. Category Deletion & System Adjustment Protection', async () => {
+    const { env, token, db, userId, cat, adjCat } = await setupLifecycleUser();
+    const server = createMCPServer(db, userId, TEST_JWT_SECRET);
+
+    // 5.1 Reject deleting Adjustment category
+    const resAdj = await app.request(`https://example.workers.dev/api/v1/categories/${adjCat.categoryId}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal(resAdj.status, 400);
+
+    // 5.2 Successfully delete custom category via REST
+    const resDelCat = await app.request(`https://example.workers.dev/api/v1/categories/${cat.categoryId}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal(resDelCat.status, 200);
+    const delCatData: any = await resDelCat.json();
+    assert.equal(delCatData.success, true);
+
+    // 5.3 MCP manage_category delete action
+    const [freshCat] = await db.insert(schema.categories).values({
+      categoryUserId: userId,
+      categoryName: 'MCP Cat Target',
+      categoryType: 'expense',
+    }).returning();
+
+    const mcpDelCat = await callTool(server, 'manage_category', {
+      action: 'delete',
+      categoryId: freshCat.categoryId,
+    });
+    const mcpDelCatData = JSON.parse(mcpDelCat.content[0].text);
+    assert.equal(mcpDelCatData.success, true);
+  });
+
+  it('6. Budget and Debt/Loan Deletion Lifecycle via REST and MCP', async () => {
+    const { env, token, db, userId, b1, dl1 } = await setupLifecycleUser();
+    const server = createMCPServer(db, userId, TEST_JWT_SECRET);
+
+    // 6.1 DELETE /api/v1/budgets/:id
+    const resDelB = await app.request(`https://example.workers.dev/api/v1/budgets/${b1.budgetId}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal(resDelB.status, 200);
+
+    // 6.2 MCP manage_budget delete action
+    const [freshB] = await db.insert(schema.budgets).values({
+      budgetUserId: userId,
+      budgetName: 'MCP Budget',
+      budgetAmount: 500000,
+      budgetPeriodStart: '2026-09-01T00:00:00.000Z',
+      budgetPeriodEnd: '2026-09-30T23:59:59.000Z',
+    }).returning();
+    const mcpDelB = await callTool(server, 'manage_budget', {
+      action: 'delete',
+      budgetId: freshB.budgetId,
+    });
+    const mcpDelBData = JSON.parse(mcpDelB.content[0].text);
+    assert.equal(mcpDelBData.success, true);
+
+    // 6.3 DELETE /api/v1/debts-loans/:id
+    const resDelDl = await app.request(`https://example.workers.dev/api/v1/debts-loans/${dl1.debtLoanId}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal(resDelDl.status, 200);
+
+    // 6.4 MCP manage_debt_loan delete action
+    const [freshDl] = await db.insert(schema.debtsLoans).values({
+      debtLoanUserId: userId,
+      debtLoanPersonName: 'MCP Debt Target',
+      debtLoanAmount: 200000,
+      debtLoanRemainingAmount: 200000,
+      debtLoanType: 'debt',
+      debtLoanStatus: 'unpaid',
+    }).returning();
+    const mcpDelDl = await callTool(server, 'manage_debt_loan', {
+      action: 'delete',
+      debtLoanId: freshDl.debtLoanId,
+    });
+    const mcpDelDlData = JSON.parse(mcpDelDl.content[0].text);
+    assert.equal(mcpDelDlData.success, true);
   });
 });

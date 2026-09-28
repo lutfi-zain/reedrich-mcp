@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { drizzle } from "drizzle-orm/d1";
 import * as schema from "../db/schema";
-import { listTransactions, recordTransaction, updateTransaction, deleteTransaction } from "../services/transaction";
+import { listTransactions, getTransactionById, recordTransaction, updateTransaction, deleteTransaction } from "../services/transaction";
 import type { AppEnv } from "../index";
 
 const transactions = new Hono<AppEnv>();
@@ -29,6 +29,14 @@ transactions.get("/", async (c) => {
     offset: q.offset !== undefined ? Number(q.offset) : undefined,
   });
 
+  return c.json(result, 200);
+});
+
+transactions.get("/:transactionId", async (c) => {
+  const userId = c.get("userId");
+  const db = drizzle(c.env.DB, { schema });
+  const transactionId = c.req.param("transactionId");
+  const result = await getTransactionById(db, userId!, transactionId);
   return c.json(result, 200);
 });
 
