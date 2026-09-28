@@ -55,7 +55,7 @@ app.use('*', async (c, next) => {
     c.header('Access-Control-Allow-Methods', 'GET, OPTIONS');
     c.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   } else {
-    c.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    c.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
     c.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-API-Key, mcp-api-key, mcp-session-id, MCP-Protocol-Version, X-Request-ID');
   }
   c.header('Access-Control-Expose-Headers', 'X-Request-ID, X-Response-Time');
