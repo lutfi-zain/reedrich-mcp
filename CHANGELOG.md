@@ -4,6 +4,23 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/): `Added`, `Changed`,
 `Deprecated`, `Removed`, `Fixed`, `Security` sections per release.
 
+## [1.10.0] — 2026-09-28
+
+### Added
+- Comprehensive CRUD Lifecycle & Entity Parity:
+  - **Single-Resource Retrieval (`GET /:id`)**: Implemented direct item lookup across all 7 domain resources (`GET /api/v1/wallets/:id`, `GET /api/v1/categories/:id`, `GET /api/v1/budgets/:id`, `GET /api/v1/transactions/:id`, `GET /api/v1/debts-loans/:id`, `GET /api/v1/goals/:id`, `GET /api/v1/recurring-templates/:id`).
+  - **Entity Mutation (`PATCH`)**:
+    * `PATCH /api/v1/categories/:id` & `manage_category(action: "update")` to update category name and icon (with system Adjustment category protection).
+    * `PATCH /api/v1/budgets/:id` & `manage_budget(action: "update")` to update budget amount, period dates, name, or category with live utilization recalculation.
+    * `PATCH /api/v1/me` to update authenticated user's first name, last name, or WhatsApp contact number.
+  - **Entity Deletion (`DELETE`) & Financial Integrity Guards**:
+    * `DELETE /api/v1/wallets/:id` & `manage_wallet(action: "delete")`: Protected by balance zero-guard (`walletBalance == 0`) and active link guards (rejects deletion if linked to in-progress goals or active recurring templates).
+    * `DELETE /api/v1/categories/:id` & `manage_category(action: "delete")`: Protected system category guard (cannot delete internal "Adjustment" category; existing transactions/budgets retain history with category set to null).
+    * `DELETE /api/v1/budgets/:id` & `manage_budget(action: "delete")`: Deletes budget definitions cleanly without transaction data loss.
+    * `DELETE /api/v1/debts-loans/:id` & `manage_debt_loan(action: "delete")`: Deletes liability or receivable records.
+  - **Documentation**: Documented all 14 new endpoints in OpenAPI specification (`src/docs/openapi.ts`), updated LLM manifest (`src/docs/llms.ts`), and updated `README.md`.
+  - **Tests**: Added full unit test suite `Comprehensive CRUD Lifecycle Parity Suite` in `tests/mcp.test.ts` and E2E assertions in `tests/integration.test.ts`.
+
 ## [1.9.0] — 2026-09-25
 
 ### Added

@@ -46,6 +46,15 @@ export async function listGoals(
   }
   return withProgress;
 }
+export async function getGoalById(
+  db: DrizzleD1Database<typeof schema>,
+  userId: string,
+  goalId: unknown,
+  fetchFn?: typeof fetch
+) {
+  const goal = await requireOwnedGoal(db, userId, goalId);
+  return attachDerivedProgress(db, goal, fetchFn);
+}
 
 export interface GoalWalletBreakdownEntry {
   walletId: string;

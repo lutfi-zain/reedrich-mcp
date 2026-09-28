@@ -624,6 +624,42 @@ export function generateOpenApiSpec(origin: string): Record<string, unknown> {
             },
           },
         },
+        patch: {
+          tags: ["User Profile"],
+          summary: "Update Current User Profile",
+          description: "Updates the authenticated user's first name, last name, or WhatsApp contact number. Email is immutable.",
+          operationId: "updateCurrentUserProfile",
+          security: [{ bearerAuth: [] }, { apiKeyHeader: [] }],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    firstName: { type: "string", description: "First name (1-100 chars)" },
+                    lastName: { type: "string", description: "Last name (1-100 chars)" },
+                    whatsappNumber: { type: "string", description: "WhatsApp number with country code (e.g. +6281234567890)" },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            "200": {
+              description: "Updated user profile",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/UserProfile" } } },
+            },
+            "400": {
+              description: "Validation error",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+            "401": {
+              description: "Authentication required",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+          },
+        },
       },
       "/api/v1/user/profile": {
         get: {
@@ -814,6 +850,30 @@ export function generateOpenApiSpec(origin: string): Record<string, unknown> {
         },
       },
       "/api/v1/wallets/{walletId}": {
+        get: {
+          tags: ["Wallets"],
+          summary: "Get Wallet by ID",
+          description: "Returns an individual wallet belonging to the authenticated user with latest transaction metadata.",
+          operationId: "getWalletById",
+          security: [{ bearerAuth: [] }, { apiKeyHeader: [] }],
+          parameters: [
+            { name: "walletId", in: "path", required: true, schema: { type: "string", format: "uuid" } },
+          ],
+          responses: {
+            "200": {
+              description: "Wallet details",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/Wallet" } } },
+            },
+            "404": {
+              description: "Wallet not found",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+            "401": {
+              description: "Authentication required",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+          },
+        },
         patch: {
           tags: ["Wallets"],
           summary: "Update User Wallet",
@@ -852,6 +912,46 @@ export function generateOpenApiSpec(origin: string): Record<string, unknown> {
             },
             "400": {
               description: "Validation error",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+            "401": {
+              description: "Authentication required",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+          },
+        },
+        delete: {
+          tags: ["Wallets"],
+          summary: "Delete User Wallet",
+          description: "Permanently deletes an empty wallet. Requires balance to be 0 and no active goal or recurring template links.",
+          operationId: "deleteWallet",
+          security: [{ bearerAuth: [] }, { apiKeyHeader: [] }],
+          parameters: [
+            { name: "walletId", in: "path", required: true, schema: { type: "string", format: "uuid" } },
+          ],
+          responses: {
+            "200": {
+              description: "Wallet deleted successfully",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      success: { type: "boolean", example: true },
+                      message: { type: "string" },
+                      deletedWalletId: { type: "string", format: "uuid" },
+                    },
+                    required: ["success", "message", "deletedWalletId"],
+                  },
+                },
+              },
+            },
+            "404": {
+              description: "Wallet not found",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+            "400": {
+              description: "Validation error (non-zero balance or active links)",
               content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
             },
             "401": {
@@ -940,6 +1040,114 @@ export function generateOpenApiSpec(origin: string): Record<string, unknown> {
           },
         },
       },
+      "/api/v1/categories/{categoryId}": {
+        get: {
+          tags: ["Categories"],
+          summary: "Get Category by ID",
+          description: "Returns an individual category belonging to the authenticated user.",
+          operationId: "getCategoryById",
+          security: [{ bearerAuth: [] }, { apiKeyHeader: [] }],
+          parameters: [
+            { name: "categoryId", in: "path", required: true, schema: { type: "string", format: "uuid" } },
+          ],
+          responses: {
+            "200": {
+              description: "Category details",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/Category" } } },
+            },
+            "404": {
+              description: "Category not found",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+            "401": {
+              description: "Authentication required",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+          },
+        },
+        patch: {
+          tags: ["Categories"],
+          summary: "Update Category",
+          description: "Updates category name or icon. System category 'Adjustment' cannot be renamed.",
+          operationId: "updateCategory",
+          security: [{ bearerAuth: [] }, { apiKeyHeader: [] }],
+          parameters: [
+            { name: "categoryId", in: "path", required: true, schema: { type: "string", format: "uuid" } },
+          ],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    name: { type: "string", description: "New category name (1-100 chars)" },
+                    icon: { type: "string", description: "Emoji icon representation (max 10 chars)", nullable: true },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            "200": {
+              description: "Category updated successfully",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/Category" } } },
+            },
+            "400": {
+              description: "Validation error or renaming Adjustment blocked",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+            "404": {
+              description: "Category not found",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+            "401": {
+              description: "Authentication required",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+          },
+        },
+        delete: {
+          tags: ["Categories"],
+          summary: "Delete Category",
+          description: "Permanently deletes a custom category. System category 'Adjustment' is protected and cannot be deleted.",
+          operationId: "deleteCategory",
+          security: [{ bearerAuth: [] }, { apiKeyHeader: [] }],
+          parameters: [
+            { name: "categoryId", in: "path", required: true, schema: { type: "string", format: "uuid" } },
+          ],
+          responses: {
+            "200": {
+              description: "Category deleted successfully",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      success: { type: "boolean", example: true },
+                      message: { type: "string" },
+                      deletedCategoryId: { type: "string", format: "uuid" },
+                    },
+                    required: ["success", "message", "deletedCategoryId"],
+                  },
+                },
+              },
+            },
+            "400": {
+              description: "Validation error (attempting to delete Adjustment)",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+            "404": {
+              description: "Category not found",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+            "401": {
+              description: "Authentication required",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+          },
+        },
+      },
       "/api/v1/budgets": {
         get: {
           tags: ["Budgets"],
@@ -993,6 +1201,113 @@ export function generateOpenApiSpec(origin: string): Record<string, unknown> {
             },
             "400": {
               description: "Validation error",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+            "401": {
+              description: "Authentication required",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+          },
+        },
+      },
+      "/api/v1/budgets/{budgetId}": {
+        get: {
+          tags: ["Budgets"],
+          summary: "Get Budget by ID",
+          description: "Returns an individual budget with live spending utilization, remaining balance, and percent used.",
+          operationId: "getBudgetById",
+          security: [{ bearerAuth: [] }, { apiKeyHeader: [] }],
+          parameters: [
+            { name: "budgetId", in: "path", required: true, schema: { type: "string", format: "uuid" } },
+          ],
+          responses: {
+            "200": {
+              description: "Budget details with live metrics",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/Budget" } } },
+            },
+            "404": {
+              description: "Budget not found",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+            "401": {
+              description: "Authentication required",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+          },
+        },
+        patch: {
+          tags: ["Budgets"],
+          summary: "Update Budget",
+          description: "Updates budget title, target amount, start/end dates, or linked category.",
+          operationId: "updateBudget",
+          security: [{ bearerAuth: [] }, { apiKeyHeader: [] }],
+          parameters: [
+            { name: "budgetId", in: "path", required: true, schema: { type: "string", format: "uuid" } },
+          ],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    name: { type: "string", description: "Budget title" },
+                    amount: { type: "number", minimum: 0.01, description: "Budget limit amount" },
+                    periodStart: { type: "string", format: "date-time" },
+                    periodEnd: { type: "string", format: "date-time" },
+                    categoryId: { type: "string", format: "uuid", nullable: true },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            "200": {
+              description: "Budget updated successfully",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/Budget" } } },
+            },
+            "400": {
+              description: "Validation error",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+            "404": {
+              description: "Budget not found",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+            "401": {
+              description: "Authentication required",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+          },
+        },
+        delete: {
+          tags: ["Budgets"],
+          summary: "Delete Budget",
+          description: "Permanently deletes a budget limit. Associated transactions retain their records with category unlinked.",
+          operationId: "deleteBudget",
+          security: [{ bearerAuth: [] }, { apiKeyHeader: [] }],
+          parameters: [
+            { name: "budgetId", in: "path", required: true, schema: { type: "string", format: "uuid" } },
+          ],
+          responses: {
+            "200": {
+              description: "Budget deleted successfully",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      success: { type: "boolean", example: true },
+                      message: { type: "string" },
+                      deletedBudgetId: { type: "string", format: "uuid" },
+                    },
+                    required: ["success", "message", "deletedBudgetId"],
+                  },
+                },
+              },
+            },
+            "404": {
+              description: "Budget not found",
               content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
             },
             "401": {
@@ -1086,6 +1401,30 @@ export function generateOpenApiSpec(origin: string): Record<string, unknown> {
         },
       },
       "/api/v1/transactions/{transactionId}": {
+        get: {
+          tags: ["Transactions"],
+          summary: "Get Transaction by ID",
+          description: "Returns an individual transaction record for the authenticated user.",
+          operationId: "getTransactionById",
+          security: [{ bearerAuth: [] }, { apiKeyHeader: [] }],
+          parameters: [
+            { name: "transactionId", in: "path", required: true, schema: { type: "string", format: "uuid" } },
+          ],
+          responses: {
+            "200": {
+              description: "Transaction details",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/Transaction" } } },
+            },
+            "404": {
+              description: "Transaction not found",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+            "401": {
+              description: "Authentication required",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+          },
+        },
         patch: {
           tags: ["Transactions"],
           summary: "Update Transaction",
@@ -1286,6 +1625,30 @@ export function generateOpenApiSpec(origin: string): Record<string, unknown> {
         },
       },
       "/api/v1/debts-loans/{debtLoanId}": {
+        get: {
+          tags: ["Debts & Loans"],
+          summary: "Get Debt or Loan by ID",
+          description: "Returns an individual debt or loan record for the authenticated user.",
+          operationId: "getDebtLoanById",
+          security: [{ bearerAuth: [] }, { apiKeyHeader: [] }],
+          parameters: [
+            { name: "debtLoanId", in: "path", required: true, schema: { type: "string", format: "uuid" } },
+          ],
+          responses: {
+            "200": {
+              description: "Debt or loan details",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/DebtLoan" } } },
+            },
+            "404": {
+              description: "Record not found",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+            "401": {
+              description: "Authentication required",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+          },
+        },
         patch: {
           tags: ["Debts & Loans"],
           summary: "Update Debt or Loan",
@@ -1321,6 +1684,42 @@ export function generateOpenApiSpec(origin: string): Record<string, unknown> {
             },
             "400": {
               description: "Validation error",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+            "401": {
+              description: "Authentication required",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+          },
+        },
+        delete: {
+          tags: ["Debts & Loans"],
+          summary: "Delete Debt or Loan",
+          description: "Permanently deletes an individual debt or loan record.",
+          operationId: "deleteDebtLoan",
+          security: [{ bearerAuth: [] }, { apiKeyHeader: [] }],
+          parameters: [
+            { name: "debtLoanId", in: "path", required: true, schema: { type: "string", format: "uuid" } },
+          ],
+          responses: {
+            "200": {
+              description: "Record deleted successfully",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      success: { type: "boolean", example: true },
+                      message: { type: "string" },
+                      deletedDebtLoanId: { type: "string", format: "uuid" },
+                    },
+                    required: ["success", "message", "deletedDebtLoanId"],
+                  },
+                },
+              },
+            },
+            "404": {
+              description: "Record not found",
               content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
             },
             "401": {
@@ -1441,6 +1840,30 @@ export function generateOpenApiSpec(origin: string): Record<string, unknown> {
         },
       },
       "/api/v1/goals/{goalId}": {
+        get: {
+          tags: ["Goals"],
+          summary: "Get Financial Goal by ID",
+          description: "Returns an individual goal with dynamic progress and pacing metrics.",
+          operationId: "getGoalById",
+          security: [{ bearerAuth: [] }, { apiKeyHeader: [] }],
+          parameters: [
+            { name: "goalId", in: "path", required: true, schema: { type: "string", format: "uuid" } },
+          ],
+          responses: {
+            "200": {
+              description: "Goal details",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/Goal" } } },
+            },
+            "404": {
+              description: "Goal not found",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+            "401": {
+              description: "Authentication required",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+          },
+        },
         patch: {
           tags: ["Goals"],
           summary: "Update Financial Goal",
@@ -1690,6 +2113,30 @@ export function generateOpenApiSpec(origin: string): Record<string, unknown> {
         },
       },
       "/api/v1/recurring-templates/{templateId}": {
+        get: {
+          tags: ["Recurring Templates"],
+          summary: "Get Recurring Template by ID",
+          description: "Returns an individual recurring transaction template for the authenticated user.",
+          operationId: "getRecurringTemplateById",
+          security: [{ bearerAuth: [] }, { apiKeyHeader: [] }],
+          parameters: [
+            { name: "templateId", in: "path", required: true, schema: { type: "string", format: "uuid" } },
+          ],
+          responses: {
+            "200": {
+              description: "Template details",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/RecurringTemplate" } } },
+            },
+            "404": {
+              description: "Template not found",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+            "401": {
+              description: "Authentication required",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+          },
+        },
         patch: {
           tags: ["Recurring Templates"],
           summary: "Update Recurring Template",

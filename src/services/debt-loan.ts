@@ -41,6 +41,31 @@ export async function listDebtsLoans(
     .where(and(...conditions))
     .orderBy(desc(schema.debtsLoans.debtLoanCreatedAt));
 }
+export async function getDebtLoanById(
+  db: DrizzleD1Database<typeof schema>,
+  userId: string,
+  debtLoanId: unknown
+) {
+  if (!isValidUUID(debtLoanId)) {
+    validationError("Validation Error: Valid string 'debtLoanId' (UUID) is required", "debtLoanId");
+  }
+  const cleanId = (debtLoanId as string).trim();
+  const dl = await db
+    .select()
+    .from(schema.debtsLoans)
+    .where(
+      and(
+        eq(schema.debtsLoans.debtLoanId, cleanId),
+        eq(schema.debtsLoans.debtLoanUserId, userId)
+      )
+    )
+    .get();
+
+  if (!dl) {
+    notFound("Debt/Loan", cleanId);
+  }
+  return dl;
+}
 
 export interface CreateDebtLoanParams {
   personName: unknown;
@@ -401,4 +426,27 @@ export async function updateDebtLoan(
     .returning();
 
   return updated[0];
+}
+export async function deleteDebtLoan(
+  db: DrizzleD1Database<typeof schema>,
+  userId: string,
+  debtLoanId: unknown
+) {
+  await getDebtLoanById(db, userId, debtLoanId);
+  const cleanId = (debtLoanId as string).trim();
+
+  await db
+    .delete(schema.debtsLoans)
+    .where(
+      and(
+        eq(schema.debtsLoans.debtLoanId, cleanId),
+        eq(schema.debtsLoans.debtLoanUserId, userId)
+      )
+    );
+
+  return {
+    success: true,
+    message: `Debt/Loan (${cleanId}) successfully deleted.`,
+    deletedDebtLoanId: cleanId,
+  };
 }

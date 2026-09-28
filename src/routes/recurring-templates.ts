@@ -3,6 +3,7 @@ import { drizzle } from "drizzle-orm/d1";
 import * as schema from "../db/schema";
 import {
   listRecurringTemplates,
+  getRecurringTemplateById,
   createRecurringTemplate,
   applyRecurringTemplate,
   updateRecurringTemplate,
@@ -22,6 +23,14 @@ recurringTemplates.get("/", async (c) => {
       : undefined;
 
   const result = await listRecurringTemplates(db, userId!, isActive);
+  return c.json(result, 200);
+});
+
+recurringTemplates.get("/:templateId", async (c) => {
+  const userId = c.get("userId");
+  const db = drizzle(c.env.DB, { schema });
+  const templateId = c.req.param("templateId");
+  const result = await getRecurringTemplateById(db, userId!, templateId);
   return c.json(result, 200);
 });
 

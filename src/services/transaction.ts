@@ -181,6 +181,31 @@ export async function listTransactions(
     .limit(safeLimit)
     .offset(safeOffset);
 }
+export async function getTransactionById(
+  db: DrizzleD1Database<typeof schema>,
+  userId: string,
+  transactionId: unknown
+) {
+  if (!isValidUUID(transactionId)) {
+    validationError("Validation Error: Valid string 'transactionId' (UUID) is required", "transactionId");
+  }
+  const cleanId = (transactionId as string).trim();
+  const tx = await db
+    .select()
+    .from(schema.transactions)
+    .where(
+      and(
+        eq(schema.transactions.transactionId, cleanId),
+        eq(schema.transactions.transactionUserId, userId)
+      )
+    )
+    .get();
+
+  if (!tx) {
+    notFound("Transaction", cleanId);
+  }
+  return tx;
+}
 
 export interface RecordTransactionParams {
   walletId: unknown;

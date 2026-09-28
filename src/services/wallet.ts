@@ -164,6 +164,42 @@ export async function listWallets(
     lastTransaction: lastTxMap.get(w.walletId) ?? null,
   }));
 }
+export async function getWalletById(
+  db: DrizzleD1Database<typeof schema>,
+  userId: string,
+  walletId: unknown,
+  includeLastTransaction: boolean = true
+): Promise<WalletWithLastTransaction> {
+  if (!isValidUUID(walletId)) {
+    validationError("Validation Error: Valid string 'walletId' (UUID) is required", "walletId");
+  }
+  const cleanId = (walletId as string).trim();
+  const wallet = await db
+    .select()
+    .from(schema.wallets)
+    .where(
+      and(
+        eq(schema.wallets.walletId, cleanId),
+        eq(schema.wallets.walletUserId, userId)
+      )
+    )
+    .get();
+
+  if (!wallet) {
+    notFound("Wallet", cleanId);
+  }
+
+  let lastTx = null;
+  if (includeLastTransaction) {
+    const lastTxMap = await fetchLatestTransactionsByWallet(db, userId);
+    lastTx = lastTxMap.get(cleanId) ?? null;
+  }
+
+  return {
+    ...wallet,
+    lastTransaction: lastTx,
+  };
+}
 
 export async function createWallet(
   db: DrizzleD1Database<typeof schema>,
@@ -363,4 +399,75 @@ export async function updateWallet(
     .returning();
 
   return result[0];
+}
+export async function deleteWallet(
+  db: DrizzleD1Database<typeof schema>,
+  userId: string,
+  walletId: unknown
+) {
+  const existing = await getWalletById(db, userId, walletId);
+
+  // 1. Balance Zero Guard
+  if (Math.abs(existing.walletBalance) > 0.001) {
+    validationError(
+      "Validation Error: Wallet balance must be 0 before deletion. Please transfer or adjust remaining funds first.",
+      "walletBalance"
+    );
+  }
+
+  // 2. Active Goal Link Guard
+  const linkedGoal = await db
+    .select({ goalName: schema.goals.goalName })
+    .from(schema.goalWallets)
+    .innerJoin(schema.goals, eq(schema.goalWallets.goalId, schema.goals.goalId))
+    .where(
+      and(
+        eq(schema.goalWallets.walletId, existing.walletId),
+        eq(schema.goals.goalUserId, userId),
+        eq(schema.goals.goalStatus, "in_progress")
+      )
+    )
+    .get();
+
+  if (linkedGoal) {
+    validationError(
+      `Validation Error: Cannot delete wallet linked to active goal '${linkedGoal.goalName}'. Unlink the wallet from goals first.`,
+      "walletId"
+    );
+  }
+
+  // 3. Active Recurring Template Guard
+  const linkedTemplate = await db
+    .select({ templateName: schema.recurringTemplates.templateName })
+    .from(schema.recurringTemplates)
+    .where(
+      and(
+        eq(schema.recurringTemplates.templateWalletId, existing.walletId),
+        eq(schema.recurringTemplates.templateUserId, userId),
+        eq(schema.recurringTemplates.templateIsActive, 1)
+      )
+    )
+    .get();
+
+  if (linkedTemplate) {
+    validationError(
+      `Validation Error: Cannot delete wallet linked to active recurring template '${linkedTemplate.templateName}'. Deactivate or reassign templates first.`,
+      "walletId"
+    );
+  }
+
+  await db
+    .delete(schema.wallets)
+    .where(
+      and(
+        eq(schema.wallets.walletId, existing.walletId),
+        eq(schema.wallets.walletUserId, userId)
+      )
+    );
+
+  return {
+    success: true,
+    message: `Wallet '${existing.walletName}' (${existing.walletId}) successfully deleted.`,
+    deletedWalletId: existing.walletId,
+  };
 }
