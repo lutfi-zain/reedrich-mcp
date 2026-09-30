@@ -1,6 +1,6 @@
 import { DrizzleD1Database } from "drizzle-orm/d1";
 import * as schema from "../db/schema";
-import { eq, and, desc, gte, lte, sql, inArray } from "drizzle-orm";
+import { eq, and, or, desc, gte, lte, sql, inArray } from "drizzle-orm";
 import {
   currentIsoTimestamp,
   normalizeToIsoTimestamp,
@@ -130,17 +130,35 @@ export async function listTransactions(
   const conditions = [eq(schema.transactions.transactionUserId, userId)];
 
   const walletIds = parseMultiIdFilter(walletId);
-  if (walletIds.length === 1) {
-    conditions.push(eq(schema.transactions.transactionWalletId, walletIds[0]));
-  } else if (walletIds.length > 1) {
-    conditions.push(inArray(schema.transactions.transactionWalletId, walletIds));
-  }
-
   const targetWalletIds = parseMultiIdFilter(targetWalletId);
-  if (targetWalletIds.length === 1) {
-    conditions.push(eq(schema.transactions.transactionTargetWalletId, targetWalletIds[0]));
-  } else if (targetWalletIds.length > 1) {
-    conditions.push(inArray(schema.transactions.transactionTargetWalletId, targetWalletIds));
+
+  const sourceCondition =
+    walletIds.length === 1
+      ? eq(schema.transactions.transactionWalletId, walletIds[0])
+      : walletIds.length > 1
+        ? inArray(schema.transactions.transactionWalletId, walletIds)
+        : undefined;
+
+  const walletStatementDestinationCondition =
+    walletIds.length === 1
+      ? eq(schema.transactions.transactionTargetWalletId, walletIds[0])
+      : walletIds.length > 1
+        ? inArray(schema.transactions.transactionTargetWalletId, walletIds)
+        : undefined;
+
+  const explicitDestinationCondition =
+    targetWalletIds.length === 1
+      ? eq(schema.transactions.transactionTargetWalletId, targetWalletIds[0])
+      : targetWalletIds.length > 1
+        ? inArray(schema.transactions.transactionTargetWalletId, targetWalletIds)
+        : undefined;
+
+  if (sourceCondition && explicitDestinationCondition) {
+    conditions.push(and(sourceCondition, explicitDestinationCondition)!);
+  } else if (sourceCondition && walletStatementDestinationCondition) {
+    conditions.push(or(sourceCondition, walletStatementDestinationCondition)!);
+  } else if (explicitDestinationCondition) {
+    conditions.push(explicitDestinationCondition);
   }
 
   const categoryIds = parseMultiIdFilter(categoryId);
