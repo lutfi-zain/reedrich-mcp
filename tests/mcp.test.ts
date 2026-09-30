@@ -5564,6 +5564,70 @@ describe('Frontend Query Enhancements & Horizon Projections Suite', () => {
     assert.equal(allItems.length, 2);
   });
 
+  it('4b. Client-controlled ordering via orderBy and direction', async () => {
+    const { env, token, w1, c1, server } = await setupQueryUser();
+
+    for (const seed of [
+      { amount: 50000, description: 'Zebra', transactionDate: '2026-09-03' },
+      { amount: 10000, description: 'Apple', transactionDate: '2026-09-01' },
+      { amount: 30000, description: 'Mango', transactionDate: '2026-09-02' },
+    ]) {
+      const res = await app.request('https://example.workers.dev/api/v1/transactions', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ walletId: w1.walletId, categoryId: c1.categoryId, ...seed }),
+      }, env);
+      assert.equal(res.status, 201);
+    }
+
+    const ascRes = await app.request('https://example.workers.dev/api/v1/transactions?orderBy=amount&direction=asc', {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal(ascRes.status, 200);
+    const ascItems = await ascRes.json<any>();
+    assert.deepEqual(ascItems.map((t: any) => t.transactionAmount), [10000, 30000, 50000]);
+
+    const descRes = await app.request('https://example.workers.dev/api/v1/transactions?orderBy=amount&direction=desc', {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    const descItems = await descRes.json<any>();
+    assert.deepEqual(descItems.map((t: any) => t.transactionAmount), [50000, 30000, 10000]);
+
+    const dateAscRes = await app.request('https://example.workers.dev/api/v1/transactions?orderBy=date&direction=asc', {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    const dateAscItems = await dateAscRes.json<any>();
+    assert.deepEqual(dateAscItems.map((t: any) => t.transactionAmount), [10000, 30000, 50000]);
+
+    const descNameRes = await app.request('https://example.workers.dev/api/v1/transactions?orderBy=description&direction=asc', {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    const descNameItems = await descNameRes.json<any>();
+    assert.deepEqual(descNameItems.map((t: any) => t.transactionDescription), ['Apple', 'Mango', 'Zebra']);
+
+    const defaultRes = await app.request('https://example.workers.dev/api/v1/transactions', {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    const defaultItems = await defaultRes.json<any>();
+    assert.deepEqual(defaultItems.map((t: any) => t.transactionAmount), [50000, 30000, 10000]);
+
+    const badFieldRes = await app.request('https://example.workers.dev/api/v1/transactions?orderBy=walletBalance', {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal(badFieldRes.status, 400);
+    assert.equal((await badFieldRes.json<any>()).error, 'VALIDATION');
+
+    const badDirRes = await app.request('https://example.workers.dev/api/v1/transactions?orderBy=amount&direction=sideways', {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal(badDirRes.status, 400);
+    assert.equal((await badDirRes.json<any>()).error, 'VALIDATION');
+
+    const toolRes = await callTool(server, 'list_transactions', { orderBy: 'amount', direction: 'asc', envelope: true });
+    const toolData = JSON.parse(toolRes.content[0].text);
+    assert.deepEqual(toolData.items.map((t: any) => t.transactionAmount), [10000, 30000, 50000]);
+  });
+
   it('5. GET /api/v1/analytics/horizon simulates multi-month cashflow and roll-forward balances', async () => {
     const { db, env, userId, token, w1, w2, c1 } = await setupQueryUser();
 

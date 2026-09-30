@@ -1498,6 +1498,8 @@ export function generateOpenApiSpec(origin: string): Record<string, unknown> {
             { name: "startDate", in: "query", schema: { type: "string" }, description: "Transactions on or after this ISO date" },
             { name: "endDate", in: "query", schema: { type: "string" }, description: "Transactions on or before this ISO date" },
             { name: "envelope", in: "query", schema: { type: "boolean", default: false }, description: "When true, wraps response in a structured envelope containing items and pagination metadata" },
+            { name: "orderBy", in: "query", schema: { type: "string", enum: ["date", "amount", "createdAt", "description"], default: "date" }, description: "Sort field for results (default 'date')" },
+            { name: "direction", in: "query", schema: { type: "string", enum: ["asc", "desc"], default: "desc" }, description: "Sort direction applied to orderBy (default 'desc')" },
             { name: "limit", in: "query", schema: { type: "integer", default: 50, maximum: 200 }, description: "Max results to return" },
             { name: "offset", in: "query", schema: { type: "integer", default: 0 }, description: "Pagination offset" },
           ],

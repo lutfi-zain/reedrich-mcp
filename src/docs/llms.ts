@@ -124,9 +124,9 @@ All REST endpoints return JSON with standard HTTP status codes. Common headers:
 
 ### 5. Transactions & Transfers
 - **\`GET /api/v1/transactions\`**
-  - Query Params: \`q\` / \`search\` (keyword search), \`status\` (realized|planned|all), \`walletId\` (single or comma-separated UUIDs), \`targetWalletId\`, \`categoryId\`, \`budgetId\`, \`type\`, \`isPlanned\`, \`startDate\`, \`endDate\`, \`envelope\` (boolean), \`limit\`, \`offset\`.
+  - Query Params: \`q\` / \`search\` (keyword search), \`status\` (realized|planned|all), \`walletId\` (single or comma-separated UUIDs), \`targetWalletId\`, \`categoryId\`, \`budgetId\`, \`type\`, \`isPlanned\`, \`startDate\`, \`endDate\`, \`envelope\` (boolean), \`orderBy\` (date|amount|createdAt|description, default date), \`direction\` (asc|desc, default desc), \`limit\`, \`offset\`.
   - Response Headers: \`X-Total-Count\`, \`X-Limit\`, \`X-Offset\`, \`X-Has-Next-Page\`.
-  - Returns: Array of transactions (or structured \`{ items, pagination }\` envelope if \`envelope=true\`).
+  - Returns: Array of transactions (or structured \`{ items, pagination }\` envelope if \`envelope=true\`), ordered by \`orderBy\`/\`direction\` with deterministic \`createdAt DESC\` tiebreaker.
 - **\`GET /api/v1/transactions/:transactionId\`** *(HTTP 200)*
   - Returns: Single transaction by UUID.
 - **\`POST /api/v1/transactions\`** *(HTTP 201)*

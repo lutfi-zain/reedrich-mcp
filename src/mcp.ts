@@ -752,6 +752,8 @@ Authentication Note: You are already authenticated via OAuth / Bearer token. Nev
             isPlanned: { type: "boolean", description: "Legacy planned filter (true for planned, false for realized)" },
             startDate: { type: "string", description: "Start ISO-8601 date/timestamp filter" },
             endDate: { type: "string", description: "End ISO-8601 date/timestamp filter" },
+            orderBy: { type: "string", enum: ["date", "amount", "createdAt", "description"], description: "Sort field (default 'date')" },
+            direction: { type: "string", enum: ["asc", "desc"], description: "Sort direction (default 'desc')" },
             limit: { type: "integer", default: 50, maximum: 200 },
             offset: { type: "integer", default: 0, minimum: 0 },
             apiKey: { type: "string", description: "Optional: Your persistent API Key (fp_live_...) if not set in headers" }

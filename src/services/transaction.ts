@@ -1,6 +1,6 @@
 import { DrizzleD1Database } from "drizzle-orm/d1";
 import * as schema from "../db/schema";
-import { eq, and, or, desc, gte, lte, sql, inArray } from "drizzle-orm";
+import { eq, and, or, asc, desc, gte, lte, sql, inArray } from "drizzle-orm";
 import {
   currentIsoTimestamp,
   normalizeToIsoTimestamp,
@@ -104,6 +104,8 @@ export interface ListTransactionsFilters {
   endDate?: unknown;
   limit?: unknown;
   offset?: unknown;
+  orderBy?: unknown;
+  direction?: unknown;
 }
 
 export async function listTransactions(
@@ -125,6 +127,8 @@ export async function listTransactions(
     endDate,
     limit = 50,
     offset = 0,
+    orderBy,
+    direction,
   } = filters;
 
   const conditions = [eq(schema.transactions.transactionUserId, userId)];
@@ -234,15 +238,58 @@ export async function listTransactions(
   const safeLimit = Math.min(Math.max(1, Number(limit) || 50), 200);
   const safeOffset = Math.max(0, Number(offset) || 0);
 
+  const sortColumns = {
+    date: schema.transactions.transactionDate,
+    amount: schema.transactions.transactionAmount,
+    createdat: schema.transactions.transactionCreatedAt,
+    description: schema.transactions.transactionDescription,
+  } as const;
+
+  let sortKey: keyof typeof sortColumns = "date";
+  if (orderBy !== undefined) {
+    if (typeof orderBy !== "string") {
+      validationError(
+        "Validation Error: 'orderBy' must be one of 'date', 'amount', 'createdAt', 'description'",
+        "orderBy"
+      );
+    }
+    const cleanOrderBy = orderBy.trim().toLowerCase();
+    if (!(cleanOrderBy in sortColumns)) {
+      validationError(
+        "Validation Error: 'orderBy' must be one of 'date', 'amount', 'createdAt', 'description'",
+        "orderBy"
+      );
+    }
+    sortKey = cleanOrderBy as keyof typeof sortColumns;
+  }
+
+  let sortDir: "asc" | "desc" = "desc";
+  if (direction !== undefined) {
+    if (typeof direction !== "string") {
+      validationError(
+        "Validation Error: 'direction' must be either 'asc' or 'desc'",
+        "direction"
+      );
+    }
+    const cleanDirection = direction.trim().toLowerCase();
+    if (cleanDirection !== "asc" && cleanDirection !== "desc") {
+      validationError(
+        "Validation Error: 'direction' must be either 'asc' or 'desc'",
+        "direction"
+      );
+    }
+    sortDir = cleanDirection;
+  }
+
+  const primarySort =
+    sortDir === "asc" ? asc(sortColumns[sortKey]) : desc(sortColumns[sortKey]);
+
   const [items, countResult] = await Promise.all([
     db
       .select()
       .from(schema.transactions)
       .where(and(...conditions))
-      .orderBy(
-        desc(schema.transactions.transactionDate),
-        desc(schema.transactions.transactionCreatedAt)
-      )
+      .orderBy(primarySort, desc(schema.transactions.transactionCreatedAt))
       .limit(safeLimit)
       .offset(safeOffset),
     db

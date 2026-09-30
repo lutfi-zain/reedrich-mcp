@@ -28,6 +28,8 @@ transactions.get("/", async (c) => {
     isPlanned: isPlannedParam,
     startDate: q.startDate,
     endDate: q.endDate,
+    orderBy: q.orderBy,
+    direction: q.direction,
     limit: q.limit !== undefined ? Number(q.limit) : undefined,
     offset: q.offset !== undefined ? Number(q.offset) : undefined,
   });
