@@ -4,6 +4,13 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/): `Added`, `Changed`,
 `Deprecated`, `Removed`, `Fixed`, `Security` sections per release.
 
+## [1.13.3] — 2026-09-30
+
+### Added
+- Client-Controlled Transaction Ordering:
+  - `GET /api/v1/transactions` and MCP `list_transactions` accept `orderBy` (`date`|`amount`|`createdAt`|`description`, default `date`) and `direction` (`asc`|`desc`, default `desc`).
+  - Deterministic `transactionCreatedAt DESC` tiebreaker keeps `limit`/`offset` pagination stable; invalid values rejected with `VALIDATION` (HTTP 400).
+
 ## [1.13.2] — 2026-09-30
 
 ### Changed
