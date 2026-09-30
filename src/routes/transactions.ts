@@ -22,6 +22,9 @@ transactions.get("/", async (c) => {
     categoryId: q.categoryId,
     budgetId: q.budgetId,
     type: q.type,
+    status: q.status,
+    q: q.q,
+    search: q.search,
     isPlanned: isPlannedParam,
     startDate: q.startDate,
     endDate: q.endDate,
@@ -29,9 +32,14 @@ transactions.get("/", async (c) => {
     offset: q.offset !== undefined ? Number(q.offset) : undefined,
   });
 
-  return c.json(result, 200);
-});
+  c.header("X-Total-Count", String(result.pagination.total));
+  c.header("X-Limit", String(result.pagination.limit));
+  c.header("X-Offset", String(result.pagination.offset));
+  c.header("X-Has-Next-Page", result.pagination.hasNext ? "true" : "false");
 
+  const wantsEnvelope = q.envelope === "true" || q.envelope === "1";
+  return c.json(wantsEnvelope ? result : result.items, 200);
+});
 transactions.get("/:transactionId", async (c) => {
   const userId = c.get("userId");
   const db = drizzle(c.env.DB, { schema });

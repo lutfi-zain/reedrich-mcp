@@ -4,6 +4,23 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/): `Added`, `Changed`,
 `Deprecated`, `Removed`, `Fixed`, `Security` sections per release.
 
+## [1.13.0] — 2026-09-30
+
+### Added
+- Enhanced Transaction Query Engine & Pagination Metadata:
+  - **Universal Pagination Headers**: `GET /api/v1/transactions` returns `X-Total-Count`, `X-Limit`, `X-Offset`, and `X-Has-Next-Page` on all requests.
+  - **Opt-in Envelope Response**: Supports `?envelope=true` returning `{ items: [...], pagination: { total, limit, offset, hasNext, totalPages } }`, preserving raw array by default.
+  - **Keyword Text Search**: Added `?q=` and `?search=` for case-insensitive filtering across transaction descriptions via SQL `LOWER(description) LIKE '%q%'`.
+  - **Multi-Value Filtering**: `walletId`, `targetWalletId`, `categoryId`, and `budgetId` support comma-separated UUIDs and arrays via SQL `IN (?, ?, ...)`.
+  - **Status Filter Aliases**: Added `status=realized|planned|all` as client-friendly aliases for `isPlanned`.
+  - **MCP `list_transactions`**: Emits envelope format and supports all enhanced query filters.
+- Multi-Period Horizon Board Projections:
+  - **REST Endpoint**: Added `GET /api/v1/analytics/horizon` (and alias `/horizon`) simulating forward-looking financial roadmaps across 1 to 24 future calendar months.
+  - **Single-Pass Edge Fetch**: Reads wallets, goals, planned transactions, and exchange rates in a single atomic pass on Cloudflare D1.
+  - **Roll-Forward Accumulator**: Calculates month-by-month cashflow, point-in-time wallet balance accumulation, spendable vs locked net worth trajectory, and derived goal milestones.
+  - **MCP Tool**: Added `get_horizon_projections` tool in MCP registry and execution handler.
+  - **Documentation**: Updated OpenAPI 3.0 specification (`src/docs/openapi.ts`), LLM manifest (`src/docs/llms.ts`), and `README.md` (19 MCP tools).
+
 ## [1.12.0] — 2026-09-30
 
 ### Changed

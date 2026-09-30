@@ -442,6 +442,103 @@ export function generateOpenApiSpec(origin: string): Record<string, unknown> {
           },
           required: ["success", "feedbackId"],
         },
+        TransactionEnvelope: {
+          type: "object",
+          properties: {
+            items: {
+              type: "array",
+              items: { $ref: "#/components/schemas/Transaction" },
+            },
+            pagination: {
+              type: "object",
+              properties: {
+                total: { type: "integer", example: 1420 },
+                limit: { type: "integer", example: 50 },
+                offset: { type: "integer", example: 0 },
+                hasNext: { type: "boolean", example: true },
+                totalPages: { type: "integer", example: 29 },
+              },
+              required: ["total", "limit", "offset", "hasNext", "totalPages"],
+            },
+          },
+          required: ["items", "pagination"],
+        },
+        HorizonBoard: {
+          type: "object",
+          properties: {
+            baseCurrency: { type: "string", example: "IDR" },
+            generatedAt: { type: "string", format: "date-time" },
+            startingNetWorth: {
+              type: "object",
+              properties: {
+                total: { type: "number", example: 70000000 },
+                spendable: { type: "number", example: 20000000 },
+                locked: { type: "number", example: 50000000 },
+              },
+              required: ["total", "spendable", "locked"],
+            },
+            periods: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  periodKey: { type: "string", example: "2026-10" },
+                  startDate: { type: "string", format: "date-time" },
+                  endDate: { type: "string", format: "date-time" },
+                  cashflow: {
+                    type: "object",
+                    properties: {
+                      income: { type: "number", example: 15000000 },
+                      expense: { type: "number", example: 8000000 },
+                      net: { type: "number", example: 7000000 },
+                    },
+                    required: ["income", "expense", "net"],
+                  },
+                  netWorth: {
+                    type: "object",
+                    properties: {
+                      total: { type: "number", example: 77000000 },
+                      spendable: { type: "number", example: 25000000 },
+                      locked: { type: "number", example: 52000000 },
+                    },
+                    required: ["total", "spendable", "locked"],
+                  },
+                  walletBalances: {
+                    type: "array",
+                    items: {
+                      type: "object",
+                      properties: {
+                        walletId: { type: "string", format: "uuid" },
+                        walletName: { type: "string", example: "BCA Main" },
+                        balance: { type: "number", example: 25000000 },
+                        currency: { type: "string", example: "IDR" },
+                        isLocked: { type: "integer", enum: [0, 1] },
+                      },
+                      required: ["walletId", "walletName", "balance", "currency", "isLocked"],
+                    },
+                  },
+                  goals: {
+                    type: "array",
+                    items: {
+                      type: "object",
+                      properties: {
+                        goalId: { type: "string", format: "uuid" },
+                        name: { type: "string", example: "Dana Pensiun" },
+                        currentAmount: { type: "number", example: 52000000 },
+                        targetAmount: { type: "number", example: 100000000 },
+                        progressPercentage: { type: "number", example: 52.0 },
+                        isReached: { type: "boolean", example: false },
+                      },
+                      required: ["goalId", "name", "currentAmount", "targetAmount", "progressPercentage", "isReached"],
+                    },
+                  },
+                },
+                required: ["periodKey", "startDate", "endDate", "cashflow", "netWorth", "walletBalances", "goals"],
+              },
+            },
+          },
+          required: ["baseCurrency", "generatedAt", "startingNetWorth", "periods"],
+        },
         AccountDetail: {
           type: "object",
           properties: {
@@ -708,6 +805,34 @@ export function generateOpenApiSpec(origin: string): Record<string, unknown> {
             "200": {
               description: "Updated user profile",
               content: { "application/json": { schema: { $ref: "#/components/schemas/UserProfile" } } },
+            },
+            "400": {
+              description: "Validation error",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+            "401": {
+              description: "Authentication required",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+          },
+        },
+      },
+      "/api/v1/analytics/horizon": {
+        get: {
+          tags: ["Analytics & Reporting"],
+          summary: "Get Multi-Period Horizon Board Projections",
+          description: "Generates forward-looking financial roadmap projections across 1 to 24 future calendar months with month-by-month cashflow, roll-forward wallet balance accumulation, spendable vs locked net worth trajectory, and derived goal milestones.",
+          operationId: "getHorizonProjections",
+          security: [{ bearerAuth: [] }, { apiKeyHeader: [] }],
+          parameters: [
+            { name: "months", in: "query", schema: { type: "integer", minimum: 1, maximum: 24, default: 6 }, description: "Number of calendar months to project (1-24, default 6)" },
+            { name: "periods", in: "query", schema: { type: "string" }, description: "Optional comma-separated list of calendar months (YYYY-MM)" },
+            { name: "baseCurrency", in: "query", schema: { type: "string", default: "IDR" }, description: "Base currency for consolidated net worth and cashflows (default IDR)" },
+          ],
+          responses: {
+            "200": {
+              description: "Horizon board projections successfully generated",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/HorizonBoard" } } },
             },
             "400": {
               description: "Validation error",
@@ -1361,14 +1486,18 @@ export function generateOpenApiSpec(origin: string): Record<string, unknown> {
           operationId: "listTransactions",
           security: [{ bearerAuth: [] }, { apiKeyHeader: [] }],
           parameters: [
-            { name: "walletId", in: "query", schema: { type: "string", format: "uuid" }, description: "Filter by source wallet ID" },
-            { name: "targetWalletId", in: "query", schema: { type: "string", format: "uuid" }, description: "Filter by target wallet ID (transfers)" },
-            { name: "categoryId", in: "query", schema: { type: "string", format: "uuid" }, description: "Filter by category ID" },
-            { name: "budgetId", in: "query", schema: { type: "string", format: "uuid" }, description: "Filter by budget ID" },
+            { name: "q", in: "query", schema: { type: "string" }, description: "Search keyword in description (case-insensitive substring, alias: search)" },
+            { name: "search", in: "query", schema: { type: "string" }, description: "Search keyword alias for q" },
+            { name: "walletId", in: "query", schema: { type: "string" }, description: "Filter by single source wallet UUID or comma-separated UUIDs" },
+            { name: "targetWalletId", in: "query", schema: { type: "string" }, description: "Filter by target wallet UUID or comma-separated UUIDs (transfers)" },
+            { name: "categoryId", in: "query", schema: { type: "string" }, description: "Filter by category UUID or comma-separated UUIDs" },
+            { name: "budgetId", in: "query", schema: { type: "string" }, description: "Filter by budget UUID or comma-separated UUIDs" },
             { name: "type", in: "query", schema: { type: "string", enum: ["expense", "income", "transfer"] }, description: "Filter by transaction type" },
-            { name: "isPlanned", in: "query", schema: { type: "boolean" }, description: "Filter planned vs actual transactions" },
+            { name: "status", in: "query", schema: { type: "string", enum: ["realized", "planned", "all"] }, description: "Status filter: 'realized' = actual, 'planned' = forecast, 'all' = both" },
+            { name: "isPlanned", in: "query", schema: { type: "boolean" }, description: "Legacy planned filter (true for planned, false for actual)" },
             { name: "startDate", in: "query", schema: { type: "string" }, description: "Transactions on or after this ISO date" },
             { name: "endDate", in: "query", schema: { type: "string" }, description: "Transactions on or before this ISO date" },
+            { name: "envelope", in: "query", schema: { type: "boolean", default: false }, description: "When true, wraps response in a structured envelope containing items and pagination metadata" },
             { name: "limit", in: "query", schema: { type: "integer", default: 50, maximum: 200 }, description: "Max results to return" },
             { name: "offset", in: "query", schema: { type: "integer", default: 0 }, description: "Pagination offset" },
           ],

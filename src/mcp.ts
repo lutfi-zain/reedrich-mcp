@@ -35,6 +35,7 @@ import {
 import { transferFunds, InsufficientWalletsError } from "./services/transfer";
 import { financialSummary } from "./services/summary";
 import { getAccountDetail } from "./services/account-snapshot";
+import { getHorizonProjections } from "./services/horizon";
 import {
   listDebtsLoans,
   createDebtLoan,
@@ -737,16 +738,18 @@ Authentication Note: You are already authenticated via OAuth / Bearer token. Nev
       },
       {
         name: "list_transactions",
-        description: "Query transactions with structured filters (wallet, target wallet, category, budget, type, date range, is_planned, pagination).",
+        description: "Query transactions with structured filters (keyword search, multi-wallet/category/budget filters, type, status, date range, pagination). Returns items and pagination metadata.",
         inputSchema: {
           type: "object",
           properties: {
-            walletId: { type: "string", description: "Wallet UUID filter" },
-            targetWalletId: { type: "string", description: "Target Wallet UUID filter (for transfers)" },
-            categoryId: { type: "string", description: "Category UUID filter" },
-            budgetId: { type: "string", description: "Budget UUID filter" },
+            q: { type: "string", description: "Search keyword in description (case-insensitive substring)" },
+            walletId: { type: "string", description: "Single Wallet UUID or comma-separated UUIDs" },
+            targetWalletId: { type: "string", description: "Single Target Wallet UUID or comma-separated UUIDs (for transfers)" },
+            categoryId: { type: "string", description: "Single Category UUID or comma-separated UUIDs" },
+            budgetId: { type: "string", description: "Single Budget UUID or comma-separated UUIDs" },
             type: { type: "string", enum: ["expense", "income", "transfer"] },
-            isPlanned: { type: "boolean" },
+            status: { type: "string", enum: ["realized", "planned", "all"], description: "Status filter ('realized' = actual, 'planned' = forecast, 'all' = both)" },
+            isPlanned: { type: "boolean", description: "Legacy planned filter (true for planned, false for realized)" },
             startDate: { type: "string", description: "Start ISO-8601 date/timestamp filter" },
             endDate: { type: "string", description: "End ISO-8601 date/timestamp filter" },
             limit: { type: "integer", default: 50, maximum: 200 },
@@ -777,6 +780,19 @@ Authentication Note: You are already authenticated via OAuth / Bearer token. Nev
             startDate: { type: "string", description: "Start date filter in ISO format (defaults to start of current month)" },
             endDate: { type: "string", description: "End date filter in ISO format (defaults to end of current month)" },
             baseCurrency: { type: "string", description: "Optional base currency override for net worth and conversions (e.g. IDR, USD; defaults to IDR)" },
+            apiKey: { type: "string", description: "Optional: Your persistent API Key (rd_live_...) if not set in headers" }
+          }
+        }
+      },
+      {
+        name: "get_horizon_projections",
+        description: "Generate a multi-period financial horizon board: simulates month-by-month cashflows, roll-forward wallet balance accumulation, spendable vs locked net worth trajectory, and derived goal milestones across 1 to 24 future calendar months.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            months: { type: "integer", minimum: 1, maximum: 24, default: 6, description: "Number of calendar months to project (1 to 24, default 6)" },
+            periods: { type: "string", description: "Optional comma-separated list of calendar months to project (e.g. '2026-10,2026-11,2026-12')" },
+            baseCurrency: { type: "string", default: "IDR", description: "Target base currency code for consolidated net worth and cashflows (default 'IDR')" },
             apiKey: { type: "string", description: "Optional: Your persistent API Key (rd_live_...) if not set in headers" }
           }
         }
@@ -1048,8 +1064,10 @@ Authentication Note: You are already authenticated via OAuth / Bearer token. Nev
 
     // --- Tool: list_transactions ---
     if (name === "list_transactions") {
-      const result = await listTransactions(db, effectiveUserId, (args || {}) as any);
-      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      const { envelope, ...filters } = (args || {}) as any;
+      const result = await listTransactions(db, effectiveUserId, filters);
+      const output = envelope ? result : result.items;
+      return { content: [{ type: "text", text: JSON.stringify(output, null, 2) }] };
     }
 
     // --- Tool: financial_summary ---
@@ -1057,10 +1075,15 @@ Authentication Note: You are already authenticated via OAuth / Bearer token. Nev
       const result = await financialSummary(db, effectiveUserId, (args || {}) as any, options?.fetchFn);
       return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
     }
-
     // --- Tool: get_account_detail ---
     if (name === "get_account_detail") {
       const result = await getAccountDetail(db, effectiveUserId, (args || {}) as any, options?.fetchFn);
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    }
+
+    // --- Tool: get_horizon_projections ---
+    if (name === "get_horizon_projections") {
+      const result = await getHorizonProjections(db, effectiveUserId, (args || {}) as any, options?.fetchFn);
       return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
     }
 

@@ -80,6 +80,9 @@ All REST endpoints return JSON with standard HTTP status codes. Common headers:
 - **\`GET /api/v1/account-detail\`**
   - Query Params: \`startDate\`, \`endDate\`.
   - Returns: Comprehensive financial snapshot in a single atomic call: multi-currency net worth, spendable vs locked wallets with latest transaction metadata, category cashflow, active budgets, goal pacing with linked wallet balances, and active debts/loans.
+- **\`GET /api/v1/analytics/horizon\`** (and alias **\`GET /api/v1/horizon\`**)
+  - Query Params: \`months\` (1-24, default 6), \`periods\` (comma-separated YYYY-MM), \`baseCurrency\`.
+  - Returns: Multi-period horizon board projections simulating month-by-month cashflows, roll-forward wallet balance accumulation, spendable vs locked net worth trajectory, and goal milestone achievements.
 
 ### 2. Wallets
 - **\`GET /api/v1/wallets\`**
@@ -121,8 +124,9 @@ All REST endpoints return JSON with standard HTTP status codes. Common headers:
 
 ### 5. Transactions & Transfers
 - **\`GET /api/v1/transactions\`**
-  - Query Params: \`walletId\`, \`targetWalletId\`, \`categoryId\`, \`budgetId\`, \`type\`, \`isPlanned\`, \`startDate\`, \`endDate\`, \`limit\`, \`offset\`.
-  - Returns: Array of transactions ordered by date descending.
+  - Query Params: \`q\` / \`search\` (keyword search), \`status\` (realized|planned|all), \`walletId\` (single or comma-separated UUIDs), \`targetWalletId\`, \`categoryId\`, \`budgetId\`, \`type\`, \`isPlanned\`, \`startDate\`, \`endDate\`, \`envelope\` (boolean), \`limit\`, \`offset\`.
+  - Response Headers: \`X-Total-Count\`, \`X-Limit\`, \`X-Offset\`, \`X-Has-Next-Page\`.
+  - Returns: Array of transactions (or structured \`{ items, pagination }\` envelope if \`envelope=true\`).
 - **\`GET /api/v1/transactions/:transactionId\`** *(HTTP 200)*
   - Returns: Single transaction by UUID.
 - **\`POST /api/v1/transactions\`** *(HTTP 201)*
@@ -362,7 +366,7 @@ For autonomous coding agents (Claude Desktop, OpenCode, Pi, OMP):
   * \`register_user\`, \`login_user\` (Auth & Onboarding)
   * \`manage_wallet\` (create, list, update, delete), \`manage_category\` (create, list, seed, update, delete), \`manage_budget\` (create, list, status, update, delete), \`manage_debt_loan\` (create, list, repay, update, delete), \`manage_goal\` (create, list, update, link, unlink, delete), \`manage_recurring_template\` (create, list, update, delete), \`apply_recurring_template\` (Realize planned occurrence)
   * \`record_transaction\`, \`transfer_funds\`, \`update_transaction\`, \`delete_transaction\`, \`list_transactions\` (Financial Transactions)
-  * \`financial_summary\`, \`get_account_detail\` (Consolidated Net Worth & Health Report)
+  * \`financial_summary\`, \`get_account_detail\`, \`get_horizon_projections\` (Consolidated Net Worth, Health Report & Multi-Period Horizon Board Projections)
   * \`submit_feedback\` (Feedback to internal D1)
 - **MCP Resources**:
   * \`reedrich://user/profile\` (Authenticated user profile details)

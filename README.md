@@ -16,7 +16,7 @@ Stateless Model Context Protocol (MCP) server for personal finance & determinist
   - System category protection: internal \`"Adjustment"\` category cannot be renamed or deleted.
   - Transaction deletion: automatically executes atomic balance reversal (`applyBalanceDelta(..., -1)`).
   - Transaction type switching: in-place mutation between `expense`, `income`, and `transfer` with two-phase atomic balance reconciliation and target wallet invariants.
-- **18 MCP Tools Registry**:
+- **19 MCP Tools Registry**:
   - \`get_user_profile\`: Discover authenticated user identity (name, email, WhatsApp, registration date) with zero required arguments.
   - \`register_user\` & \`login_user\`: Pure MCP user onboarding and persistent API key authentication.
   - \`submit_feedback\`: Submit user feedback, bug reports, questions, or feature requests directly to internal D1 database.
@@ -29,7 +29,7 @@ Stateless Model Context Protocol (MCP) server for personal finance & determinist
   - \`apply_recurring_template\`: Realize a materialized planned occurrence and atomically advance recurrence schedule.
   - \`record_transaction\`, \`transfer_funds\`, \`update_transaction\`, \`delete_transaction\`: Complete financial transaction lifecycle with automatic atomic balance synchronization.
   - \`list_transactions\`: Dynamic filtering across date ranges, wallets, categories, budgets, and planning status with pagination.
-  - \`financial_summary\` & \`get_account_detail\`: Comprehensive situational reporting, multi-currency net worth (live FX), Safe-to-Spend runway, and cashflow breakdowns.
+  - \`financial_summary\`, \`get_account_detail\`, \`get_horizon_projections\`: Comprehensive situational reporting, multi-currency net worth (live FX), Safe-to-Spend runway, cashflow breakdowns, and deterministic multi-period horizon board projections.
 - **5 MCP Resources**:
   - \`reedrich://user/profile\`: Authenticated user profile and contact metadata.
   - \`reedrich://db/schema\`: Database schema and relationship documentation.
@@ -43,6 +43,8 @@ Stateless Model Context Protocol (MCP) server for personal finance & determinist
   - \`debt_loan_advisor\`: Prioritization and repayment strategy for active debts and loan collections.
 - **REST API (\`/api/v1/*\`)**:
   - Full single-resource retrieval (\`GET /:id\`) for all 7 domain resources.
+  - Enhanced transaction queries: universal pagination headers (\`X-Total-Count\`, \`X-Limit\`, \`X-Offset\`, \`X-Has-Next-Page\`), opt-in envelope (\`?envelope=true\`), keyword search (\`?q=\`), multi-value filters, and status aliases.
+  - Multi-Period Horizon Board Projections: \`GET /api/v1/analytics/horizon\` (1-24 month forward roadmap).
   - Full mutation parity (\`PATCH\`) and deletion (\`DELETE\`) with HTTP standard status codes (\`200\`, \`201\`, \`400\`, \`401\`, \`404\`).
 - **Interactive Scalar API Docs & OpenAPI 3.0**: Full interactive Scalar API Reference UI served at \`/docs\` (and \`/reference\`) with machine-readable OpenAPI 3.0 specification at \`/openapi.json\`.
 ---

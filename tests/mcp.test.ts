@@ -5300,3 +5300,293 @@ describe('Transaction Type Mutation & Two-Phase Balance Reconciliation Suite', (
     assert.equal((await patchRes.json<any>()).transactionBudgetId, null);
   });
 });
+
+describe('Frontend Query Enhancements & Horizon Projections Suite', () => {
+  async function setupQueryUser() {
+    const { d1 } = createTestDB();
+    const env = { DB: d1 as unknown as D1Database, JWT_SECRET: TEST_JWT_SECRET };
+    const db = drizzle(d1 as unknown as D1Database, { schema });
+    const userId = crypto.randomUUID();
+    const token = await generateUserToken({ userId }, TEST_JWT_SECRET);
+
+    await db.insert(schema.users).values({
+      userId,
+      userFirstName: 'Query',
+      userLastName: 'Tester',
+      userEmail: `query_${userId}@example.com`,
+      userWhatsappNumber: '+6281234567777',
+      userApiKeyHash: `hash_${userId}`,
+    });
+
+    const [w1] = await db.insert(schema.wallets).values({
+      walletUserId: userId,
+      walletName: 'BCA Checking',
+      walletInstitution: 'BCA',
+      walletType: 'bank',
+      walletBalance: 10000000,
+      walletCurrency: 'IDR',
+      walletIsLocked: 0,
+    }).returning();
+
+    const [w2] = await db.insert(schema.wallets).values({
+      walletUserId: userId,
+      walletName: 'Jago Locked Deposito',
+      walletInstitution: 'Bank Jago',
+      walletType: 'bank',
+      walletBalance: 20000000,
+      walletCurrency: 'IDR',
+      walletIsLocked: 1,
+    }).returning();
+
+    const [c1] = await db.insert(schema.categories).values({
+      categoryUserId: userId,
+      categoryName: 'Coffee & Snacks',
+      categoryType: 'expense',
+    }).returning();
+
+    const [c2] = await db.insert(schema.categories).values({
+      categoryUserId: userId,
+      categoryName: 'Office Supplies',
+      categoryType: 'expense',
+    }).returning();
+
+    const server = createMCPServer(db, userId, TEST_JWT_SECRET);
+    return { db, env, userId, token, w1, w2, c1, c2, server };
+  }
+
+  it('1. Pagination headers and opt-in envelope format', async () => {
+    const { env, token, w1, c1 } = await setupQueryUser();
+
+    // Seed 3 transactions
+    for (let i = 1; i <= 3; i++) {
+      await app.request('https://example.workers.dev/api/v1/transactions', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          walletId: w1.walletId,
+          categoryId: c1.categoryId,
+          amount: i * 10000,
+          description: `Item ${i}`,
+        }),
+      }, env);
+    }
+
+    // 1.1 Default array response with headers
+    const res = await app.request('https://example.workers.dev/api/v1/transactions?limit=2', {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get('X-Total-Count'), '3');
+    assert.equal(res.headers.get('X-Limit'), '2');
+    assert.equal(res.headers.get('X-Offset'), '0');
+    assert.equal(res.headers.get('X-Has-Next-Page'), 'true');
+
+    const items = await res.json<any>();
+    assert.ok(Array.isArray(items));
+    assert.equal(items.length, 2);
+
+    // 1.2 Opt-in envelope response
+    const envRes = await app.request('https://example.workers.dev/api/v1/transactions?envelope=true&limit=2&offset=2', {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal(envRes.status, 200);
+    const envData = await envRes.json<any>();
+    assert.ok(!Array.isArray(envData));
+    assert.ok(Array.isArray(envData.items));
+    assert.equal(envData.items.length, 1);
+    assert.equal(envData.pagination.total, 3);
+    assert.equal(envData.pagination.limit, 2);
+    assert.equal(envData.pagination.offset, 2);
+    assert.equal(envData.pagination.hasNext, false);
+    assert.equal(envData.pagination.totalPages, 2);
+  });
+
+  it('2. Keyword search (?q= and ?search=) filters case-insensitively', async () => {
+    const { env, token, w1, c1 } = await setupQueryUser();
+
+    await app.request('https://example.workers.dev/api/v1/transactions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ walletId: w1.walletId, categoryId: c1.categoryId, amount: 25000, description: 'Kopi Kenangan Mantan' }),
+    }, env);
+
+    await app.request('https://example.workers.dev/api/v1/transactions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ walletId: w1.walletId, categoryId: c1.categoryId, amount: 50000, description: 'Makan Siang Nasi Padang' }),
+    }, env);
+
+    await app.request('https://example.workers.dev/api/v1/transactions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ walletId: w1.walletId, categoryId: c1.categoryId, amount: 18000, description: 'KOPI Janji Jiwa' }),
+    }, env);
+
+    const qRes = await app.request('https://example.workers.dev/api/v1/transactions?q=kopi', {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    const qItems = await qRes.json<any>();
+    assert.equal(qItems.length, 2);
+
+    const searchRes = await app.request('https://example.workers.dev/api/v1/transactions?search=padang', {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    const searchItems = await searchRes.json<any>();
+    assert.equal(searchItems.length, 1);
+    assert.equal(searchItems[0].transactionAmount, 50000);
+  });
+
+  it('3. Multi-value filtering via comma-separated UUIDs', async () => {
+    const { env, token, w1, w2, c1, c2 } = await setupQueryUser();
+
+    await app.request('https://example.workers.dev/api/v1/transactions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ walletId: w1.walletId, categoryId: c1.categoryId, amount: 10000, description: 'Tx on W1 C1' }),
+    }, env);
+
+    await app.request('https://example.workers.dev/api/v1/transactions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ walletId: w2.walletId, categoryId: c2.categoryId, amount: 20000, description: 'Tx on W2 C2' }),
+    }, env);
+
+    // Multi-wallet
+    const multiWRes = await app.request(`https://example.workers.dev/api/v1/transactions?walletId=${w1.walletId},${w2.walletId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    const multiWItems = await multiWRes.json<any>();
+    assert.equal(multiWItems.length, 2);
+
+    // Single category filter
+    const singleCRes = await app.request(`https://example.workers.dev/api/v1/transactions?categoryId=${c1.categoryId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    const singleCItems = await singleCRes.json<any>();
+    assert.equal(singleCItems.length, 1);
+  });
+
+  it('4. Status alias filtering (realized vs planned vs all)', async () => {
+    const { env, token, w1, c1 } = await setupQueryUser();
+
+    await app.request('https://example.workers.dev/api/v1/transactions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ walletId: w1.walletId, categoryId: c1.categoryId, amount: 10000, isPlanned: false }),
+    }, env);
+
+    await app.request('https://example.workers.dev/api/v1/transactions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ walletId: w1.walletId, categoryId: c1.categoryId, amount: 50000, isPlanned: true }),
+    }, env);
+
+    const realizedRes = await app.request('https://example.workers.dev/api/v1/transactions?status=realized', {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    const realizedItems = await realizedRes.json<any>();
+    assert.equal(realizedItems.length, 1);
+    assert.equal(realizedItems[0].transactionIsPlanned, 0);
+
+    const plannedRes = await app.request('https://example.workers.dev/api/v1/transactions?status=planned', {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    const plannedItems = await plannedRes.json<any>();
+    assert.equal(plannedItems.length, 1);
+    assert.equal(plannedItems[0].transactionIsPlanned, 1);
+
+    const allRes = await app.request('https://example.workers.dev/api/v1/transactions?status=all', {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    const allItems = await allRes.json<any>();
+    assert.equal(allItems.length, 2);
+  });
+
+  it('5. GET /api/v1/analytics/horizon simulates multi-month cashflow and roll-forward balances', async () => {
+    const { db, env, userId, token, w1, w2, c1 } = await setupQueryUser();
+
+    // Create Goal of 25,000,000 IDR linked to locked w2 (initial balance 20,000,000)
+    const [goal] = await db.insert(schema.goals).values({
+      goalUserId: userId,
+      goalName: 'Emergency Deposito Target',
+      goalTargetAmount: 25000000,
+      goalCurrentAmount: 20000000,
+      goalCurrency: 'IDR',
+      goalStatus: 'in_progress',
+    }).returning();
+
+    await db.insert(schema.goalWallets).values({
+      goalId: goal.goalId,
+      walletId: w2.walletId,
+    });
+
+    // Schedule planned transactions:
+    // Period 2026-10: Deposit +6,000,000 into locked w2 -> w2 becomes 26,000,000 (Goal reached!)
+    await db.insert(schema.transactions).values({
+      transactionUserId: userId,
+      transactionWalletId: w2.walletId,
+      transactionCategoryId: c1.categoryId,
+      transactionAmount: 6000000,
+      transactionType: 'income',
+      transactionIsPlanned: 1,
+      transactionDate: '2026-10-15T10:00:00Z',
+    });
+
+    // Period 2026-11: Planned Expense -2,000,000 on w1 (initial 10,000,000) -> w1 becomes 8,000,000
+    await db.insert(schema.transactions).values({
+      transactionUserId: userId,
+      transactionWalletId: w1.walletId,
+      transactionCategoryId: c1.categoryId,
+      transactionAmount: 2000000,
+      transactionType: 'expense',
+      transactionIsPlanned: 1,
+      transactionDate: '2026-11-10T10:00:00Z',
+    });
+
+    const res = await app.request('https://example.workers.dev/api/v1/analytics/horizon?periods=2026-10,2026-11&baseCurrency=IDR', {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal(res.status, 200);
+    const horizonData = await res.json<any>();
+
+    assert.equal(horizonData.baseCurrency, 'IDR');
+    assert.equal(horizonData.startingNetWorth.total, 30000000);
+    assert.equal(horizonData.startingNetWorth.spendable, 10000000);
+    assert.equal(horizonData.startingNetWorth.locked, 20000000);
+
+    assert.equal(horizonData.periods.length, 2);
+
+    // Month 1 (2026-10)
+    const m1 = horizonData.periods[0];
+    assert.equal(m1.periodKey, '2026-10');
+    assert.equal(m1.cashflow.income, 6000000);
+    assert.equal(m1.cashflow.expense, 0);
+    assert.equal(m1.cashflow.net, 6000000);
+    assert.equal(m1.netWorth.total, 36000000);
+    assert.equal(m1.netWorth.locked, 26000000);
+    assert.equal(m1.netWorth.spendable, 10000000);
+
+    const m1Goal = m1.goals.find((g: any) => g.goalId === goal.goalId);
+    assert.ok(m1Goal);
+    assert.equal(m1Goal.currentAmount, 26000000);
+    assert.equal(m1Goal.isReached, true);
+
+    // Month 2 (2026-11)
+    const m2 = horizonData.periods[1];
+    assert.equal(m2.periodKey, '2026-11');
+    assert.equal(m2.cashflow.income, 0);
+    assert.equal(m2.cashflow.expense, 2000000);
+    assert.equal(m2.cashflow.net, -2000000);
+    assert.equal(m2.netWorth.total, 34000000);
+    assert.equal(m2.netWorth.spendable, 8000000);
+    assert.equal(m2.netWorth.locked, 26000000);
+  });
+
+  it('6. MCP tool get_horizon_projections executes successfully', async () => {
+    const { server } = await setupQueryUser();
+    const toolRes = await callTool(server, 'get_horizon_projections', { months: 3 });
+    const toolData = JSON.parse(toolRes.content[0].text);
+    assert.equal(toolData.baseCurrency, 'IDR');
+    assert.equal(toolData.periods.length, 3);
+  });
+});

@@ -1216,7 +1216,26 @@ describe('Integration Test: Full User Journey (Deployed Worker + Remote D1)', ()
     const typeSwitchData: any = await typeSwitchRes.json();
     assert.equal(typeSwitchData.transactionType, 'expense');
     assert.equal(typeSwitchData.transactionTargetWalletId, null);
+    // 15. Enhanced Transaction Queries (headers & envelope)
+    const envTxRes = await fetch(`${WORKER_URL}/api/v1/transactions?envelope=true&limit=5`, {
+      headers: authHeaders,
+    });
+    assert.equal(envTxRes.status, 200);
+    assert.ok(envTxRes.headers.get('X-Total-Count'));
+    const envTxData: any = await envTxRes.json();
+    assert.ok(Array.isArray(envTxData.items));
+    assert.ok(envTxData.pagination);
+    assert.ok(envTxData.pagination.total >= 1);
 
-    console.log(`    ✓ Comprehensive CRUD Parity & Type Mutation: verified GET /:id, PATCH categories/budgets/me/transactions(type), DELETE wallets/categories/budgets/debts-loans`);
+    // 16. Multi-Period Horizon Board Projections (GET /api/v1/analytics/horizon)
+    const horizonRes = await fetch(`${WORKER_URL}/api/v1/analytics/horizon?months=3`, {
+      headers: authHeaders,
+    });
+    assert.equal(horizonRes.status, 200);
+    const horizonData: any = await horizonRes.json();
+    assert.equal(horizonData.periods.length, 3);
+    assert.ok(horizonData.startingNetWorth);
+
+    console.log(`    ✓ Comprehensive CRUD Parity, Type Mutation & Horizon Projections: verified GET /:id, queries (envelope/search), PATCH, DELETE, and GET /analytics/horizon`);
   });
 });

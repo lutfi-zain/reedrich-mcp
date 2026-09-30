@@ -17,6 +17,7 @@ import feedback from "./feedback";
 import accountDetail from "./account-detail";
 import transfers from "./transfers";
 import me from "./me";
+import horizon from "./horizon";
 
 const api = new Hono<AppEnv>();
 
@@ -81,4 +82,6 @@ api.route("/account-detail", accountDetail);
 api.route("/transfers", transfers);
 api.route("/me", me);
 api.route("/user/profile", me);
+api.route("/analytics/horizon", horizon);
+api.route("/horizon", horizon);
 export default api;
