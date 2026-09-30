@@ -1,6 +1,6 @@
 import { DrizzleD1Database } from "drizzle-orm/d1";
 import * as schema from "../db/schema";
-import { eq, and, desc, gte, lte, sql } from "drizzle-orm";
+import { eq, and, desc, gte, lte, sql, inArray } from "drizzle-orm";
 import {
   currentIsoTimestamp,
   normalizeToIsoTimestamp,
@@ -80,6 +80,15 @@ export async function applyBalanceDelta(
       );
   }
 }
+function parseMultiIdFilter(val: unknown): string[] {
+  if (Array.isArray(val)) {
+    return val.map((s) => String(s).trim()).filter((s) => s.length > 0);
+  }
+  if (typeof val === "string") {
+    return val.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
+  }
+  return [];
+}
 
 export interface ListTransactionsFilters {
   walletId?: unknown;
@@ -87,6 +96,9 @@ export interface ListTransactionsFilters {
   categoryId?: unknown;
   budgetId?: unknown;
   type?: unknown;
+  status?: unknown;
+  q?: unknown;
+  search?: unknown;
   isPlanned?: unknown;
   startDate?: unknown;
   endDate?: unknown;
@@ -105,6 +117,9 @@ export async function listTransactions(
     categoryId,
     budgetId,
     type,
+    status,
+    q,
+    search,
     isPlanned,
     startDate,
     endDate,
@@ -114,22 +129,39 @@ export async function listTransactions(
 
   const conditions = [eq(schema.transactions.transactionUserId, userId)];
 
-  if (typeof walletId === "string" && walletId.trim() !== "") {
-    conditions.push(eq(schema.transactions.transactionWalletId, walletId.trim()));
+  const walletIds = parseMultiIdFilter(walletId);
+  if (walletIds.length === 1) {
+    conditions.push(eq(schema.transactions.transactionWalletId, walletIds[0]));
+  } else if (walletIds.length > 1) {
+    conditions.push(inArray(schema.transactions.transactionWalletId, walletIds));
   }
-  if (typeof targetWalletId === "string" && targetWalletId.trim() !== "") {
-    conditions.push(
-      eq(schema.transactions.transactionTargetWalletId, targetWalletId.trim())
-    );
+
+  const targetWalletIds = parseMultiIdFilter(targetWalletId);
+  if (targetWalletIds.length === 1) {
+    conditions.push(eq(schema.transactions.transactionTargetWalletId, targetWalletIds[0]));
+  } else if (targetWalletIds.length > 1) {
+    conditions.push(inArray(schema.transactions.transactionTargetWalletId, targetWalletIds));
   }
-  if (typeof categoryId === "string" && categoryId.trim() !== "") {
-    conditions.push(
-      eq(schema.transactions.transactionCategoryId, categoryId.trim())
-    );
+
+  const categoryIds = parseMultiIdFilter(categoryId);
+  if (categoryIds.length === 1) {
+    conditions.push(eq(schema.transactions.transactionCategoryId, categoryIds[0]));
+  } else if (categoryIds.length > 1) {
+    conditions.push(inArray(schema.transactions.transactionCategoryId, categoryIds));
   }
-  if (typeof budgetId === "string" && budgetId.trim() !== "") {
+
+  const budgetIds = parseMultiIdFilter(budgetId);
+  if (budgetIds.length === 1) {
+    conditions.push(eq(schema.transactions.transactionBudgetId, budgetIds[0]));
+  } else if (budgetIds.length > 1) {
+    conditions.push(inArray(schema.transactions.transactionBudgetId, budgetIds));
+  }
+
+  const rawSearch = typeof q === "string" ? q.trim() : typeof search === "string" ? search.trim() : "";
+  if (rawSearch.length > 0) {
+    const cleanSearch = rawSearch.toLowerCase();
     conditions.push(
-      eq(schema.transactions.transactionBudgetId, budgetId.trim())
+      sql`LOWER(${schema.transactions.transactionDescription}) LIKE ${"%" + cleanSearch + "%"}`
     );
   }
   if (
@@ -138,7 +170,21 @@ export async function listTransactions(
   ) {
     conditions.push(eq(schema.transactions.transactionType, type));
   }
-  if (isPlanned !== undefined) {
+  if (status !== undefined) {
+    if (typeof status !== "string") {
+      validationError("Validation Error: 'status' must be 'realized', 'planned', or 'all'", "status");
+    }
+    const cleanStatus = status.trim().toLowerCase();
+    if (cleanStatus === "realized") {
+      conditions.push(eq(schema.transactions.transactionIsPlanned, 0));
+    } else if (cleanStatus === "planned") {
+      conditions.push(eq(schema.transactions.transactionIsPlanned, 1));
+    } else if (cleanStatus === "all") {
+      // Unconstrained planned status
+    } else {
+      validationError("Validation Error: 'status' must be 'realized', 'planned', or 'all'", "status");
+    }
+  } else if (isPlanned !== undefined) {
     conditions.push(
       eq(schema.transactions.transactionIsPlanned, isPlanned ? 1 : 0)
     );
@@ -170,17 +216,39 @@ export async function listTransactions(
   const safeLimit = Math.min(Math.max(1, Number(limit) || 50), 200);
   const safeOffset = Math.max(0, Number(offset) || 0);
 
-  return db
-    .select()
-    .from(schema.transactions)
-    .where(and(...conditions))
-    .orderBy(
-      desc(schema.transactions.transactionDate),
-      desc(schema.transactions.transactionCreatedAt)
-    )
-    .limit(safeLimit)
-    .offset(safeOffset);
+  const [items, countResult] = await Promise.all([
+    db
+      .select()
+      .from(schema.transactions)
+      .where(and(...conditions))
+      .orderBy(
+        desc(schema.transactions.transactionDate),
+        desc(schema.transactions.transactionCreatedAt)
+      )
+      .limit(safeLimit)
+      .offset(safeOffset),
+    db
+      .select({ count: sql<number>`count(*)` })
+      .from(schema.transactions)
+      .where(and(...conditions)),
+  ]);
+
+  const total = Number(countResult[0]?.count || 0);
+  const totalPages = Math.ceil(total / safeLimit);
+  const hasNext = safeOffset + items.length < total;
+
+  return {
+    items,
+    pagination: {
+      total,
+      limit: safeLimit,
+      offset: safeOffset,
+      hasNext,
+      totalPages,
+    },
+  };
 }
+
 export async function getTransactionById(
   db: DrizzleD1Database<typeof schema>,
   userId: string,
