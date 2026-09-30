@@ -45,9 +45,9 @@ import {
 import {
   listGoals,
   createGoal,
-  contributeGoal,
   updateGoal,
   deleteGoal,
+  contributeGoal,
   linkGoalWallet,
   unlinkGoalWallet,
 } from "./services/goal";
@@ -1114,8 +1114,7 @@ Authentication Note: You are already authenticated via OAuth / Bearer token. Nev
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
       if (action === "contribute") {
-        const result = await contributeGoal(db, effectiveUserId, goalId, params);
-        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+        await contributeGoal(db, effectiveUserId, goalId, params);
       }
       if (action === "delete") {
         const deleted = await deleteGoal(db, effectiveUserId, goalId);
