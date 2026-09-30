@@ -683,6 +683,42 @@ export function generateOpenApiSpec(origin: string): Record<string, unknown> {
             },
           },
         },
+        patch: {
+          tags: ["User Profile"],
+          summary: "Update Current User Profile (Alias)",
+          description: "Semantic resource alias for PATCH /api/v1/me. Updates first name, last name, or WhatsApp number.",
+          operationId: "updateUserProfileAlias",
+          security: [{ bearerAuth: [] }, { apiKeyHeader: [] }],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    firstName: { type: "string", description: "First name (1-100 chars)" },
+                    lastName: { type: "string", description: "Last name (1-100 chars)" },
+                    whatsappNumber: { type: "string", description: "WhatsApp number with country code (e.g. +6281234567890)" },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            "200": {
+              description: "Updated user profile",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/UserProfile" } } },
+            },
+            "400": {
+              description: "Validation error",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+            "401": {
+              description: "Authentication required",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+          },
+        },
       },
       "/api/v1/account-detail": {
         get: {
@@ -1602,7 +1638,7 @@ export function generateOpenApiSpec(origin: string): Record<string, unknown> {
                     walletId: { type: "string", format: "uuid", nullable: true },
                     dueDate: { type: "string", format: "date", nullable: true },
                     notes: { type: "string", nullable: true },
-                    adjustWalletBalance: { type: "boolean", default: false },
+                    adjustWalletBalance: { type: "boolean", default: true },
                   },
                   required: ["personName", "amount"],
                 },
@@ -1749,7 +1785,7 @@ export function generateOpenApiSpec(origin: string): Record<string, unknown> {
                   properties: {
                     amount: { type: "number", minimum: 0.01 },
                     walletId: { type: "string", format: "uuid", nullable: true },
-                    adjustWalletBalance: { type: "boolean", default: false },
+                    adjustWalletBalance: { type: "boolean", default: true },
                   },
                   required: ["amount"],
                 },
@@ -1928,51 +1964,6 @@ export function generateOpenApiSpec(origin: string): Record<string, unknown> {
             },
             "404": {
               description: "Goal not found",
-              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
-            },
-            "401": {
-              description: "Authentication required",
-              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
-            },
-          },
-        },
-      },
-      "/api/v1/goals/{goalId}/contribute": {
-        post: {
-          tags: ["Goals"],
-          summary: "Contribute to Goal",
-          description: "Contributes savings toward a goal, updating current amount and pacing metrics.",
-          operationId: "contributeGoal",
-          security: [{ bearerAuth: [] }, { apiKeyHeader: [] }],
-          parameters: [
-            { name: "goalId", in: "path", required: true, schema: { type: "string", format: "uuid" } },
-          ],
-          requestBody: {
-            required: true,
-            content: {
-              "application/json": {
-                schema: {
-                  type: "object",
-                  properties: {
-                    amount: { type: "number", minimum: 0.01 },
-                    walletId: { type: "string", format: "uuid", nullable: true },
-                  },
-                  required: ["amount"],
-                },
-              },
-            },
-          },
-          responses: {
-            "200": {
-              description: "Contribution recorded successfully",
-              content: { "application/json": { schema: { $ref: "#/components/schemas/Goal" } } },
-            },
-            "404": {
-              description: "Goal not found",
-              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
-            },
-            "400": {
-              description: "Validation error",
               content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
             },
             "401": {

@@ -77,6 +77,9 @@ All REST endpoints return JSON with standard HTTP status codes. Common headers:
 - **\`GET /api/v1/summary\`**
   - Query Params: \`startDate\`, \`endDate\`, \`baseCurrency\`.
   - Returns: Consolidated net worth with live FX, breakdown by currency/institution, cashflows, active goals pacing, recurring cashflow projections.
+- **\`GET /api/v1/account-detail\`**
+  - Query Params: \`startDate\`, \`endDate\`.
+  - Returns: Comprehensive financial snapshot in a single atomic call: multi-currency net worth, spendable vs locked wallets with latest transaction metadata, category cashflow, active budgets, goal pacing with linked wallet balances, and active debts/loans.
 
 ### 2. Wallets
 - **\`GET /api/v1/wallets\`**
@@ -357,7 +360,7 @@ For autonomous coding agents (Claude Desktop, OpenCode, Pi, OMP):
 - **Tools Reference**:
   * \`get_user_profile\` (Current User Profile: name, email, WhatsApp, createdAt)
   * \`register_user\`, \`login_user\` (Auth & Onboarding)
-  * \`manage_wallet\` (create, list, update, delete), \`manage_category\` (create, list, seed, update, delete), \`manage_budget\` (create, list, status, update, delete), \`manage_debt_loan\` (create, list, repay, update, delete), \`manage_goal\` (create, list, update, link, unlink, delete), \`manage_recurring_template\` (create, list, update, delete, apply)
+  * \`manage_wallet\` (create, list, update, delete), \`manage_category\` (create, list, seed, update, delete), \`manage_budget\` (create, list, status, update, delete), \`manage_debt_loan\` (create, list, repay, update, delete), \`manage_goal\` (create, list, update, link, unlink, delete), \`manage_recurring_template\` (create, list, update, delete), \`apply_recurring_template\` (Realize planned occurrence)
   * \`record_transaction\`, \`transfer_funds\`, \`update_transaction\`, \`delete_transaction\`, \`list_transactions\` (Financial Transactions)
   * \`financial_summary\`, \`get_account_detail\` (Consolidated Net Worth & Health Report)
   * \`submit_feedback\` (Feedback to internal D1)

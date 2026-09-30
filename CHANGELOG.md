@@ -4,6 +4,16 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/): `Added`, `Changed`,
 `Deprecated`, `Removed`, `Fixed`, `Security` sections per release.
 
+## [1.12.0] — 2026-09-30
+
+### Changed
+- Contract & Documentation Hygiene:
+  - **Dead Route Removal**: Removed inoperative `POST /api/v1/goals/:goalId/contribute` route from `src/routes/goals.ts` and OpenAPI specification (`src/docs/openapi.ts`). Endpoint now consistently returns HTTP 404 Not Found.
+  - **OpenAPI Schema Alignment**: Corrected `adjustWalletBalance` property to `default: true` on `POST /api/v1/debts-loans` and `POST /api/v1/debts-loans/{id}/repay` in `src/docs/openapi.ts`, matching service implementation.
+  - **Alias Route Documentation**: Documented `PATCH /api/v1/user/profile` alias in OpenAPI alongside `/api/v1/me`.
+  - **LLM Manifest Updates**: Added `GET /api/v1/account-detail` documentation under Analytics & Summary in `src/docs/llms.ts`. Corrected `manage_recurring_template` actions to `(create, list, update, delete)` and documented `apply_recurring_template` as an autonomous top-level tool.
+  - **README Updates**: Updated MCP tool count to 18 tools, listed all registered tools, and removed obsolete `contributeGoal` reference from architecture tree.
+
 ## [1.11.0] — 2026-09-30
 
 ### Added

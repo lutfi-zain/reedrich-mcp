@@ -4190,15 +4190,13 @@ describe('REST API Write Endpoints Parity', () => {
     }, env);
     assert.equal(patchRes.status, 200);
 
-    // 6.2 POST /api/v1/goals/:goalId/contribute
+    // 6.2 POST /api/v1/goals/:goalId/contribute is removed and returns 404
     const contRes = await app.request(`https://example.workers.dev/api/v1/goals/${goal.goalId}/contribute`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ amount: 5000000 }),
     }, env);
-    assert.equal(contRes.status, 400);
-    const contErr: any = await contRes.json();
-    assert.equal(contErr.error, 'VALIDATION');
+    assert.equal(contRes.status, 404);
     const linkRes = await app.request(`https://example.workers.dev/api/v1/goals/${goal.goalId}/wallets`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },

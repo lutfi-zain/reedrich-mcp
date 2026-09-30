@@ -7,7 +7,6 @@ import {
   createGoal,
   updateGoal,
   deleteGoal,
-  contributeGoal,
   linkGoalWallet,
   unlinkGoalWallet,
 } from "../services/goal";
@@ -58,14 +57,6 @@ goals.delete("/:goalId", async (c) => {
   return c.json(result, 200);
 });
 
-goals.post("/:goalId/contribute", async (c) => {
-  const userId = c.get("userId");
-  const db = drizzle(c.env.DB, { schema });
-  const goalId = c.req.param("goalId");
-  const body = (await c.req.json()) as Record<string, unknown>;
-  const result = await contributeGoal(db, userId!, goalId, body as any);
-  return c.json(result, 200);
-});
 
 goals.post("/:goalId/wallets", async (c) => {
   const userId = c.get("userId");

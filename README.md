@@ -16,7 +16,7 @@ Stateless Model Context Protocol (MCP) server for personal finance & determinist
   - System category protection: internal \`"Adjustment"\` category cannot be renamed or deleted.
   - Transaction deletion: automatically executes atomic balance reversal (`applyBalanceDelta(..., -1)`).
   - Transaction type switching: in-place mutation between `expense`, `income`, and `transfer` with two-phase atomic balance reconciliation and target wallet invariants.
-- **MCP Tools Registry**:
+- **18 MCP Tools Registry**:
   - \`get_user_profile\`: Discover authenticated user identity (name, email, WhatsApp, registration date) with zero required arguments.
   - \`register_user\` & \`login_user\`: Pure MCP user onboarding and persistent API key authentication.
   - \`submit_feedback\`: Submit user feedback, bug reports, questions, or feature requests directly to internal D1 database.
@@ -25,7 +25,8 @@ Stateless Model Context Protocol (MCP) server for personal finance & determinist
   - \`manage_budget\`: Create, list, check status, update, or delete spending budgets.
   - \`manage_debt_loan\`: Create, list, record repayments, update, or delete liabilities and receivables.
   - \`manage_goal\`: Create, list, update, delete, or link/unlink dedicated wallets with derived balance calculations.
-  - \`manage_recurring_template\`: Create, list, update, delete, or materialize recurring income, expense, and transfer schedules.
+  - \`manage_recurring_template\`: Create, list, update, or delete recurring income, expense, and transfer schedules.
+  - \`apply_recurring_template\`: Realize a materialized planned occurrence and atomically advance recurrence schedule.
   - \`record_transaction\`, \`transfer_funds\`, \`update_transaction\`, \`delete_transaction\`: Complete financial transaction lifecycle with automatic atomic balance synchronization.
   - \`list_transactions\`: Dynamic filtering across date ranges, wallets, categories, budgets, and planning status with pagination.
   - \`financial_summary\` & \`get_account_detail\`: Comprehensive situational reporting, multi-currency net worth (live FX), Safe-to-Spend runway, and cashflow breakdowns.
@@ -365,7 +366,7 @@ src/
 │   ├── transaction.ts    # listTransactions, recordTransaction, updateTransaction, applyBalanceDelta
 │   ├── transfer.ts       # transferFunds
 │   ├── debt-loan.ts      # listDebtsLoans, createDebtLoan, repayDebtLoan, updateDebtLoan
-│   ├── goal.ts           # listGoals, createGoal, updateGoal, contributeGoal, deleteGoal
+│   ├── goal.ts           # listGoals, createGoal, updateGoal, deleteGoal
 │   ├── recurring.ts      # listRecurringTemplates, create/update/delete/apply template
 │   ├── summary.ts        # financialSummary
 │   └── feedback.ts       # submitFeedback
