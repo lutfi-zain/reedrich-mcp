@@ -4,6 +4,13 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/): `Added`, `Changed`,
 `Deprecated`, `Removed`, `Fixed`, `Security` sections per release.
 
+## [1.13.2] — 2026-09-30
+
+### Changed
+- Recurring Materialization Descriptions:
+  - `src/services/recurring.ts` now stores the plain template name as `transactionDescription` at all three insert sites (create materialization, update propagation, apply fallback insert).
+  - Template linkage remains structural via `transactionTemplateId` and `transactionOccurrenceDate`; no `[Recurring]` display prefix is written.
+
 ## [1.13.1] — 2026-09-30
 
 ### Fixed

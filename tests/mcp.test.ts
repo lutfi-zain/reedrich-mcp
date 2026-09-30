@@ -3603,6 +3603,8 @@ describe('Recurring Planned Materialization', () => {
     assert.ok(rows.every((r) => r.transactionIsPlanned === 1));
     assert.ok(rows.every((r) => r.transactionOccurrenceDate !== null));
     assert.equal(rows[0].transactionOccurrenceDate, '2026-10-01');
+    assert.ok(rows.every((r) => r.transactionDescription === 'Monthly Dues'));
+    assert.ok(rows.every((r) => !r.transactionDescription.startsWith('[Recurring]')));
 
     // Balance untouched by materialization
     const wallets = await db.select().from(schema.wallets).where(eq(schema.wallets.walletId, wallet.walletId));
@@ -3683,6 +3685,7 @@ describe('Recurring Planned Materialization', () => {
     assert.equal(fallback.transaction.transactionIsPlanned, 0);
     assert.equal(fallback.transaction.transactionTemplateId, tpl.templateId);
     assert.equal(fallback.transaction.transactionOccurrenceDate, '2040-01-15');
+    assert.equal(fallback.transaction.transactionDescription, 'Gym');
   });
 
   it('5.3 Propagation: future-only rewrite, cancel no-op, immutability, deactivate cleanup', async () => {
