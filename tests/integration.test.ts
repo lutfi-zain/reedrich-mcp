@@ -1206,7 +1206,17 @@ describe('Integration Test: Full User Journey (Deployed Worker + Remote D1)', ()
       headers: authHeaders,
     });
     assert.equal(delFailWallet.status, 400); // Has balance > 0
+    // 14. Transaction Type Mutation (PATCH /transactions/:id with type)
+    const typeSwitchRes = await fetch(`${WORKER_URL}/api/v1/transactions/${transferTx.transactionId}`, {
+      method: 'PATCH',
+      headers: authHeaders,
+      body: JSON.stringify({ type: 'expense' }),
+    });
+    assert.equal(typeSwitchRes.status, 200);
+    const typeSwitchData: any = await typeSwitchRes.json();
+    assert.equal(typeSwitchData.transactionType, 'expense');
+    assert.equal(typeSwitchData.transactionTargetWalletId, null);
 
-    console.log(`    ✓ Comprehensive CRUD Parity: verified GET /:id, PATCH categories/budgets/me, DELETE wallets/categories/budgets/debts-loans with financial guards`);
+    console.log(`    ✓ Comprehensive CRUD Parity & Type Mutation: verified GET /:id, PATCH categories/budgets/me/transactions(type), DELETE wallets/categories/budgets/debts-loans`);
   });
 });

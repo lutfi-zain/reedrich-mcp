@@ -14,7 +14,8 @@ Stateless Model Context Protocol (MCP) server for personal finance & determinist
 - **Financial Invariants & Integrity Guards**:
   - Wallet deletion guard: rejects deletion if balance != 0 or if actively linked to in-progress goals or active recurring templates.
   - System category protection: internal \`"Adjustment"\` category cannot be renamed or deleted.
-  - Transaction deletion: automatically executes atomic balance reversal (\`applyBalanceDelta(..., -1)\`).
+  - Transaction deletion: automatically executes atomic balance reversal (`applyBalanceDelta(..., -1)`).
+  - Transaction type switching: in-place mutation between `expense`, `income`, and `transfer` with two-phase atomic balance reconciliation and target wallet invariants.
 - **MCP Tools Registry**:
   - \`get_user_profile\`: Discover authenticated user identity (name, email, WhatsApp, registration date) with zero required arguments.
   - \`register_user\` & \`login_user\`: Pure MCP user onboarding and persistent API key authentication.

@@ -125,7 +125,7 @@ All REST endpoints return JSON with standard HTTP status codes. Common headers:
 - **\`POST /api/v1/transactions\`** *(HTTP 201)*
   - JSON Body: \`walletId\` (required), \`categoryId\` (required), \`amount\` (required), \`type\`, \`description\`, \`adminFee\`, \`budgetId\`, \`isPlanned\`, \`date\` / \`transactionDate\`.
 - **\`PATCH /api/v1/transactions/:transactionId\`** *(HTTP 200)*
-  - JSON Body: Any combination of \`amount\`, \`adminFee\`, \`walletId\`, \`targetWalletId\`, \`categoryId\`, \`budgetId\`, \`description\`, \`date\`, \`isPlanned\`.
+  - JSON Body: Any combination of \`type\` (expense|income|transfer), \`amount\`, \`adminFee\`, \`walletId\`, \`targetWalletId\`, \`categoryId\`, \`budgetId\`, \`description\`, \`date\`, \`isPlanned\`. Two-phase atomic balance reconciliation automatically applied when mutating type or amounts.
 - **\`DELETE /api/v1/transactions/:transactionId\`** *(HTTP 200)*
   - Permanently deletes transaction with automatic atomic balance reversal for realized transactions.
 - **\`POST /api/v1/transfers\`** *(HTTP 201)*
