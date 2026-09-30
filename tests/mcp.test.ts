@@ -4931,3 +4931,374 @@ describe('Comprehensive CRUD Lifecycle Parity Suite', () => {
     assert.equal(mcpDelDlData.success, true);
   });
 });
+
+describe('Transaction Type Mutation & Two-Phase Balance Reconciliation Suite', () => {
+  async function setupTypeMutationUser() {
+    const { d1 } = createTestDB();
+    const env = { DB: d1 as unknown as D1Database, JWT_SECRET: TEST_JWT_SECRET };
+    const db = drizzle(d1 as unknown as D1Database, { schema });
+    const userId = crypto.randomUUID();
+    const token = await generateUserToken({ userId }, TEST_JWT_SECRET);
+    await db.insert(schema.users).values({
+      userId,
+      userFirstName: 'Type',
+      userLastName: 'Switcher',
+      userEmail: `type_${userId}@example.com`,
+      userWhatsappNumber: '+6281234567899',
+      userApiKeyHash: `hash_${userId}`,
+    });
+
+    const [w1] = await db.insert(schema.wallets).values({
+      walletUserId: userId,
+      walletName: 'Primary Bank',
+      walletInstitution: 'BCA',
+      walletType: 'bank',
+      walletBalance: 1000000,
+      walletCurrency: 'IDR',
+    }).returning();
+
+    const [w2] = await db.insert(schema.wallets).values({
+      walletUserId: userId,
+      walletName: 'Pocket Cash',
+      walletInstitution: 'Cash',
+      walletType: 'cash',
+      walletBalance: 500000,
+      walletCurrency: 'IDR',
+    }).returning();
+
+    const [cat] = await db.insert(schema.categories).values({
+      categoryUserId: userId,
+      categoryName: 'General Expenses',
+      categoryType: 'expense',
+    }).returning();
+
+    const server = createMCPServer(db, userId, TEST_JWT_SECRET);
+    return { db, env, userId, token, w1, w2, cat, server };
+  }
+
+  it('1. Expense to Income to Expense transitions correctly reconcile balances', async () => {
+    const { env, token, w1, cat } = await setupTypeMutationUser();
+
+    // Create Expense of 100,000 -> w1 balance becomes 900,000
+    const createRes = await app.request('https://example.workers.dev/api/v1/transactions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        walletId: w1.walletId,
+        categoryId: cat.categoryId,
+        amount: 100000,
+        type: 'expense',
+        description: 'Test Expense',
+      }),
+    }, env);
+    assert.equal(createRes.status, 201);
+    const tx1 = await createRes.json<any>();
+    assert.equal(tx1.transactionType, 'expense');
+
+    // Check balance after expense
+    let w1Res = await app.request(`https://example.workers.dev/api/v1/wallets/${w1.walletId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal((await w1Res.json<any>()).walletBalance, 900000);
+
+    // Mutate: Expense -> Income
+    // Reversal: +100,000 (refund), Application: +100,000 (income) -> w1 balance becomes 1,100,000
+    const patchRes = await app.request(`https://example.workers.dev/api/v1/transactions/${tx1.transactionId}`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'income' }),
+    }, env);
+    assert.equal(patchRes.status, 200);
+    const patchedTx = await patchRes.json<any>();
+    assert.equal(patchedTx.transactionType, 'income');
+    assert.equal(patchedTx.transactionId, tx1.transactionId);
+
+    w1Res = await app.request(`https://example.workers.dev/api/v1/wallets/${w1.walletId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal((await w1Res.json<any>()).walletBalance, 1100000);
+
+    // Mutate back: Income -> Expense
+    // Reversal: -100,000, Application: -100,000 -> w1 balance returns to 900,000
+    const patchBackRes = await app.request(`https://example.workers.dev/api/v1/transactions/${tx1.transactionId}`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'expense' }),
+    }, env);
+    assert.equal(patchBackRes.status, 200);
+    assert.equal((await patchBackRes.json<any>()).transactionType, 'expense');
+
+    w1Res = await app.request(`https://example.workers.dev/api/v1/wallets/${w1.walletId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal((await w1Res.json<any>()).walletBalance, 900000);
+  });
+
+  it('2. Expense to Transfer to Expense transitions correctly reconcile both wallets', async () => {
+    const { env, token, w1, w2, cat } = await setupTypeMutationUser();
+
+    // Create Expense of 100,000 on w1 -> w1=900,000, w2=500,000
+    const createRes = await app.request('https://example.workers.dev/api/v1/transactions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        walletId: w1.walletId,
+        categoryId: cat.categoryId,
+        amount: 100000,
+        type: 'expense',
+      }),
+    }, env);
+    const tx = await createRes.json<any>();
+
+    // Mutate: Expense -> Transfer targeting w2
+    // Reversal w1: +100,000. New Transfer: w1 -100,000, w2 +100,000.
+    // Net: w1 = 900,000, w2 = 600,000
+    const toTransferRes = await app.request(`https://example.workers.dev/api/v1/transactions/${tx.transactionId}`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        type: 'transfer',
+        targetWalletId: w2.walletId,
+      }),
+    }, env);
+    assert.equal(toTransferRes.status, 200);
+    const transferTx = await toTransferRes.json<any>();
+    assert.equal(transferTx.transactionType, 'transfer');
+    assert.equal(transferTx.transactionTargetWalletId, w2.walletId);
+
+    const w1Res = await app.request(`https://example.workers.dev/api/v1/wallets/${w1.walletId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal((await w1Res.json<any>()).walletBalance, 900000);
+
+    const w2Res = await app.request(`https://example.workers.dev/api/v1/wallets/${w2.walletId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal((await w2Res.json<any>()).walletBalance, 600000);
+
+    // Mutate back: Transfer -> Expense
+    // Reversal: w1 +100,000, w2 -100,000. New Expense: w1 -100,000.
+    // Net: w1 = 900,000, w2 = 500,000 (restored!)
+    const backToExpenseRes = await app.request(`https://example.workers.dev/api/v1/transactions/${tx.transactionId}`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'expense' }),
+    }, env);
+    assert.equal(backToExpenseRes.status, 200);
+    const backTx = await backToExpenseRes.json<any>();
+    assert.equal(backTx.transactionType, 'expense');
+    assert.equal(backTx.transactionTargetWalletId, null);
+
+    const w2BackRes = await app.request(`https://example.workers.dev/api/v1/wallets/${w2.walletId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal((await w2BackRes.json<any>()).walletBalance, 500000);
+  });
+
+  it('3. Income to Transfer to Income transitions correctly reconcile balances', async () => {
+    const { env, token, w1, w2, cat } = await setupTypeMutationUser();
+
+    // Create Income of 50,000 on w1 -> w1=1,050,000, w2=500,000
+    const createRes = await app.request('https://example.workers.dev/api/v1/transactions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        walletId: w1.walletId,
+        categoryId: cat.categoryId,
+        amount: 50000,
+        type: 'income',
+      }),
+    }, env);
+    const tx = await createRes.json<any>();
+
+    // Mutate: Income -> Transfer to w2
+    // Reversal w1: -50,000. New Transfer: w1 -50,000, w2 +50,000.
+    // Net: w1 = 950,000, w2 = 550,000
+    const toTransferRes = await app.request(`https://example.workers.dev/api/v1/transactions/${tx.transactionId}`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        type: 'transfer',
+        targetWalletId: w2.walletId,
+      }),
+    }, env);
+    assert.equal(toTransferRes.status, 200);
+
+    const w1Res = await app.request(`https://example.workers.dev/api/v1/wallets/${w1.walletId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal((await w1Res.json<any>()).walletBalance, 950000);
+
+    const w2Res = await app.request(`https://example.workers.dev/api/v1/wallets/${w2.walletId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal((await w2Res.json<any>()).walletBalance, 550000);
+
+    // Mutate: Transfer -> Income
+    // Reversal: w1 +50,000, w2 -50,000. New Income: w1 +50,000.
+    // Net: w1 = 1,050,000, w2 = 500,000
+    const toIncomeRes = await app.request(`https://example.workers.dev/api/v1/transactions/${tx.transactionId}`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'income' }),
+    }, env);
+    assert.equal(toIncomeRes.status, 200);
+
+    const w1Back = await app.request(`https://example.workers.dev/api/v1/wallets/${w1.walletId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal((await w1Back.json<any>()).walletBalance, 1050000);
+
+    const w2Back = await app.request(`https://example.workers.dev/api/v1/wallets/${w2.walletId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal((await w2Back.json<any>()).walletBalance, 500000);
+  });
+
+  it('4. MCP tool update_transaction supports type switching', async () => {
+    const { server, token, env, w1, cat } = await setupTypeMutationUser();
+
+    const createRes = await app.request('https://example.workers.dev/api/v1/transactions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        walletId: w1.walletId,
+        categoryId: cat.categoryId,
+        amount: 25000,
+        type: 'expense',
+      }),
+    }, env);
+    const tx = await createRes.json<any>();
+
+    const toolRes = await callTool(server, 'update_transaction', {
+      transactionId: tx.transactionId,
+      type: 'income',
+    });
+    const toolData = JSON.parse(toolRes.content[0].text);
+    assert.equal(toolData.transactionType, 'income');
+  });
+
+  it('5. Validation errors for invalid type, missing targetWalletId, and identical wallets', async () => {
+    const { env, token, w1, cat } = await setupTypeMutationUser();
+
+    const createRes = await app.request('https://example.workers.dev/api/v1/transactions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        walletId: w1.walletId,
+        categoryId: cat.categoryId,
+        amount: 25000,
+        type: 'expense',
+      }),
+    }, env);
+    const tx = await createRes.json<any>();
+
+    // Invalid type string
+    const invalidTypeRes = await app.request(`https://example.workers.dev/api/v1/transactions/${tx.transactionId}`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'invalid_type' }),
+    }, env);
+    assert.equal(invalidTypeRes.status, 400);
+
+    // Switching to transfer without targetWalletId
+    const missingTargetRes = await app.request(`https://example.workers.dev/api/v1/transactions/${tx.transactionId}`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'transfer' }),
+    }, env);
+    assert.equal(missingTargetRes.status, 400);
+
+    // Switching to transfer with targetWalletId identical to walletId
+    const sameWalletRes = await app.request(`https://example.workers.dev/api/v1/transactions/${tx.transactionId}`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'transfer', targetWalletId: w1.walletId }),
+    }, env);
+    assert.equal(sameWalletRes.status, 400);
+
+    // Non-transfer passing explicit targetWalletId
+    const targetOnExpenseRes = await app.request(`https://example.workers.dev/api/v1/transactions/${tx.transactionId}`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'expense', targetWalletId: w1.walletId }),
+    }, env);
+    assert.equal(targetOnExpenseRes.status, 400);
+  });
+
+  it('6. Planned transaction type mutation does not modify wallet balances', async () => {
+    const { env, token, w1, cat } = await setupTypeMutationUser();
+
+    // Create planned expense of 300,000
+    const createRes = await app.request('https://example.workers.dev/api/v1/transactions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        walletId: w1.walletId,
+        categoryId: cat.categoryId,
+        amount: 300000,
+        type: 'expense',
+        isPlanned: true,
+      }),
+    }, env);
+    const tx = await createRes.json<any>();
+    assert.equal(tx.transactionIsPlanned, 1);
+
+    // Balance remains 1,000,000
+    let w1Res = await app.request(`https://example.workers.dev/api/v1/wallets/${w1.walletId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal((await w1Res.json<any>()).walletBalance, 1000000);
+
+    // Switch type to income
+    const patchRes = await app.request(`https://example.workers.dev/api/v1/transactions/${tx.transactionId}`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'income' }),
+    }, env);
+    assert.equal(patchRes.status, 200);
+    assert.equal((await patchRes.json<any>()).transactionType, 'income');
+
+    // Balance remains 1,000,000
+    w1Res = await app.request(`https://example.workers.dev/api/v1/wallets/${w1.walletId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal((await w1Res.json<any>()).walletBalance, 1000000);
+  });
+
+  it('7. Budget is unlinked when expense is mutated to income', async () => {
+    const { db, env, userId, token, w1, cat } = await setupTypeMutationUser();
+
+    const [budget] = await db.insert(schema.budgets).values({
+      budgetUserId: userId,
+      budgetName: 'Groceries Budget',
+      budgetCategoryId: cat.categoryId,
+      budgetAmount: 500000,
+      budgetPeriodStart: '2026-09-01T00:00:00Z',
+      budgetPeriodEnd: '2026-09-30T23:59:59Z',
+    }).returning();
+
+    const createRes = await app.request('https://example.workers.dev/api/v1/transactions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        walletId: w1.walletId,
+        categoryId: cat.categoryId,
+        budgetId: budget.budgetId,
+        amount: 50000,
+        type: 'expense',
+      }),
+    }, env);
+    const tx = await createRes.json<any>();
+    assert.equal(tx.transactionBudgetId, budget.budgetId);
+
+    // Mutate to income
+    const patchRes = await app.request(`https://example.workers.dev/api/v1/transactions/${tx.transactionId}`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'income' }),
+    }, env);
+    assert.equal(patchRes.status, 200);
+    assert.equal((await patchRes.json<any>()).transactionBudgetId, null);
+  });
+});

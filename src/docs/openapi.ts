@@ -1441,6 +1441,7 @@ export function generateOpenApiSpec(origin: string): Record<string, unknown> {
                 schema: {
                   type: "object",
                   properties: {
+                    type: { type: "string", enum: ["expense", "income", "transfer"], description: "Optional: Mutate transaction type with two-phase balance reconciliation" },
                     amount: { type: "number", minimum: 0.01 },
                     adminFee: { type: "number", minimum: 0 },
                     walletId: { type: "string", format: "uuid" },

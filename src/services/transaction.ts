@@ -372,6 +372,7 @@ export async function recordTransaction(
 }
 
 export interface UpdateTransactionParams {
+  type?: unknown;
   amount?: unknown;
   adminFee?: unknown;
   walletId?: unknown;
@@ -382,7 +383,6 @@ export interface UpdateTransactionParams {
   transactionDate?: unknown;
   isPlanned?: unknown;
 }
-
 export async function updateTransaction(
   db: DrizzleD1Database<typeof schema>,
   userId: string,
@@ -409,6 +409,7 @@ export async function updateTransaction(
   }
 
   const {
+    type,
     amount,
     adminFee,
     walletId,
@@ -419,6 +420,20 @@ export async function updateTransaction(
     transactionDate,
     isPlanned,
   } = params;
+
+  let newType = existingTx.transactionType;
+  if (type !== undefined) {
+    if (
+      typeof type !== "string" ||
+      !["expense", "income", "transfer"].includes(type.trim().toLowerCase())
+    ) {
+      validationError(
+        "Validation Error: 'type' must be 'expense', 'income', or 'transfer'",
+        "type"
+      );
+    }
+    newType = type.trim().toLowerCase();
+  }
 
   if (amount !== undefined && !isValidPositiveNumber(amount)) {
     validationError("Validation Error: 'amount' must be a positive finite number greater than 0", "amount");
@@ -458,12 +473,21 @@ export async function updateTransaction(
   }
 
   let newTargetWalletId = existingTx.transactionTargetWalletId;
-  if (targetWalletId !== undefined) {
-    if (targetWalletId === null || targetWalletId === "") {
-      newTargetWalletId = null;
-    } else {
-      if (!isValidUUID(targetWalletId)) validationError("Validation Error: 'targetWalletId' must be a valid UUID", "targetWalletId");
-      const cleanTWId = targetWalletId.trim();
+  if (newType === "transfer") {
+    if (targetWalletId !== undefined) {
+      if (targetWalletId === null || targetWalletId === "") {
+        validationError(
+          "Validation Error: 'targetWalletId' is required for transfer transactions",
+          "targetWalletId"
+        );
+      }
+      if (!isValidUUID(targetWalletId)) {
+        validationError(
+          "Validation Error: 'targetWalletId' must be a valid UUID",
+          "targetWalletId"
+        );
+      }
+      const cleanTWId = (targetWalletId as string).trim();
       const tw = await db
         .select()
         .from(schema.wallets)
@@ -476,7 +500,27 @@ export async function updateTransaction(
         .get();
       if (!tw) notFound("Target Wallet", cleanTWId);
       newTargetWalletId = cleanTWId;
+    } else if (!newTargetWalletId) {
+      validationError(
+        "Validation Error: 'targetWalletId' is required when switching to a transfer transaction",
+        "targetWalletId"
+      );
     }
+
+    if (newWalletId === newTargetWalletId) {
+      validationError(
+        "Validation Error: 'walletId' and 'targetWalletId' cannot be the same wallet",
+        "targetWalletId"
+      );
+    }
+  } else {
+    if (targetWalletId !== undefined && targetWalletId !== null && targetWalletId !== "") {
+      validationError(
+        "Validation Error: 'targetWalletId' is only allowed for transfer transactions",
+        "targetWalletId"
+      );
+    }
+    newTargetWalletId = null;
   }
 
   let newCategoryId = existingTx.transactionCategoryId;
@@ -502,12 +546,14 @@ export async function updateTransaction(
   }
 
   let newBudgetId = existingTx.transactionBudgetId;
-  if (budgetId !== undefined) {
+  if (newType !== "expense") {
+    newBudgetId = null;
+  } else if (budgetId !== undefined) {
     if (budgetId === null || budgetId === "") {
       newBudgetId = null;
     } else {
       if (!isValidUUID(budgetId)) validationError("Validation Error: 'budgetId' must be a valid UUID", "budgetId");
-      const cleanBId = budgetId.trim();
+      const cleanBId = (budgetId as string).trim();
       const b = await db
         .select()
         .from(schema.budgets)
@@ -545,7 +591,7 @@ export async function updateTransaction(
     await applyBalanceDelta(
       db,
       userId,
-      existingTx.transactionType,
+      newType,
       newWalletId,
       newTargetWalletId,
       newAmount,
@@ -555,10 +601,11 @@ export async function updateTransaction(
   }
 
   const updates: Partial<typeof schema.transactions.$inferInsert> = {
+    transactionType: newType,
     transactionAmount: newAmount,
     transactionAdminFee: newAdminFee,
     transactionWalletId: newWalletId,
-    transactionTargetWalletId: newTargetWalletId,
+    transactionTargetWalletId: newType === "transfer" ? newTargetWalletId : null,
     transactionCategoryId: newCategoryId,
     transactionBudgetId: newBudgetId,
     transactionIsPlanned: newIsPlannedInt,
@@ -585,7 +632,31 @@ export async function updateTransaction(
     )
     .returning();
 
-  return updated[0];
+  let notice: string | undefined;
+  if (
+    (newType === "expense" || newType === "transfer") &&
+    newIsPlannedInt === 0 &&
+    newWalletId
+  ) {
+    const sourceWallet = await db
+      .select()
+      .from(schema.wallets)
+      .where(
+        and(
+          eq(schema.wallets.walletId, newWalletId),
+          eq(schema.wallets.walletUserId, userId)
+        )
+      )
+      .get();
+    if (sourceWallet && Number(sourceWallet.walletIsLocked) === 1) {
+      notice = `Notice: ${newType === "expense" ? "Expense recorded" : "Outward transfer"} on locked wallet '${newWalletId}'. Protected capital reserve reduced.`;
+    }
+  }
+
+  return {
+    ...updated[0],
+    ...(notice ? { notice } : {}),
+  };
 }
 
 export async function deleteTransaction(

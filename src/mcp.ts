@@ -650,11 +650,12 @@ Authentication Note: You are already authenticated via OAuth / Bearer token. Nev
       },
       {
         name: "update_transaction",
-        description: "Update an existing transaction (amount, admin fee, wallet, category, budget, date, note, or planned status) with automatic atomic balance reconciliation.",
+        description: "Update an existing transaction (type, amount, admin fee, wallet, target wallet, category, budget, date, note, or planned status) with automatic atomic balance reconciliation.",
         inputSchema: {
           type: "object",
           properties: {
             transactionId: { type: "string", description: "Transaction UUID to update" },
+            type: { type: "string", enum: ["expense", "income", "transfer"], description: "Optional: Mutate transaction type with two-phase atomic balance reconciliation across affected wallets" },
             amount: { type: "number", minimum: 0.01, description: "New transaction amount" },
             adminFee: { type: "number", minimum: 0, description: "New admin fee" },
             walletId: { type: "string", description: "New Source Wallet UUID" },

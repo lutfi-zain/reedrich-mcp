@@ -4,6 +4,18 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/): `Added`, `Changed`,
 `Deprecated`, `Removed`, `Fixed`, `Security` sections per release.
 
+## [1.11.0] — 2026-09-30
+
+### Added
+- In-Place Transaction Type Mutation (`expense` ↔ `income` ↔ `transfer`):
+  - **Service Layer**: Extended `UpdateTransactionParams` with optional `type?: unknown` in `src/services/transaction.ts`. Added validation restricting types to `'expense' | 'income' | 'transfer'`.
+  - **Target Wallet Invariants**: Enforces `targetWalletId` as mandatory when switching to `'transfer'` (and asserts `targetWalletId !== walletId`), while rejecting and nullifying `targetWalletId` for `'expense'` and `'income'`.
+  - **Budget Auto-Unlinking**: Automatically unlinks `transactionBudgetId: null` when an expense transaction is mutated to income or transfer.
+  - **Two-Phase Atomic Balance Reconciliation**: Reverses original transaction balance using `existingTx.transactionType` with multiplier `-1` (Phase 1), then applies new transaction balance using `newType` with multiplier `+1` (Phase 2), with guards preserving planned transaction balances.
+  - **MCP Tool**: Updated `update_transaction` tool schema in `src/mcp.ts` with `type` property (`expense`, `income`, `transfer`).
+  - **REST API**: Documented `type` parameter for `PATCH /api/v1/transactions/{transactionId}` in OpenAPI (`src/docs/openapi.ts`) and LLM manifest (`src/docs/llms.ts`).
+  - **Tests**: Added full unit test suite in `tests/mcp.test.ts` (all 6 state transitions, validation errors, planned transactions, budget unlinking) and E2E assertions in `tests/integration.test.ts`.
+
 ## [1.10.0] — 2026-09-28
 
 ### Added
