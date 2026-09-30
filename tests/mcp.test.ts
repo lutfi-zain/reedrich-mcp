@@ -5466,6 +5466,65 @@ describe('Frontend Query Enhancements & Horizon Projections Suite', () => {
     assert.equal(singleCItems.length, 1);
   });
 
+  it('3b. Destination wallet history includes incoming transfers and directed filtering narrows', async () => {
+    const { db, env, userId, token, w1, w2, c1 } = await setupQueryUser();
+
+    const [w3] = await db.insert(schema.wallets).values({
+      walletUserId: userId,
+      walletName: 'OVO Transit',
+      walletInstitution: 'OVO',
+      walletType: 'e-wallet',
+      walletBalance: 5000000,
+      walletCurrency: 'IDR',
+      walletIsLocked: 0,
+    }).returning();
+
+    // Expense on source wallet
+    await app.request('https://example.workers.dev/api/v1/transactions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ walletId: w1.walletId, categoryId: c1.categoryId, amount: 10000, description: 'Expense W1' }),
+    }, env);
+
+    // Transfer from W1 to W2
+    const transferRes = await app.request('https://example.workers.dev/api/v1/transfers', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sourceWalletId: w1.walletId, targetWalletId: w2.walletId, amount: 50000, description: 'W1 to W2' }),
+    }, env);
+    assert.equal(transferRes.status, 201);
+
+    // Transfer from W3 to W2
+    await app.request('https://example.workers.dev/api/v1/transfers', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sourceWalletId: w3.walletId, targetWalletId: w2.walletId, amount: 70000, description: 'W3 to W2' }),
+    }, env);
+
+
+    // Source wallet sees its expense and outgoing transfer
+    const sourceRes = await app.request(`https://example.workers.dev/api/v1/transactions?walletId=${w1.walletId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    const sourceItems = await sourceRes.json<any>();
+    assert.equal(sourceItems.length, 2);
+
+    // Directed flow narrows to W1 to W2 only
+    const directedRes = await app.request(`https://example.workers.dev/api/v1/transactions?walletId=${w1.walletId}&targetWalletId=${w2.walletId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    const directedItems = await directedRes.json<any>();
+    assert.equal(directedItems.length, 1);
+    assert.equal(directedItems[0].transactionTargetWalletId, w2.walletId);
+
+    // Multi-wallet union lists cross-wallet transfer once
+    const unionRes = await app.request(`https://example.workers.dev/api/v1/transactions?envelope=true&walletId=${w1.walletId},${w2.walletId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    const unionData = await unionRes.json<any>();
+    assert.equal(unionData.pagination.total, 3);
+  });
+
   it('4. Status alias filtering (realized vs planned vs all)', async () => {
     const { env, token, w1, c1 } = await setupQueryUser();
 

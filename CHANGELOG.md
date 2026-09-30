@@ -4,6 +4,14 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/): `Added`, `Changed`,
 `Deprecated`, `Removed`, `Fixed`, `Security` sections per release.
 
+## [1.13.1] — 2026-09-30
+
+### Fixed
+- Wallet-Inclusive Transfer Filtering:
+  - `GET /api/v1/transactions?walletId=<id>` and MCP `list_transactions` now match transfers where the wallet is the destination (`transactionTargetWalletId`), not only the source (`transactionWalletId`).
+  - Directed flow preserved: `walletId` + `targetWalletId` narrows to flows from source to destination; `targetWalletId` alone remains destination-only.
+  - Multi-wallet union lists cross-wallet transfers exactly once in items and pagination totals.
+
 ## [1.13.0] — 2026-09-30
 
 ### Added

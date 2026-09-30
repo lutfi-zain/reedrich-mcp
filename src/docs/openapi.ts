@@ -1488,8 +1488,8 @@ export function generateOpenApiSpec(origin: string): Record<string, unknown> {
           parameters: [
             { name: "q", in: "query", schema: { type: "string" }, description: "Search keyword in description (case-insensitive substring, alias: search)" },
             { name: "search", in: "query", schema: { type: "string" }, description: "Search keyword alias for q" },
-            { name: "walletId", in: "query", schema: { type: "string" }, description: "Filter by single source wallet UUID or comma-separated UUIDs" },
-            { name: "targetWalletId", in: "query", schema: { type: "string" }, description: "Filter by target wallet UUID or comma-separated UUIDs (transfers)" },
+            { name: "walletId", in: "query", schema: { type: "string" }, description: "Wallet statement filter: matches transactions where the wallet is source OR transfer destination (single UUID or comma-separated UUIDs)" },
+            { name: "targetWalletId", in: "query", schema: { type: "string" }, description: "Directed destination filter: with walletId it narrows to flows from source to destination; alone it matches transactions sent to the destination (transfers)" },
             { name: "categoryId", in: "query", schema: { type: "string" }, description: "Filter by category UUID or comma-separated UUIDs" },
             { name: "budgetId", in: "query", schema: { type: "string" }, description: "Filter by budget UUID or comma-separated UUIDs" },
             { name: "type", in: "query", schema: { type: "string", enum: ["expense", "income", "transfer"] }, description: "Filter by transaction type" },
