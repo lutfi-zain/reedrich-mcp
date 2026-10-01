@@ -76,6 +76,13 @@ All REST endpoints return JSON with standard HTTP status codes. Common headers:
     * `categoryBreakdown`: Spending breakdown by category name.
     * `activeGoals`: List of goals with progress percentage and target pacing.
     * `cashflowProjections`: 30-day forward projection based on recurring templates.
+- **`GET /api/v1/account-detail`**
+  - Query Params:
+    * `startDate` *(optional ISO-8601 string)*
+    * `endDate` *(optional ISO-8601 string)*
+    * `baseCurrency` *(optional, default "IDR")*
+  - Returns:
+    * Unified atomic financial snapshot: consolidated net worth, spendable vs locked wallets, monthly cashflow with category breakdown, enriched budgets (period boundaries, categoryId, pacing status, daysRemaining, dailyAllowance), enriched goals with milestones, and active debt/loan obligations.
 - **`GET /api/v1/analytics/horizon`** (and alias **`GET /api/v1/horizon`**)
   - Query / Body Params:
     * `months` *(optional integer 1-24, default 6)*

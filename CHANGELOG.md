@@ -4,6 +4,22 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/): `Added`, `Changed`,
 `Deprecated`, `Removed`, `Fixed`, `Security` sections per release.
 
+## [1.16.0] — 2026-10-01
+
+### Added
+- **Enriched Budget Schema & Pacing Engine (`src/utils/budgets.ts`, `src/services/budget.ts`, `src/services/account-snapshot.ts`)**:
+  - Implemented pure budget metrics calculator `calculateBudgetMetrics` evaluating lifecycle and spending health status (`upcoming`, `on_track`, `warning`, `exceeded`, `completed`), `daysRemaining`, and `dailyAllowance`.
+  - Added `periodStart`, `periodEnd`, `categoryId`, `status`, `daysRemaining`, and `dailyAllowance` to budget objects across `get_account_detail`, `GET /api/v1/account-detail`, `GET /api/v1/budgets`, and MCP tool `manage_budget(action: 'status')`.
+  - Standardized budget spending calculations to evaluate transactions strictly within each budget's own `[budgetPeriodStart, budgetPeriodEnd]` window, inclusive of `transactionAdminFee`.
+- **Enriched Goal Snapshot DTO (`src/services/account-snapshot.ts`)**:
+  - Added `targetDate`, `currency`, `status`, `requiredMonthlySavings`, and `isReached` boolean to goal items in `get_account_detail`.
+- **Enriched Obligations Snapshot DTO (`src/services/account-snapshot.ts`)**:
+  - Added original principal `amount`, `type` (`debt` vs `loan`), `walletId`, and `notes` to `activeDebts` and `activeLoans` in `get_account_detail`.
+- **Cashflow Accounting Hygiene**:
+  - Aligned `monthlyCashFlow` in `get_account_detail` to properly account for `transactionAdminFee` across expenses, income, and transfers, and exclude initial balance transactions from operational income.
+- **OpenAPI 3.0 Type Fidelity**:
+  - Replaced generic `{ type: "object" }` in `AccountDetail` with fully typed schemas for `budgets`, `goals`, and `obligations` in `src/docs/openapi.ts`.
+
 ## [1.15.0] — 2026-10-01
 
 ### Added

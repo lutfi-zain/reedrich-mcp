@@ -45,6 +45,7 @@ Stateless Model Context Protocol (MCP) server for personal finance & determinist
   - Full single-resource retrieval (\`GET /:id\`) for all 7 domain resources.
   - Enhanced transaction queries: universal pagination headers (\`X-Total-Count\`, \`X-Limit\`, \`X-Offset\`, \`X-Has-Next-Page\`), opt-in envelope (\`?envelope=true\`), keyword search (\`?q=\`), multi-value filters, and status aliases.
   - Multi-Period Horizon Board Projections: `GET /api/v1/analytics/horizon` (flexible 2D date intervals, payday cycles, and 1-24 month forward roadmap).
+  - Unified Account Snapshot: `GET /api/v1/account-detail` (atomic multi-currency net worth, spendable vs locked wallets, cashflow, enriched budgets with pacing & dates, goals, and obligations).
   - Full mutation parity (\`PATCH\`) and deletion (\`DELETE\`) with HTTP standard status codes (\`200\`, \`201\`, \`400\`, \`401\`, \`404\`).
 - **Interactive Scalar API Docs & OpenAPI 3.0**: Full interactive Scalar API Reference UI served at \`/docs\` (and \`/reference\`) with machine-readable OpenAPI 3.0 specification at \`/openapi.json\`.
 ---

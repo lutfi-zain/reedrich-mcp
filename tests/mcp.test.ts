@@ -17,6 +17,7 @@ import * as schema from '../src/db/schema';
 import { createMCPServer } from '../src/mcp';
 import app from '../src/index';
 import { reconcileMissingOpeningBalances } from '../src/services/wallet';
+import type { AccountDetailResult } from '../src/services/account-snapshot';
 import {
   generateUserToken,
   verifyUserToken,
@@ -5954,5 +5955,166 @@ describe('Wallet Snapshots, Zero Ghost Transactions & 2D Interval Horizon Suite'
     assert.equal(badPeriodRes.status, 400);
     const badPeriodJson = await badPeriodRes.json<any>();
     assert.equal(badPeriodJson.error, 'VALIDATION');
+  });
+
+  it('4. Enriched get_account_detail verifies budget status states, period boundaries, goals, and obligations', async () => {
+    const { db, env, server, userId, token } = await setupSnapshotUser();
+
+    // 1. Create a wallet
+    const [w] = await db.insert(schema.wallets).values({
+      walletUserId: userId,
+      walletName: 'Primary Wallet',
+      walletBalance: 10000000,
+      walletCurrency: 'IDR',
+    }).returning();
+
+    // 2. Create categories
+    const [catFood] = await db.insert(schema.categories).values({
+      categoryUserId: userId,
+      categoryName: 'Food',
+      categoryType: 'expense',
+    }).returning();
+
+    const [catTransport] = await db.insert(schema.categories).values({
+      categoryUserId: userId,
+      categoryName: 'Transport',
+      categoryType: 'expense',
+    }).returning();
+
+    // 3. Create Budgets:
+    // Budget 1: Active warning status (amount 1,000,000, spent 850,000 = 85% >= 80%)
+    const [bWarn] = await db.insert(schema.budgets).values({
+      budgetUserId: userId,
+      budgetName: 'Food Warning Budget',
+      budgetCategoryId: catFood.categoryId,
+      budgetAmount: 1000000,
+      budgetPeriodStart: '2026-10-01T00:00:00.000Z',
+      budgetPeriodEnd: '2026-10-31T23:59:59.999Z',
+    }).returning();
+
+    // Budget 2: Active exceeded status (amount 500,000, spent 600,000 = 120% > 100%)
+    const [bExceeded] = await db.insert(schema.budgets).values({
+      budgetUserId: userId,
+      budgetName: 'Transport Exceeded Budget',
+      budgetCategoryId: catTransport.categoryId,
+      budgetAmount: 500000,
+      budgetPeriodStart: '2026-10-01T00:00:00.000Z',
+      budgetPeriodEnd: '2026-10-31T23:59:59.999Z',
+    }).returning();
+
+    // Budget 3: Upcoming budget (November 2026, spent 0)
+    const [bUpcoming] = await db.insert(schema.budgets).values({
+      budgetUserId: userId,
+      budgetName: 'Holiday Upcoming Budget',
+      budgetAmount: 2000000,
+      budgetPeriodStart: '2026-11-01T00:00:00.000Z',
+      budgetPeriodEnd: '2026-11-30T23:59:59.999Z',
+    }).returning();
+
+    // Record expenses:
+    // Food expense: 800,000 + 50,000 fee = 850,000 total on 2026-10-05
+    await db.insert(schema.transactions).values({
+      transactionUserId: userId,
+      transactionWalletId: w.walletId,
+      transactionCategoryId: catFood.categoryId,
+      transactionAmount: 800000,
+      transactionAdminFee: 50000,
+      transactionType: 'expense',
+      transactionIsPlanned: 0,
+      transactionDate: '2026-10-05T12:00:00Z',
+    });
+
+    // Transport expense: 600,000 with 0 fee = 600,000 on 2026-10-06
+    await db.insert(schema.transactions).values({
+      transactionUserId: userId,
+      transactionWalletId: w.walletId,
+      transactionCategoryId: catTransport.categoryId,
+      transactionAmount: 600000,
+      transactionAdminFee: 0,
+      transactionType: 'expense',
+      transactionIsPlanned: 0,
+      transactionDate: '2026-10-06T12:00:00Z',
+    });
+
+    // 4. Create Goal with targetDate and currency
+    await db.insert(schema.goals).values({
+      goalUserId: userId,
+      goalName: 'New Car Fund',
+      goalTargetAmount: 100000000,
+      goalCurrentAmount: 25000000,
+      goalCurrency: 'IDR',
+      goalTargetDate: '2027-12-31',
+      goalStatus: 'in_progress',
+    });
+
+    // 5. Create Debt and Loan with amount, walletId, and notes
+    await db.insert(schema.debtsLoans).values({
+      debtLoanUserId: userId,
+      debtLoanPersonName: 'Bank Loan Obligation',
+      debtLoanType: 'debt',
+      debtLoanAmount: 5000000,
+      debtLoanRemainingAmount: 2000000,
+      debtLoanWalletId: w.walletId,
+      debtLoanDueDate: '2026-10-25',
+      debtLoanStatus: 'partially_paid',
+      debtLoanNotes: 'Car installment',
+    });
+
+    // 6. Call get_account_detail via MCP tool
+    const mcpRes = await callTool(server, 'get_account_detail', {});
+    const snap = JSON.parse(mcpRes.content[0].text) as AccountDetailResult;
+
+    // Verify Budgets
+    assert.equal(snap.budgets.length, 3);
+    const itemWarn = snap.budgets.find((b) => b.budgetId === bWarn.budgetId);
+    assert.ok(itemWarn);
+    assert.equal(itemWarn.spent, 850000);
+    assert.equal(itemWarn.remaining, 150000);
+    assert.equal(itemWarn.percentUsed, 85);
+    assert.equal(itemWarn.status, 'warning');
+    assert.equal(itemWarn.periodStart, '2026-10-01T00:00:00.000Z');
+    assert.equal(itemWarn.periodEnd, '2026-10-31T23:59:59.999Z');
+    assert.ok(itemWarn.daysRemaining >= 0);
+    assert.ok(itemWarn.dailyAllowance >= 0);
+
+    const itemExceeded = snap.budgets.find((b) => b.budgetId === bExceeded.budgetId);
+    assert.ok(itemExceeded);
+    assert.equal(itemExceeded.spent, 600000);
+    assert.equal(itemExceeded.status, 'exceeded');
+
+    const itemUpcoming = snap.budgets.find((b) => b.budgetId === bUpcoming.budgetId);
+    assert.ok(itemUpcoming);
+    assert.equal(itemUpcoming.status, 'upcoming');
+    assert.equal(itemUpcoming.spent, 0);
+
+    // Verify Goals
+    assert.equal(snap.goals.length, 1);
+    const carGoal = snap.goals[0];
+    assert.equal(carGoal.goalName, 'New Car Fund');
+    assert.equal(carGoal.currency, 'IDR');
+    assert.equal(carGoal.targetDate, '2027-12-31');
+    assert.equal(carGoal.status, 'in_progress');
+    assert.equal(carGoal.isReached, false);
+    assert.ok(carGoal.requiredMonthlySavings > 0);
+
+    // Verify Obligations
+    assert.equal(snap.obligations.activeDebts.length, 1);
+    const debtItem = snap.obligations.activeDebts[0];
+    assert.equal(debtItem.personName, 'Bank Loan Obligation');
+    assert.equal(debtItem.amount, 5000000);
+    assert.equal(debtItem.remainingAmount, 2000000);
+    assert.equal(debtItem.type, 'debt');
+    assert.equal(debtItem.walletId, w.walletId);
+    assert.equal(debtItem.notes, 'Car installment');
+
+    // 7. REST Endpoint GET /api/v1/account-detail
+    const restRes = await app.request('https://example.workers.dev/api/v1/account-detail', {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal(restRes.status, 200);
+    const restData = (await restRes.json()) as AccountDetailResult;
+    assert.equal(restData.budgets.length, 3);
+    assert.equal(restData.goals.length, 1);
+    assert.equal(restData.obligations.activeDebts.length, 1);
   });
 });

@@ -6,7 +6,7 @@ import { validationError } from "./errors";
 import { listWallets, WalletLastTransaction } from "./wallet";
 import { getExchangeRates, convertCurrency, normalizeCurrencyForFx } from "../utils/fx";
 import { calculateGoalPacing } from "../utils/goals";
-
+import { calculateBudgetMetrics, BudgetSpendingStatus } from "../utils/budgets";
 export interface AccountDetailParams {
   startDate?: unknown;
   endDate?: unknown;
@@ -62,21 +62,31 @@ export interface AccountDetailResult {
   budgets: Array<{
     budgetId: string;
     budgetName: string;
+    categoryId: string | null;
     categoryName: string;
     amount: number;
+    periodStart: string;
+    periodEnd: string;
     spent: number;
     remaining: number;
     percentUsed: number;
-    status: "on_track" | "exceeded";
+    status: BudgetSpendingStatus;
+    daysRemaining: number;
+    dailyAllowance: number;
   }>;
   goals: Array<{
     goalId: string;
     goalName: string;
     targetAmount: number;
     currentAmount: number;
+    targetDate: string | null;
+    currency: string;
+    status: string;
     progressPercentage: number;
     isDerived: boolean;
     daysRemaining: number | null;
+    requiredMonthlySavings: number | null;
+    isReached: boolean;
     linkedWalletsBreakdown?: Array<{
       walletId: string;
       walletName: string;
@@ -92,16 +102,24 @@ export interface AccountDetailResult {
     activeDebts: Array<{
       debtLoanId: string;
       personName: string;
+      amount: number;
       remainingAmount: number;
       dueDate: string | null;
       status: string;
+      type: string;
+      walletId: string | null;
+      notes: string | null;
     }>;
     activeLoans: Array<{
       debtLoanId: string;
       personName: string;
+      amount: number;
       remainingAmount: number;
       dueDate: string | null;
       status: string;
+      type: string;
+      walletId: string | null;
+      notes: string | null;
     }>;
   };
 }
@@ -228,17 +246,29 @@ export async function getAccountDetail(
   const expenseByCategory: Record<string, number> = {};
 
   for (const t of txs) {
+    const fee = t.transactionAdminFee || 0;
     if (t.transactionType === "income") {
-      totalIncome += t.transactionAmount;
+      if (t.transactionDescription && t.transactionDescription.startsWith("Initial balance:")) {
+        continue;
+      }
+      totalIncome += t.transactionAmount - fee;
     } else if (t.transactionType === "expense") {
-      totalExpense += t.transactionAmount;
+      const totalCost = t.transactionAmount + fee;
+      totalExpense += totalCost;
       const catName = t.transactionCategoryId
         ? categoryMap.get(t.transactionCategoryId) || "Uncategorized"
         : "Uncategorized";
-      expenseByCategory[catName] = (expenseByCategory[catName] || 0) + t.transactionAmount;
+      expenseByCategory[catName] = (expenseByCategory[catName] || 0) + totalCost;
+    } else if (t.transactionType === "transfer") {
+      if (fee > 0) {
+        totalExpense += fee;
+        const catName = t.transactionCategoryId
+          ? categoryMap.get(t.transactionCategoryId) || "Transfer Fees"
+          : "Transfer Fees";
+        expenseByCategory[catName] = (expenseByCategory[catName] || 0) + fee;
+      }
     }
   }
-
   const categoryBreakdown = Object.entries(expenseByCategory).map(([categoryName, amount]) => {
     const percentage = totalExpense > 0 ? Number(((amount / totalExpense) * 100).toFixed(2)) : 0;
     return {
@@ -250,33 +280,66 @@ export async function getAccountDetail(
   categoryBreakdown.sort((a, b) => b.amount - a.amount);
 
   // 3. Budgets Aggregation
+  let allBudgetTxs: typeof txs = [];
+  if (budgetsData.length > 0) {
+    const minStart = budgetsData.reduce(
+      (min, b) => (b.budgetPeriodStart < min ? b.budgetPeriodStart : min),
+      budgetsData[0].budgetPeriodStart
+    );
+    const maxEnd = budgetsData.reduce(
+      (max, b) => (b.budgetPeriodEnd > max ? b.budgetPeriodEnd : max),
+      budgetsData[0].budgetPeriodEnd
+    );
+
+    allBudgetTxs = await db
+      .select()
+      .from(schema.transactions)
+      .where(
+        and(
+          eq(schema.transactions.transactionUserId, userId),
+          eq(schema.transactions.transactionIsPlanned, 0),
+          eq(schema.transactions.transactionType, "expense"),
+          gte(schema.transactions.transactionDate, minStart),
+          lte(schema.transactions.transactionDate, maxEnd)
+        )
+      );
+  }
+
   const budgets: AccountDetailResult["budgets"] = [];
   for (const b of budgetsData) {
     const catName = b.budgetCategoryId
       ? categoryMap.get(b.budgetCategoryId) || "General"
       : "General";
 
-    const bTxs = txs.filter((t) => {
-      if (t.transactionType !== "expense") return false;
+    const bTxs = allBudgetTxs.filter((t) => {
+      if (t.transactionDate < b.budgetPeriodStart || t.transactionDate > b.budgetPeriodEnd) return false;
       if (b.budgetCategoryId && t.transactionCategoryId === b.budgetCategoryId) return true;
       if (t.transactionBudgetId && t.transactionBudgetId === b.budgetId) return true;
       return false;
     });
 
-    const spent = bTxs.reduce((sum, t) => sum + t.transactionAmount, 0);
-    const remaining = Number((b.budgetAmount - spent).toFixed(2));
-    const percentUsed = b.budgetAmount > 0 ? Number(((spent / b.budgetAmount) * 100).toFixed(2)) : 0;
-    const status: "on_track" | "exceeded" = spent > b.budgetAmount ? "exceeded" : "on_track";
+    const spent = bTxs.reduce((sum, t) => sum + t.transactionAmount + (t.transactionAdminFee || 0), 0);
+    const metrics = calculateBudgetMetrics({
+      amount: b.budgetAmount,
+      periodStart: b.budgetPeriodStart,
+      periodEnd: b.budgetPeriodEnd,
+      spent,
+    });
 
     budgets.push({
       budgetId: b.budgetId,
       budgetName: b.budgetName,
+      categoryId: b.budgetCategoryId ?? null,
       categoryName: catName,
       amount: b.budgetAmount,
-      spent: Number(spent.toFixed(2)),
-      remaining,
-      percentUsed,
-      status,
+      periodStart: b.budgetPeriodStart,
+      periodEnd: b.budgetPeriodEnd,
+      spent: metrics.spent,
+      remaining: metrics.remaining,
+      percentUsed: metrics.percentUsed,
+      status: metrics.status,
+      daysRemaining: metrics.daysRemaining,
+      dailyAllowance: metrics.dailyAllowance,
     });
   }
 
@@ -307,14 +370,20 @@ export async function getAccountDetail(
         g.goalTargetDate,
         g.goalStatus
       );
+      const isReached = g.goalCurrentAmount >= g.goalTargetAmount;
       return {
         goalId: g.goalId,
         goalName: g.goalName,
         targetAmount: g.goalTargetAmount,
         currentAmount: g.goalCurrentAmount,
+        targetDate: g.goalTargetDate ?? null,
+        currency: (g.goalCurrency || "IDR").toUpperCase(),
+        status: g.goalStatus,
         progressPercentage: pacing.progressPercentage,
         isDerived: false,
         daysRemaining: pacing.daysRemaining,
+        requiredMonthlySavings: pacing.requiredMonthlySavings,
+        isReached,
       };
     }
 
@@ -354,14 +423,20 @@ export async function getAccountDetail(
       g.goalStatus
     );
 
+    const isReached = derivedTotal >= g.goalTargetAmount;
     return {
       goalId: g.goalId,
       goalName: g.goalName,
       targetAmount: g.goalTargetAmount,
       currentAmount: derivedTotal,
+      targetDate: g.goalTargetDate ?? null,
+      currency: goalCurrency,
+      status: g.goalStatus,
       progressPercentage: pacing.progressPercentage,
       isDerived: true,
       daysRemaining: pacing.daysRemaining,
+      requiredMonthlySavings: pacing.requiredMonthlySavings,
+      isReached,
       linkedWalletsBreakdown: linkedBreakdown,
     };
   });
@@ -378,18 +453,26 @@ export async function getAccountDetail(
       activeDebts.push({
         debtLoanId: dl.debtLoanId,
         personName: dl.debtLoanPersonName,
+        amount: dl.debtLoanAmount,
         remainingAmount: dl.debtLoanRemainingAmount,
         dueDate: dl.debtLoanDueDate,
         status: dl.debtLoanStatus,
+        type: dl.debtLoanType,
+        walletId: dl.debtLoanWalletId ?? null,
+        notes: dl.debtLoanNotes ?? null,
       });
     } else if (dl.debtLoanType === "loan") {
       totalReceivable += dl.debtLoanRemainingAmount;
       activeLoans.push({
         debtLoanId: dl.debtLoanId,
         personName: dl.debtLoanPersonName,
+        amount: dl.debtLoanAmount,
         remainingAmount: dl.debtLoanRemainingAmount,
         dueDate: dl.debtLoanDueDate,
         status: dl.debtLoanStatus,
+        type: dl.debtLoanType,
+        walletId: dl.debtLoanWalletId ?? null,
+        notes: dl.debtLoanNotes ?? null,
       });
     }
   }

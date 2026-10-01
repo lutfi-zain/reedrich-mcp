@@ -79,7 +79,7 @@ All REST endpoints return JSON with standard HTTP status codes. Common headers:
   - Returns: Consolidated net worth with live FX, breakdown by currency/institution, cashflows, active goals pacing, recurring cashflow projections.
 - **\`GET /api/v1/account-detail\`**
   - Query Params: \`startDate\`, \`endDate\`.
-  - Returns: Comprehensive financial snapshot in a single atomic call: multi-currency net worth, spendable vs locked wallets with latest transaction metadata, category cashflow, active budgets, goal pacing with linked wallet balances, and active debts/loans.
+  - Returns: Comprehensive financial snapshot in a single atomic call: multi-currency net worth, spendable vs locked wallets with latest transaction metadata, category cashflow, enriched budgets (period boundaries, categoryId, pacing status, daysRemaining, dailyAllowance), enriched goal pacing with milestone progress, and active debt/loan obligations.
 - **\`GET /api/v1/analytics/horizon\`** (and alias **\`GET /api/v1/horizon\`**)
   - Query / Body Params: \`months\` (1-24, default 6), \`periods\` (2D array of date intervals \`[[startDate, endDate], ...]\`, JSON string, or legacy \`YYYY-MM\`), \`filter\` (\`realized\` | \`planned\` | \`all\`, default \`all\`), \`baseCurrency\`.
   - Returns: Multi-period horizon board projections simulating cashflows, roll-forward wallet balance accumulation, spendable vs locked net worth trajectory, and goal milestone achievements across custom or monthly intervals.

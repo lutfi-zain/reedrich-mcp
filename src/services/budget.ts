@@ -6,6 +6,7 @@ import {
   normalizeToIsoTimestamp,
   isValidIsoDateOrTimestamp,
 } from "../utils/date";
+import { calculateBudgetMetrics, BudgetSpendingStatus } from "../utils/budgets";
 import {
   validationError,
   notFound,
@@ -149,15 +150,25 @@ export async function budgetStatus(
       .select()
       .from(schema.transactions)
       .where(and(...conditions));
-    const spent = txs.reduce((sum, tx) => sum + tx.transactionAmount, 0);
+    const spent = txs.reduce(
+      (sum, tx) => sum + tx.transactionAmount + (tx.transactionAdminFee || 0),
+      0
+    );
+    const metrics = calculateBudgetMetrics({
+      amount: b.budgetAmount,
+      periodStart: b.budgetPeriodStart,
+      periodEnd: b.budgetPeriodEnd,
+      spent,
+    });
+
     statusList.push({
       budget: b,
-      spent: Number(spent.toFixed(2)),
-      remaining: Number((b.budgetAmount - spent).toFixed(2)),
-      percentUsed:
-        b.budgetAmount > 0
-          ? Number(((spent / b.budgetAmount) * 100).toFixed(2))
-          : 0,
+      spent: metrics.spent,
+      remaining: metrics.remaining,
+      percentUsed: metrics.percentUsed,
+      status: metrics.status,
+      daysRemaining: metrics.daysRemaining,
+      dailyAllowance: metrics.dailyAllowance,
     });
   }
 
@@ -201,16 +212,25 @@ export async function getBudgetById(
   }
 
   const txs = await db.select().from(schema.transactions).where(and(...conditions));
-  const spent = txs.reduce((sum, tx) => sum + tx.transactionAmount, 0);
+  const spent = txs.reduce(
+    (sum, tx) => sum + tx.transactionAmount + (tx.transactionAdminFee || 0),
+    0
+  );
+  const metrics = calculateBudgetMetrics({
+    amount: budget.budgetAmount,
+    periodStart: budget.budgetPeriodStart,
+    periodEnd: budget.budgetPeriodEnd,
+    spent,
+  });
 
   return {
     budget,
-    spent: Number(spent.toFixed(2)),
-    remaining: Number((budget.budgetAmount - spent).toFixed(2)),
-    percentUsed:
-      budget.budgetAmount > 0
-        ? Number(((spent / budget.budgetAmount) * 100).toFixed(2))
-        : 0,
+    spent: metrics.spent,
+    remaining: metrics.remaining,
+    percentUsed: metrics.percentUsed,
+    status: metrics.status,
+    daysRemaining: metrics.daysRemaining,
+    dailyAllowance: metrics.dailyAllowance,
   };
 }
 export interface UpdateBudgetParams {
