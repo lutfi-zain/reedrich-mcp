@@ -4,6 +4,36 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/): `Added`, `Changed`,
 `Deprecated`, `Removed`, `Fixed`, `Security` sections per release.
 
+## [1.15.0] — 2026-10-01
+
+### Added
+- **Unified Ledger Timeline Engine (`src/utils/ledger.ts`)**:
+  - Core mathematical engine unifying single-period wallet snapshots and multi-period horizon chains.
+  - Baseline anchoring: Anchors at current live realized balance, rolls back realized transactions for past boundaries, and rolls forward planned roadmaps for future boundaries.
+  - Supports `realized`, `planned`, and `all` status filter modes.
+- **Wallet Point-in-Time & Date Range Snapshots**:
+  - `GET /api/v1/wallets` and MCP tool `manage_wallet(action: 'list')` accept `startDate`, `endDate`, and `filter` (`realized` | `planned` | `all`, default `all`).
+  - Returns structured `snapshot` object: `initialBalance`, `totalIn`, `totalOut`, `periodDelta`, and `totalBalance`.
+  - Preserves 100% backward compatibility when date parameters are omitted (raw wallet objects without `snapshot`).
+- **Flexible 2D Date Interval Horizon Boards**:
+  - `GET /api/v1/analytics/horizon` and `POST /api/v1/analytics/horizon` accept 2D array intervals: `[[startDate, endDate], ...]`.
+  - Enables custom non-calendar intervals such as monthly payday cycles (e.g. 25th-to-24th) and arbitrary planning sprints.
+  - Chains period ending balances directly into subsequent period starting balances ($P_N.\text{start} = P_{N-1}.\text{end}$).
+  - MCP tool `get_horizon_projections` updated with 2D array `periods` and `filter` arguments.
+- **Zero Ghost Transaction Invariant & Opening Balance Backfill**:
+  - `createWallet` automatically inserts an opening transaction (`isPlanned: 0`, `type: 'income'`, description `Initial balance: <walletName>`) whenever `balance > 0`.
+  - Idempotent backfill utility `reconcileMissingOpeningBalances(db, userId)` detects and resolves legacy wallets missing transaction backing.
+
+### Changed
+- **Operational Income Hygiene in Financial Summary**:
+  - `financial_summary` (`src/services/summary.ts`) now excludes `Adjustment` category transactions (initial balances and manual wallet delta adjustments) from `totalIncome` and `totalExpense` calculations, preventing distortion of earned income and savings rate metrics.
+- **Wallet Latest Transaction Hygiene**:
+  - `fetchLatestTransactionsByWallet` ignores opening balance transactions (`Initial balance%`), ensuring newly created wallets with balances report `lastTransaction: null` until the first real user transaction occurs.
+
+### Breaking Changes & Behavioral Migrations
+- **Opening Balance Transaction Creation**: Creating a wallet with `balance > 0` now creates an opening transaction row in `transactions`. Code or assertions expecting `transactions.length === 0` immediately following a non-zero balance wallet creation will now observe exactly 1 initial transaction.
+- **Horizon Board Chained Accumulator**: Period roll-forward balances in Horizon now strictly chain from unified ledger snapshots at `period[0].startDate`, ensuring consistency between single-period wallet snapshots and multi-period projections.
+
 ## [1.14.0] — 2026-10-01
 
 ### Added

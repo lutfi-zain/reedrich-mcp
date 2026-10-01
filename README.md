@@ -20,7 +20,7 @@ Stateless Model Context Protocol (MCP) server for personal finance & determinist
   - \`get_user_profile\`: Discover authenticated user identity (name, email, WhatsApp, registration date) with zero required arguments.
   - \`register_user\` & \`login_user\`: Pure MCP user onboarding and persistent API key authentication.
   - \`submit_feedback\`: Submit user feedback, bug reports, questions, or feature requests directly to internal D1 database.
-  - \`manage_wallet\`: Create, list, update, or delete wallets (with balance/link zero-guards).
+  - `manage_wallet`: Create, list, update, or delete wallets (with balance/link zero-guards, zero ghost transactions, and date-bounded balance snapshots).
   - \`manage_category\`: Create, list, update, delete, or bulk-seed standard categories (\`action: "seed_defaults"\`).
   - \`manage_budget\`: Create, list, check status, update, or delete spending budgets.
   - \`manage_debt_loan\`: Create, list, record repayments, update, or delete liabilities and receivables.
@@ -44,7 +44,7 @@ Stateless Model Context Protocol (MCP) server for personal finance & determinist
 - **REST API (\`/api/v1/*\`)**:
   - Full single-resource retrieval (\`GET /:id\`) for all 7 domain resources.
   - Enhanced transaction queries: universal pagination headers (\`X-Total-Count\`, \`X-Limit\`, \`X-Offset\`, \`X-Has-Next-Page\`), opt-in envelope (\`?envelope=true\`), keyword search (\`?q=\`), multi-value filters, and status aliases.
-  - Multi-Period Horizon Board Projections: \`GET /api/v1/analytics/horizon\` (1-24 month forward roadmap).
+  - Multi-Period Horizon Board Projections: `GET /api/v1/analytics/horizon` (flexible 2D date intervals, payday cycles, and 1-24 month forward roadmap).
   - Full mutation parity (\`PATCH\`) and deletion (\`DELETE\`) with HTTP standard status codes (\`200\`, \`201\`, \`400\`, \`401\`, \`404\`).
 - **Interactive Scalar API Docs & OpenAPI 3.0**: Full interactive Scalar API Reference UI served at \`/docs\` (and \`/reference\`) with machine-readable OpenAPI 3.0 specification at \`/openapi.json\`.
 ---

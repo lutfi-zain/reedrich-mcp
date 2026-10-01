@@ -81,12 +81,13 @@ All REST endpoints return JSON with standard HTTP status codes. Common headers:
   - Query Params: \`startDate\`, \`endDate\`.
   - Returns: Comprehensive financial snapshot in a single atomic call: multi-currency net worth, spendable vs locked wallets with latest transaction metadata, category cashflow, active budgets, goal pacing with linked wallet balances, and active debts/loans.
 - **\`GET /api/v1/analytics/horizon\`** (and alias **\`GET /api/v1/horizon\`**)
-  - Query Params: \`months\` (1-24, default 6), \`periods\` (comma-separated YYYY-MM), \`baseCurrency\`.
-  - Returns: Multi-period horizon board projections simulating month-by-month cashflows, roll-forward wallet balance accumulation, spendable vs locked net worth trajectory, and goal milestone achievements.
+  - Query / Body Params: \`months\` (1-24, default 6), \`periods\` (2D array of date intervals \`[[startDate, endDate], ...]\`, JSON string, or legacy \`YYYY-MM\`), \`filter\` (\`realized\` | \`planned\` | \`all\`, default \`all\`), \`baseCurrency\`.
+  - Returns: Multi-period horizon board projections simulating cashflows, roll-forward wallet balance accumulation, spendable vs locked net worth trajectory, and goal milestone achievements across custom or monthly intervals.
 
 ### 2. Wallets
 - **\`GET /api/v1/wallets\`**
-  - Returns: Array of user wallets with latest transaction metadata.
+  - Query Params: \`startDate\`, \`endDate\`, \`filter\` (\`realized\` | \`planned\` | \`all\`), \`isLocked\`.
+  - Returns: Array of user wallets with latest transaction metadata, and structured point-in-time \`snapshot\` object (\`initialBalance\`, \`totalIn\`, \`totalOut\`, \`periodDelta\`, \`totalBalance\`) when date parameters are supplied.
 - **\`GET /api/v1/wallets/:walletId\`** *(HTTP 200)*
   - Returns: Single wallet by UUID.
 - **\`POST /api/v1/wallets\`** *(HTTP 201)*

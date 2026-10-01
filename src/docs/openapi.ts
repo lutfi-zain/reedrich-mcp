@@ -827,7 +827,8 @@ export function generateOpenApiSpec(origin: string): Record<string, unknown> {
           security: [{ bearerAuth: [] }, { apiKeyHeader: [] }],
           parameters: [
             { name: "months", in: "query", schema: { type: "integer", minimum: 1, maximum: 24, default: 6 }, description: "Number of calendar months to project (1-24, default 6)" },
-            { name: "periods", in: "query", schema: { type: "string" }, description: "Optional comma-separated list of calendar months (YYYY-MM)" },
+            { name: "periods", in: "query", schema: { type: "string" }, description: "Optional period definitions: 2D array of date intervals [[startDate, endDate], ...], a JSON string thereof, or legacy comma-separated YYYY-MM months" },
+            { name: "filter", in: "query", schema: { type: "string", enum: ["realized", "planned", "all"], default: "all" }, description: "Status filter for roll-forward movements (default 'all')" },
             { name: "baseCurrency", in: "query", schema: { type: "string", default: "IDR" }, description: "Base currency for consolidated net worth and cashflows (default IDR)" },
           ],
           responses: {
@@ -955,6 +956,12 @@ export function generateOpenApiSpec(origin: string): Record<string, unknown> {
           description: "Returns all active accounts, bank accounts, and digital wallets for the authenticated user.",
           operationId: "listWallets",
           security: [{ bearerAuth: [] }, { apiKeyHeader: [] }],
+          parameters: [
+            { name: "startDate", in: "query", schema: { type: "string" }, description: "Optional start date for point-in-time balance snapshot" },
+            { name: "endDate", in: "query", schema: { type: "string" }, description: "Optional end date for point-in-time balance snapshot" },
+            { name: "filter", in: "query", schema: { type: "string", enum: ["realized", "planned", "all"], default: "all" }, description: "Optional status filter for snapshot calculations" },
+            { name: "isLocked", in: "query", schema: { type: "boolean" }, description: "Filter by wallet lock status" },
+          ],
           responses: {
             "200": {
               description: "Array of user wallets",

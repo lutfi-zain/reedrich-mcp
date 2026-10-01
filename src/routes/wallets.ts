@@ -8,7 +8,13 @@ const wallets = new Hono<AppEnv>();
 wallets.get("/", async (c) => {
   const userId = c.get("userId");
   const db = getDb(c.env);
-  const result = await listWallets(db, userId!);
+  const q = c.req.query();
+  const result = await listWallets(db, userId!, {
+    isLocked: q.isLocked,
+    startDate: q.startDate,
+    endDate: q.endDate,
+    filter: q.filter,
+  });
   return c.json(result, 200);
 });
 

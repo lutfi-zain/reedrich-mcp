@@ -16,6 +16,7 @@ import { eq, and, gt } from 'drizzle-orm';
 import * as schema from '../src/db/schema';
 import { createMCPServer } from '../src/mcp';
 import app from '../src/index';
+import { reconcileMissingOpeningBalances } from '../src/services/wallet';
 import {
   generateUserToken,
   verifyUserToken,
@@ -611,13 +612,13 @@ describe('Eve Finance MCP Server — Complete Test Suite', () => {
     const serverB = createMCPServer(db, userBId, TEST_JWT_SECRET);
 
     // Populate User A data (Wallet, Category, Budget, Transaction)
-    const walletA = JSON.parse((await callTool(serverA, 'manage_wallet', { action: 'create', name: 'Wallet A', balance: 500000 })).content[0].text);
+    const walletA = JSON.parse((await callTool(serverA, 'manage_wallet', { action: 'create', name: 'Wallet A', balance: 0 })).content[0].text);
     const catA = JSON.parse((await callTool(serverA, 'manage_category', { action: 'create', name: 'Cat A', type: 'expense' })).content[0].text);
     const budgetA = JSON.parse((await callTool(serverA, 'manage_budget', { action: 'create', name: 'Budget A', categoryId: catA.categoryId, amount: 100000, periodStart: '2026-08-01', periodEnd: '2026-08-31' })).content[0].text);
     await callTool(serverA, 'record_transaction', { walletId: walletA.walletId, categoryId: catA.categoryId, budgetId: budgetA.budgetId, amount: 50000, type: 'expense' });
 
     // Populate User B data
-    const walletB = JSON.parse((await callTool(serverB, 'manage_wallet', { action: 'create', name: 'Wallet B', balance: 200000 })).content[0].text);
+    const walletB = JSON.parse((await callTool(serverB, 'manage_wallet', { action: 'create', name: 'Wallet B', balance: 0 })).content[0].text);
     const catB = JSON.parse((await callTool(serverB, 'manage_category', { action: 'create', name: 'Cat B', type: 'expense' })).content[0].text);
     const budgetB = JSON.parse((await callTool(serverB, 'manage_budget', { action: 'create', name: 'Budget B', categoryId: catB.categoryId, amount: 50000, periodStart: '2026-08-01', periodEnd: '2026-08-31' })).content[0].text);
     await callTool(serverB, 'record_transaction', { walletId: walletB.walletId, categoryId: catB.categoryId, budgetId: budgetB.budgetId, amount: 25000, type: 'expense' });
@@ -3662,25 +3663,25 @@ describe('Recurring Planned Materialization', () => {
     })).content[0].text);
     assert.equal(up.walletBalance, 12000000);
     const adjRows = await db.select().from(schema.transactions).where(eq(schema.transactions.transactionWalletId, wallet.walletId));
-    assert.equal(adjRows.length, 1);
-    assert.equal(adjRows[0].transactionType, 'income');
-    assert.equal(adjRows[0].transactionAmount, 2000000);
-    const adjCat = await db.select().from(schema.categories).where(eq(schema.categories.categoryId, adjRows[0].transactionCategoryId));
+    assert.equal(adjRows.length, 2);
+    const upAdj = adjRows.find((r) => r.transactionAmount === 2000000);
+    assert.ok(upAdj);
+    assert.equal(upAdj.transactionType, 'income');
+    const adjCat = await db.select().from(schema.categories).where(eq(schema.categories.categoryId, upAdj.transactionCategoryId));
     assert.equal(adjCat[0].categoryName, 'Adjustment');
-
     // Downward adjustment prints expense row
     await callTool(userServer, 'manage_wallet', {
       action: 'update', walletId: wallet.walletId, balance: 11000000,
     });
     const adjRows2 = await db.select().from(schema.transactions).where(eq(schema.transactions.transactionWalletId, wallet.walletId));
-    assert.equal(adjRows2.length, 2);
+    assert.equal(adjRows2.length, 3);
 
     // Zero delta: no-op, no new row
     await callTool(userServer, 'manage_wallet', {
       action: 'update', walletId: wallet.walletId, balance: 11000000,
     });
     const adjRows3 = await db.select().from(schema.transactions).where(eq(schema.transactions.transactionWalletId, wallet.walletId));
-    assert.equal(adjRows3.length, 2);
+    assert.equal(adjRows3.length, 3);
   });
 });
 
@@ -5630,5 +5631,328 @@ describe('Frontend Query Enhancements & Horizon Projections Suite', () => {
     const toolData = JSON.parse(toolRes.content[0].text);
     assert.equal(toolData.baseCurrency, 'IDR');
     assert.equal(toolData.periods.length, 3);
+  });
+});
+
+describe('Wallet Snapshots, Zero Ghost Transactions & 2D Interval Horizon Suite', () => {
+  async function setupSnapshotUser() {
+    const { d1 } = createTestDB();
+    const env = { DB: d1 as unknown as D1Database, JWT_SECRET: TEST_JWT_SECRET };
+    const db = drizzle(d1 as unknown as D1Database, { schema });
+    const userId = crypto.randomUUID();
+    const token = await generateUserToken({ userId }, TEST_JWT_SECRET);
+    const server = createMCPServer(db, userId, TEST_JWT_SECRET);
+
+    await db.insert(schema.users).values({
+      userId,
+      userFirstName: 'Snapshot',
+      userLastName: 'Tester',
+      userEmail: `snapshot_${userId}@example.com`,
+      userWhatsappNumber: '+6281234568888',
+      userApiKeyHash: `hash_${userId}`,
+    });
+
+    return { db, env, userId, token, server };
+  }
+
+  it('1. Zero Ghost Transaction invariant on wallet creation and backfill reconciliation', async () => {
+    const { db, server, userId } = await setupSnapshotUser();
+
+    // 1.1 Creating wallet with balance > 0 inserts exactly one opening transaction
+    const resW1 = await callTool(server, 'manage_wallet', {
+      action: 'create',
+      name: 'Audited BCA',
+      balance: 5000000,
+      currency: 'IDR',
+    });
+    const w1 = JSON.parse(resW1.content[0].text);
+    assert.equal(w1.walletBalance, 5000000);
+
+    const txRows = await db
+      .select()
+      .from(schema.transactions)
+      .where(eq(schema.transactions.transactionWalletId, w1.walletId));
+    assert.equal(txRows.length, 1);
+    assert.equal(txRows[0].transactionAmount, 5000000);
+    assert.equal(txRows[0].transactionType, 'income');
+    assert.equal(txRows[0].transactionIsPlanned, 0);
+    assert.ok(txRows[0].transactionDescription?.includes('Initial balance: Audited BCA'));
+
+    // 1.2 Creating wallet with balance: 0 inserts 0 transaction rows
+    const resW2 = await callTool(server, 'manage_wallet', {
+      action: 'create',
+      name: 'Zero Balance Wallet',
+      balance: 0,
+      currency: 'IDR',
+    });
+    const w2 = JSON.parse(resW2.content[0].text);
+    assert.equal(w2.walletBalance, 0);
+
+    const txRows2 = await db
+      .select()
+      .from(schema.transactions)
+      .where(eq(schema.transactions.transactionWalletId, w2.walletId));
+    assert.equal(txRows2.length, 0);
+
+    // 1.3 Backfill reconciliation detects legacy wallet missing transactions
+    const legacyWalletId = crypto.randomUUID();
+    await db.insert(schema.wallets).values({
+      walletId: legacyWalletId,
+      walletUserId: userId,
+      walletName: 'Legacy Unbacked Wallet',
+      walletBalance: 3500000,
+      walletCurrency: 'IDR',
+    });
+
+    const recResult = await reconcileMissingOpeningBalances(db, userId);
+    assert.equal(recResult.reconciledCount, 1);
+    assert.equal(recResult.wallets[0].walletId, legacyWalletId);
+    assert.equal(recResult.wallets[0].delta, 3500000);
+
+    // Idempotent: running again produces 0 reconciliation
+    const recResult2 = await reconcileMissingOpeningBalances(db, userId);
+    assert.equal(recResult2.reconciledCount, 0);
+  });
+
+  it('2. Wallet snapshots across realized, planned, and all filters', async () => {
+    const { db, env, server, userId, token } = await setupSnapshotUser();
+
+    // Create primary wallet (initial balance 10,000,000)
+    const resW = await callTool(server, 'manage_wallet', {
+      action: 'create',
+      name: 'Snapshot Checking',
+      balance: 10000000,
+      currency: 'IDR',
+    });
+    const w = JSON.parse(resW.content[0].text);
+    // Ensure opening transaction is dated before period start so it acts as initialBalance
+    await db.update(schema.transactions)
+      .set({ transactionDate: '2026-09-30T23:59:59.000Z' })
+      .where(eq(schema.transactions.transactionWalletId, w.walletId));
+
+    const [cat] = await db
+      .insert(schema.categories)
+      .values({
+        categoryUserId: userId,
+        categoryName: 'Freelance & Coffee',
+        categoryType: 'expense',
+      })
+      .returning();
+
+    // Planned income: +4,000,000 in October 2026
+    await db.insert(schema.transactions).values({
+      transactionUserId: userId,
+      transactionWalletId: w.walletId,
+      transactionCategoryId: cat.categoryId,
+      transactionAmount: 4000000,
+      transactionType: 'income',
+      transactionIsPlanned: 1,
+      transactionDate: '2026-10-10T12:00:00Z',
+    });
+
+    // Planned expense: -1,500,000 in October 2026
+    await db.insert(schema.transactions).values({
+      transactionUserId: userId,
+      transactionWalletId: w.walletId,
+      transactionCategoryId: cat.categoryId,
+      transactionAmount: 1500000,
+      transactionType: 'expense',
+      transactionIsPlanned: 1,
+      transactionDate: '2026-10-20T12:00:00Z',
+    });
+
+    // 2.1 MCP manage_wallet with filter = 'all'
+    const listAllRes = await callTool(server, 'manage_wallet', {
+      action: 'list',
+      startDate: '2026-10-01',
+      endDate: '2026-10-31',
+      filter: 'all',
+    });
+    const listAll = JSON.parse(listAllRes.content[0].text);
+    const targetWAll = listAll.find((item: any) => item.walletId === w.walletId);
+    assert.ok(targetWAll);
+    assert.ok(targetWAll.snapshot);
+    assert.equal(targetWAll.snapshot.filter, 'all');
+    assert.equal(targetWAll.snapshot.initialBalance, 10000000);
+    assert.equal(targetWAll.snapshot.totalIn, 4000000);
+    assert.equal(targetWAll.snapshot.totalOut, 1500000);
+    assert.equal(targetWAll.snapshot.periodDelta, 2500000);
+    assert.equal(targetWAll.snapshot.totalBalance, 12500000);
+
+    // 2.2 MCP manage_wallet with filter = 'realized'
+    const listRealizedRes = await callTool(server, 'manage_wallet', {
+      action: 'list',
+      startDate: '2026-10-01',
+      endDate: '2026-10-31',
+      filter: 'realized',
+    });
+    const listRealized = JSON.parse(listRealizedRes.content[0].text);
+    const targetWRealized = listRealized.find((item: any) => item.walletId === w.walletId);
+    assert.ok(targetWRealized.snapshot);
+    assert.equal(targetWRealized.snapshot.filter, 'realized');
+    assert.equal(targetWRealized.snapshot.totalIn, 0);
+    assert.equal(targetWRealized.snapshot.totalOut, 0);
+    assert.equal(targetWRealized.snapshot.periodDelta, 0);
+    assert.equal(targetWRealized.snapshot.totalBalance, 10000000);
+
+    // 2.3 MCP manage_wallet with filter = 'planned' (baseline 0)
+    const listPlannedRes = await callTool(server, 'manage_wallet', {
+      action: 'list',
+      startDate: '2026-10-01',
+      endDate: '2026-10-31',
+      filter: 'planned',
+    });
+    const listPlanned = JSON.parse(listPlannedRes.content[0].text);
+    const targetWPlanned = listPlanned.find((item: any) => item.walletId === w.walletId);
+    assert.ok(targetWPlanned.snapshot);
+    assert.equal(targetWPlanned.snapshot.filter, 'planned');
+    assert.equal(targetWPlanned.snapshot.initialBalance, 0);
+    assert.equal(targetWPlanned.snapshot.periodDelta, 2500000);
+    assert.equal(targetWPlanned.snapshot.totalBalance, 2500000);
+
+    // 2.4 REST API GET /api/v1/wallets with snapshot params
+    const httpRes = await app.request('https://example.workers.dev/api/v1/wallets?startDate=2026-10-01&endDate=2026-10-31&filter=all', {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal(httpRes.status, 200);
+    const httpData = await httpRes.json<any>();
+    const httpW = httpData.find((item: any) => item.walletId === w.walletId);
+    assert.ok(httpW.snapshot);
+    assert.equal(httpW.snapshot.totalBalance, 12500000);
+
+    // 2.5 REST API GET /api/v1/wallets without date params preserves legacy response (no snapshot key)
+    const legacyRes = await app.request('https://example.workers.dev/api/v1/wallets', {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal(legacyRes.status, 200);
+    const legacyData = await legacyRes.json<any>();
+    const legacyW = legacyData.find((item: any) => item.walletId === w.walletId);
+    assert.equal(legacyW.snapshot, undefined);
+
+    // 2.6 Reject invalid filter value
+    const badFilterRes = await app.request('https://example.workers.dev/api/v1/wallets?filter=bogus_filter', {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal(badFilterRes.status, 400);
+    const badFilterJson = await badFilterRes.json<any>();
+    assert.equal(badFilterJson.error, 'VALIDATION');
+  });
+
+  it('3. Multi-Period Horizon Board supports 2D date intervals and chained roll-forward accumulation', async () => {
+    const { db, env, server, userId, token } = await setupSnapshotUser();
+
+    // Create Wallet 1 (Spendable: 10,000,000 IDR)
+    const [w1] = await db.insert(schema.wallets).values({
+      walletUserId: userId,
+      walletName: 'Salary Checking',
+      walletBalance: 10000000,
+      walletCurrency: 'IDR',
+      walletIsLocked: 0,
+    }).returning();
+
+    // Create Wallet 2 (Locked: 20,000,000 IDR)
+    const [w2] = await db.insert(schema.wallets).values({
+      walletUserId: userId,
+      walletName: 'Emergency Pocket',
+      walletBalance: 20000000,
+      walletCurrency: 'IDR',
+      walletIsLocked: 1,
+    }).returning();
+
+    const [cat] = await db.insert(schema.categories).values({
+      categoryUserId: userId,
+      categoryName: 'General Pay',
+      categoryType: 'expense',
+    }).returning();
+
+    // Planned income +5,000,000 in interval 1 (2026-09-25 to 2026-10-24)
+    await db.insert(schema.transactions).values({
+      transactionUserId: userId,
+      transactionWalletId: w1.walletId,
+      transactionCategoryId: cat.categoryId,
+      transactionAmount: 5000000,
+      transactionType: 'income',
+      transactionIsPlanned: 1,
+      transactionDate: '2026-10-05T10:00:00Z',
+    });
+
+    // Planned expense -2,000,000 in interval 2 (2026-10-25 to 2026-11-24)
+    await db.insert(schema.transactions).values({
+      transactionUserId: userId,
+      transactionWalletId: w1.walletId,
+      transactionCategoryId: cat.categoryId,
+      transactionAmount: 2000000,
+      transactionType: 'expense',
+      transactionIsPlanned: 1,
+      transactionDate: '2026-11-05T10:00:00Z',
+    });
+
+    // 3.1 Call GET /api/v1/analytics/horizon with 2D array intervals (payday cycles)
+    const periodsParam = encodeURIComponent(JSON.stringify([
+      ['2026-09-25', '2026-10-24'],
+      ['2026-10-25', '2026-11-24'],
+    ]));
+    const horizonRes = await app.request(`https://example.workers.dev/api/v1/analytics/horizon?periods=${periodsParam}&baseCurrency=IDR`, {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal(horizonRes.status, 200);
+    const horizonData = await horizonRes.json<any>();
+
+    assert.equal(horizonData.periods.length, 2);
+    const p1 = horizonData.periods[0];
+    const p2 = horizonData.periods[1];
+
+    // Period 1 boundaries
+    assert.equal(p1.periodKey, '2026-09-25_2026-10-24');
+    assert.equal(p1.startDate, '2026-09-25T00:00:00.000Z');
+    assert.equal(p1.endDate, '2026-10-24T23:59:59.999Z');
+    assert.equal(p1.cashflow.income, 5000000);
+    assert.equal(p1.cashflow.expense, 0);
+    const w1P1 = p1.walletBalances.find((b: any) => b.walletId === w1.walletId);
+    assert.equal(w1P1.balance, 15000000); // 10M + 5M
+
+    // Period 2 boundaries & chained roll-forward
+    assert.equal(p2.periodKey, '2026-10-25_2026-11-24');
+    assert.equal(p2.startDate, '2026-10-25T00:00:00.000Z');
+    assert.equal(p2.endDate, '2026-11-24T23:59:59.999Z');
+    assert.equal(p2.cashflow.expense, 2000000);
+    const w1P2 = p2.walletBalances.find((b: any) => b.walletId === w1.walletId);
+    assert.equal(w1P2.balance, 13000000); // 15M - 2M
+
+    // 3.2 POST /api/v1/analytics/horizon with JSON body
+    const postHorizonRes = await app.request('https://example.workers.dev/api/v1/analytics/horizon', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        periods: [
+          ['2026-09-25', '2026-10-24'],
+          ['2026-10-25', '2026-11-24'],
+        ],
+        filter: 'all',
+      }),
+    }, env);
+    assert.equal(postHorizonRes.status, 200);
+    const postHorizonData = await postHorizonRes.json<any>();
+    assert.equal(postHorizonData.periods.length, 2);
+
+    // 3.3 MCP get_horizon_projections tool call with 2D array
+    const mcpRes = await callTool(server, 'get_horizon_projections', {
+      periods: [
+        ['2026-09-25', '2026-10-24'],
+        ['2026-10-25', '2026-11-24'],
+      ],
+      filter: 'all',
+    });
+    const mcpData = JSON.parse(mcpRes.content[0].text);
+    assert.equal(mcpData.periods.length, 2);
+    assert.equal(mcpData.periods[0].periodKey, '2026-09-25_2026-10-24');
+
+    // 3.4 Reject invalid 2D interval format
+    const badPeriodRes = await app.request('https://example.workers.dev/api/v1/analytics/horizon?periods=[["2026-10-01"]]', {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal(badPeriodRes.status, 400);
+    const badPeriodJson = await badPeriodRes.json<any>();
+    assert.equal(badPeriodJson.error, 'VALIDATION');
   });
 });

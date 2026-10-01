@@ -76,12 +76,24 @@ All REST endpoints return JSON with standard HTTP status codes. Common headers:
     * `categoryBreakdown`: Spending breakdown by category name.
     * `activeGoals`: List of goals with progress percentage and target pacing.
     * `cashflowProjections`: 30-day forward projection based on recurring templates.
+- **`GET /api/v1/analytics/horizon`** (and alias **`GET /api/v1/horizon`**)
+  - Query / Body Params:
+    * `months` *(optional integer 1-24, default 6)*
+    * `periods` *(optional 2D array of date intervals `[[startDate, endDate], ...]`, JSON string, or legacy comma-separated `YYYY-MM`)*
+    * `filter` *(optional: `realized` | `planned` | `all`, default: `all`)*
+    * `baseCurrency` *(optional, default "IDR")*
+  - Returns:
+    * Multi-period horizon board projections simulating cashflows, chained roll-forward wallet balance accumulation, spendable vs locked net worth trajectory, and goal milestone achievements across custom intervals (e.g. payday cycles) or monthly intervals.
 
 ### 2. Wallets
 - **`GET /api/v1/wallets`**
-  - Returns: Array of user wallets.
-  - Fields: `walletId`, `walletName`, `walletInstitution`, `walletType` (bank, cash, e-wallet, crypto, investment), `walletBalance`, `walletCurrency`, `walletCreatedAt`.
-
+  - Query Params:
+    * `startDate` *(optional ISO-8601 string)*
+    * `endDate` *(optional ISO-8601 string)*
+    * `filter` *(optional: `realized` | `planned` | `all`, default: `all` when date parameters supplied)*
+    * `isLocked` *(optional boolean)*
+  - Returns: Array of user wallets with latest transaction metadata, plus a structured point-in-time `snapshot` object (`initialBalance`, `totalIn`, `totalOut`, `periodDelta`, `totalBalance`) when date parameters are supplied.
+  - Fields: `walletId`, `walletName`, `walletInstitution`, `walletType` (bank, cash, e-wallet, crypto, investment), `walletBalance`, `walletCurrency`, `walletCreatedAt`, `walletIsLocked`, `lastTransaction`, `snapshot` (optional).
 ### 3. Categories
 - **`GET /api/v1/categories`**
   - Returns: Array of categories.

@@ -1,10 +1,4 @@
-# multi-period-horizon Specification
-
-## Purpose
-
-Defines the behavioral specification and mathematical simulation contract for the Multi-Period Horizon Board engine (`GET /api/v1/analytics/horizon` and MCP tool `get_horizon_projections`), delivering forward-looking multi-month cashflow projections, point-in-time wallet balance roll-forward accumulation, spendable vs locked net worth trajectory, and goal milestone achievements across flexible 2D interval arrays or calendar months.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Multi-Period Horizon Board Computation
 

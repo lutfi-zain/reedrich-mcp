@@ -1,7 +1,14 @@
 import type { Database } from "../db";
 import * as schema from "../db/schema";
 import { eq, and, sql } from "drizzle-orm";
-import { currentIsoTimestamp } from "../utils/date";
+import { currentIsoTimestamp, isValidIsoDateOrTimestamp } from "../utils/date";
+import {
+  calculateWalletPeriodSnapshot,
+  normalizeDateBoundary,
+  LedgerFilterMode,
+  WalletPeriodSnapshotResult,
+  TransactionMovement,
+} from "../utils/ledger";
 import {
   validationError,
   notFound,
@@ -9,7 +16,6 @@ import {
   isValidFiniteNumber,
 } from "./errors";
 import { ensureAdjustmentCategory } from "./category";
-
 export interface CreateWalletParams {
   name: unknown;
   institution?: unknown;
@@ -39,8 +45,16 @@ export interface WalletLastTransaction {
 
 export type WalletWithLastTransaction = typeof schema.wallets.$inferSelect & {
   lastTransaction?: WalletLastTransaction | null;
+  snapshot?: WalletPeriodSnapshotResult;
 };
 
+export interface ListWalletsOptions {
+  isLocked?: unknown;
+  includeLastTransaction?: boolean;
+  startDate?: unknown;
+  endDate?: unknown;
+  filter?: unknown;
+}
 interface RawWalletLastTxRow extends Record<string, unknown> {
   transaction_id: string;
   wallet_id: string;
@@ -72,7 +86,7 @@ export async function fetchLatestTransactionsByWallet(
         c.category_name
       FROM transactions t
       LEFT JOIN categories c ON t.transaction_category_id = c.category_id
-      WHERE t.transaction_user_id = ${userId} AND t.transaction_is_planned = 0
+      WHERE t.transaction_user_id = ${userId} AND t.transaction_is_planned = 0 AND (t.transaction_description IS NULL OR t.transaction_description NOT LIKE 'Initial balance%')
       
       UNION ALL
       
@@ -136,9 +150,35 @@ export async function fetchLatestTransactionsByWallet(
 export async function listWallets(
   db: Database,
   userId: string,
-  isLockedFilter?: unknown,
-  includeLastTransaction: boolean = true
+  isLockedOrOptions?: unknown,
+  includeLastTransaction: boolean = true,
+  extraOptions?: {
+    startDate?: unknown;
+    endDate?: unknown;
+    filter?: unknown;
+  }
 ): Promise<WalletWithLastTransaction[]> {
+  let isLockedFilter: unknown = isLockedOrOptions;
+  let includeLast = includeLastTransaction;
+  let startDateParam: unknown = extraOptions?.startDate;
+  let endDateParam: unknown = extraOptions?.endDate;
+  let filterParam: unknown = extraOptions?.filter;
+
+  if (
+    isLockedOrOptions &&
+    typeof isLockedOrOptions === "object" &&
+    !(isLockedOrOptions instanceof Boolean)
+  ) {
+    const opts = isLockedOrOptions as ListWalletsOptions;
+    isLockedFilter = opts.isLocked;
+    if (opts.includeLastTransaction !== undefined) {
+      includeLast = opts.includeLastTransaction;
+    }
+    startDateParam = opts.startDate;
+    endDateParam = opts.endDate;
+    filterParam = opts.filter;
+  }
+
   const conditions = [eq(schema.wallets.walletUserId, userId)];
   if (isLockedFilter !== undefined) {
     if (typeof isLockedFilter === "boolean") {
@@ -154,15 +194,106 @@ export async function listWallets(
     .from(schema.wallets)
     .where(and(...conditions));
 
-  if (!includeLastTransaction || wallets.length === 0) {
-    return wallets;
+  // Check if snapshot is requested
+  const wantsSnapshot =
+    startDateParam !== undefined || endDateParam !== undefined || filterParam !== undefined;
+
+  let cleanFilter: LedgerFilterMode = "all";
+  let cleanStartDate: string | undefined;
+  let cleanEndDate: string | undefined;
+
+  if (wantsSnapshot) {
+    if (filterParam !== undefined) {
+      if (typeof filterParam !== "string") {
+        validationError("Validation Error: 'filter' must be 'realized', 'planned', or 'all'", "filter");
+      }
+      const f = (filterParam as string).trim().toLowerCase();
+      if (f !== "realized" && f !== "planned" && f !== "all") {
+        validationError("Validation Error: 'filter' must be 'realized', 'planned', or 'all'", "filter");
+      }
+      cleanFilter = f as LedgerFilterMode;
+    }
+
+    const now = new Date();
+    const currentY = now.getUTCFullYear();
+    const currentM = now.getUTCMonth();
+    const currentStartOfMonth = `${currentY}-${String(currentM + 1).padStart(2, "0")}-01T00:00:00.000Z`;
+    const lastDayOfMonth = new Date(Date.UTC(currentY, currentM + 1, 0)).getUTCDate();
+    const currentEndOfMonth = `${currentY}-${String(currentM + 1).padStart(2, "0")}-${String(lastDayOfMonth).padStart(2, "0")}T23:59:59.999Z`;
+
+    if (startDateParam !== undefined && startDateParam !== null && String(startDateParam).trim() !== "") {
+      try {
+        cleanStartDate = normalizeDateBoundary(String(startDateParam), "start");
+      } catch (err: any) {
+        validationError(`Validation Error: Invalid 'startDate': ${err.message}`, "startDate");
+      }
+    } else {
+      cleanStartDate = currentStartOfMonth;
+    }
+
+    if (endDateParam !== undefined && endDateParam !== null && String(endDateParam).trim() !== "") {
+      try {
+        cleanEndDate = normalizeDateBoundary(String(endDateParam), "end");
+      } catch (err: any) {
+        validationError(`Validation Error: Invalid 'endDate': ${err.message}`, "endDate");
+      }
+    } else {
+      cleanEndDate = currentEndOfMonth;
+    }
+
+    if (cleanStartDate! > cleanEndDate!) {
+      validationError(
+        `Validation Error: 'startDate' (${cleanStartDate}) cannot be after 'endDate' (${cleanEndDate})`,
+        "startDate"
+      );
+    }
   }
 
-  const lastTxMap = await fetchLatestTransactionsByWallet(db, userId);
-  return wallets.map((w) => ({
-    ...w,
-    lastTransaction: lastTxMap.get(w.walletId) ?? null,
-  }));
+  let lastTxMap: Map<string, WalletLastTransaction> | null = null;
+  if (includeLast && wallets.length > 0) {
+    lastTxMap = await fetchLatestTransactionsByWallet(db, userId);
+  }
+
+  let movements: TransactionMovement[] = [];
+  if (wantsSnapshot && wallets.length > 0) {
+    const txRows = await db
+      .select({
+        transactionId: schema.transactions.transactionId,
+        walletId: schema.transactions.transactionWalletId,
+        targetWalletId: schema.transactions.transactionTargetWalletId,
+        amount: schema.transactions.transactionAmount,
+        adminFee: schema.transactions.transactionAdminFee,
+        type: schema.transactions.transactionType,
+        isPlanned: schema.transactions.transactionIsPlanned,
+        date: schema.transactions.transactionDate,
+      })
+      .from(schema.transactions)
+      .where(eq(schema.transactions.transactionUserId, userId));
+
+    movements = txRows as TransactionMovement[];
+  }
+
+  const nowIso = currentIsoTimestamp();
+  return wallets.map((w) => {
+    const item: WalletWithLastTransaction = {
+      ...w,
+      lastTransaction: lastTxMap ? lastTxMap.get(w.walletId) ?? null : undefined,
+    };
+
+    if (wantsSnapshot) {
+      item.snapshot = calculateWalletPeriodSnapshot({
+        walletId: w.walletId,
+        currentLiveBalance: w.walletBalance,
+        nowIso,
+        startDate: cleanStartDate!,
+        endDate: cleanEndDate!,
+        filter: cleanFilter,
+        movements,
+      });
+    }
+
+    return item;
+  });
 }
 export async function getWalletById(
   db: Database,
@@ -275,6 +406,21 @@ export async function createWallet(
       walletCreatedAt: nowIso,
     })
     .returning();
+
+  if (cleanBalance > 0) {
+    const adjustmentCategory = await ensureAdjustmentCategory(db, userId);
+    await db.insert(schema.transactions).values({
+      transactionUserId: userId,
+      transactionWalletId: newWalletId,
+      transactionCategoryId: adjustmentCategory.categoryId,
+      transactionAmount: cleanBalance,
+      transactionAdminFee: 0,
+      transactionType: "income",
+      transactionDescription: `Initial balance: ${walletName.trim()}`,
+      transactionIsPlanned: 0,
+      transactionDate: nowIso,
+    });
+  }
 
   return result[0];
 }
@@ -468,5 +614,101 @@ export async function deleteWallet(
     success: true,
     message: `Wallet '${existing.walletName}' (${existing.walletId}) successfully deleted.`,
     deletedWalletId: existing.walletId,
+  };
+}
+
+export interface ReconcileOpeningBalanceResult {
+  reconciledCount: number;
+  wallets: Array<{
+    walletId: string;
+    walletName: string;
+    delta: number;
+    transactionId: string;
+  }>;
+}
+
+/**
+ * Idempotent reconciliation utility that detects wallets whose balances are not
+ * fully backed by transaction rows, and inserts missing opening balance transactions.
+ */
+export async function reconcileMissingOpeningBalances(
+  db: Database,
+  userId: string
+): Promise<ReconcileOpeningBalanceResult> {
+  const userWallets = await db
+    .select()
+    .from(schema.wallets)
+    .where(eq(schema.wallets.walletUserId, userId));
+
+  if (userWallets.length === 0) {
+    return { reconciledCount: 0, wallets: [] };
+  }
+
+  const txRows = await db
+    .select({
+      walletId: schema.transactions.transactionWalletId,
+      targetWalletId: schema.transactions.transactionTargetWalletId,
+      amount: schema.transactions.transactionAmount,
+      adminFee: schema.transactions.transactionAdminFee,
+      type: schema.transactions.transactionType,
+    })
+    .from(schema.transactions)
+    .where(
+      and(
+        eq(schema.transactions.transactionUserId, userId),
+        eq(schema.transactions.transactionIsPlanned, 0)
+      )
+    );
+
+  const netByWallet = new Map<string, number>();
+  for (const tx of txRows) {
+    const fee = tx.adminFee || 0;
+    if (tx.type === "income") {
+      netByWallet.set(tx.walletId, (netByWallet.get(tx.walletId) || 0) + (tx.amount - fee));
+    } else if (tx.type === "expense") {
+      netByWallet.set(tx.walletId, (netByWallet.get(tx.walletId) || 0) - (tx.amount + fee));
+    } else if (tx.type === "transfer") {
+      netByWallet.set(tx.walletId, (netByWallet.get(tx.walletId) || 0) - (tx.amount + fee));
+      if (tx.targetWalletId) {
+        netByWallet.set(tx.targetWalletId, (netByWallet.get(tx.targetWalletId) || 0) + tx.amount);
+      }
+    }
+  }
+
+  const reconciled: ReconcileOpeningBalanceResult["wallets"] = [];
+  let adjustmentCategory: { categoryId: string } | null = null;
+
+  for (const w of userWallets) {
+    const recordedNet = netByWallet.get(w.walletId) || 0;
+    const delta = Number((w.walletBalance - recordedNet).toFixed(2));
+    if (delta > 0.001) {
+      if (!adjustmentCategory) {
+        adjustmentCategory = await ensureAdjustmentCategory(db, userId);
+      }
+      const newTxId = crypto.randomUUID();
+      await db.insert(schema.transactions).values({
+        transactionId: newTxId,
+        transactionUserId: userId,
+        transactionWalletId: w.walletId,
+        transactionCategoryId: adjustmentCategory.categoryId,
+        transactionAmount: delta,
+        transactionAdminFee: 0,
+        transactionType: "income",
+        transactionDescription: `Initial balance backfill: ${w.walletName}`,
+        transactionIsPlanned: 0,
+        transactionDate: w.walletCreatedAt || currentIsoTimestamp(),
+      });
+      reconciled.push({
+        walletId: w.walletId,
+        walletName: w.walletName,
+        delta,
+        transactionId: newTxId,
+      });
+    }
+  }
+
+  return {
+    reconciledCount: reconciled.length,
+    wallets: reconciled,
   };
 }

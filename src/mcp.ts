@@ -697,6 +697,9 @@ Authentication Note: You are already authenticated via OAuth / Bearer token. Nev
             balance: { type: "number", description: "Initial balance or updated balance (finite number)" },
             currency: { type: "string", default: "IDR", description: "Currency code (e.g. IDR, USD, USDT)" },
             isLocked: { type: "boolean", description: "Optional: Lock wallet (true) to protect savings/emergency funds from daily Safe-to-Spend runway calculations, or unlock (false)" },
+            startDate: { type: "string", description: "Optional ISO date or timestamp for point-in-time balance snapshot (list action)" },
+            endDate: { type: "string", description: "Optional ISO date or timestamp for point-in-time balance snapshot (list action)" },
+            filter: { type: "string", enum: ["realized", "planned", "all"], description: "Optional status filter for list snapshot (default 'all' when date parameters supplied)" },
             walletId: { type: "string", description: "Required for update and delete actions (Wallet UUID)" },
             apiKey: { type: "string", description: "Optional: Your persistent API Key (fp_live_...) if not set in headers" }
           },
@@ -789,12 +792,13 @@ Authentication Note: You are already authenticated via OAuth / Bearer token. Nev
       },
       {
         name: "get_horizon_projections",
-        description: "Generate a multi-period financial horizon board: simulates month-by-month cashflows, roll-forward wallet balance accumulation, spendable vs locked net worth trajectory, and derived goal milestones across 1 to 24 future calendar months.",
+        description: "Generate a multi-period financial horizon board: simulates cashflows, chained roll-forward wallet balance accumulation, spendable vs locked net worth trajectory, and derived goal milestones across flexible 2D interval arrays or calendar months.",
         inputSchema: {
           type: "object",
           properties: {
             months: { type: "integer", minimum: 1, maximum: 24, default: 6, description: "Number of calendar months to project (1 to 24, default 6)" },
-            periods: { type: "string", description: "Optional comma-separated list of calendar months to project (e.g. '2026-10,2026-11,2026-12')" },
+            periods: { description: "Optional period definitions: either a 2D array of date intervals [[startDate, endDate], ...], a JSON string thereof, or a legacy comma-separated list of YYYY-MM months (e.g. '2026-10,2026-11')" },
+            filter: { type: "string", enum: ["realized", "planned", "all"], description: "Optional status filter for roll-forward movements (default 'all')" },
             baseCurrency: { type: "string", default: "IDR", description: "Target base currency code for consolidated net worth and cashflows (default 'IDR')" },
             apiKey: { type: "string", description: "Optional: Your persistent API Key (rd_live_...) if not set in headers" }
           }
@@ -933,7 +937,12 @@ Authentication Note: You are already authenticated via OAuth / Bearer token. Nev
     if (name === "manage_wallet") {
       const { action, walletId, ...params } = (args || {}) as any;
       if (action === "list") {
-        const result = await listWallets(db, effectiveUserId, params.isLocked);
+        const result = await listWallets(db, effectiveUserId, {
+          isLocked: params.isLocked,
+          startDate: params.startDate,
+          endDate: params.endDate,
+          filter: params.filter,
+        });
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
       if (action === "create") {

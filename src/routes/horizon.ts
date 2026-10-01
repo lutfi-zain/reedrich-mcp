@@ -8,14 +8,38 @@ const horizon = new Hono<AppEnv>();
 horizon.get("/", async (c) => {
   const userId = c.get("userId");
   const db = getDb(c.env);
-  const months = c.req.query("months");
-  const periods = c.req.query("periods");
-  const baseCurrency = c.req.query("baseCurrency");
+  const q = c.req.query();
 
   const result = await getHorizonProjections(
     db,
     userId!,
-    { months, periods, baseCurrency },
+    {
+      months: q.months,
+      periods: q.periods,
+      filter: q.filter,
+      baseCurrency: q.baseCurrency,
+    },
+    fetch
+  );
+
+  return c.json(result, 200);
+});
+
+horizon.post("/", async (c) => {
+  const userId = c.get("userId");
+  const db = getDb(c.env);
+  const body = ((await c.req.json().catch(() => ({}))) || {}) as Record<string, unknown>;
+  const q = c.req.query();
+
+  const result = await getHorizonProjections(
+    db,
+    userId!,
+    {
+      months: body.months ?? q.months,
+      periods: body.periods ?? q.periods,
+      filter: body.filter ?? q.filter,
+      baseCurrency: body.baseCurrency ?? q.baseCurrency,
+    },
     fetch
   );
 
