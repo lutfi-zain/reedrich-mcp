@@ -8,6 +8,7 @@ import {
   GetPromptRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import type { Database } from "./db";
+import { APP_VERSION } from "./version";
 import * as schema from "./db/schema";
 import { eq, and, desc, gte, lte, sql } from "drizzle-orm";
 import { currentIsoTimestamp } from "./utils/date";
@@ -86,7 +87,7 @@ export function createMCPServer(
   }
 
   const server = new Server(
-    { name: "reedrich-mcp", version: "1.0.0" },
+    { name: "reedrich-mcp", version: APP_VERSION },
     { capabilities: { tools: {}, resources: {}, prompts: {} } }
   );
 

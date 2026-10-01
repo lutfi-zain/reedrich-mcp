@@ -2,12 +2,13 @@
  * OpenAPI 3.0.0 specification generator for Reedrich Financial Intelligence API.
  * Supports OpenAI Custom GPT Actions, Scalar API Reference, and Swagger UI.
  */
+import { APP_VERSION } from "../version";
 export function generateOpenApiSpec(origin: string): Record<string, unknown> {
   return {
     openapi: "3.0.0",
     info: {
       title: "Reedrich Financial Intelligence API",
-      version: "1.0.0",
+      version: APP_VERSION,
       description:
         "Mathematical Intelligence & Personal Financial Planning Engine deployed at the Cloudflare Workers edge. Exposes unified REST endpoints for wallets, categories, budgets, transactions, debts/loans, goals, and consolidated net worth analytics.",
       contact: {

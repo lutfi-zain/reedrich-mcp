@@ -1,10 +1,11 @@
-import { describe, it, beforeEach, after } from 'node:test';
+import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
+import { closeAllDbs } from '../src/db';
 import { PgSelectBase } from 'drizzle-orm/pg-core';
 
 (PgSelectBase.prototype as any).get = async function () {
@@ -60,12 +61,13 @@ function createTestDB() {
   return { sqlite: null, d1: testClient as any, db: testDb, hyperdrive: testClient as any };
 }
 
-beforeEach(async () => {
+before(async () => {
   await testClient`TRUNCATE users, wallets, categories, budgets, recurring_templates, transactions, debts_loans, feedbacks, goals, goal_wallets CASCADE`;
 });
 
 after(async () => {
-  await testClient.end();
+  await closeAllDbs();
+  await testClient.end({ timeout: 1 });
 });
 // Helpers for direct MCP Server handler calls
 async function callTool(server: any, name: string, args: Record<string, any> = {}) {

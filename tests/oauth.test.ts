@@ -2,6 +2,7 @@ import { describe, it, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
+import { closeAllDbs } from '../src/db';
 import { eq } from 'drizzle-orm';
 import * as schema from '../src/db/schema';
 import app from '../src/index';
@@ -28,7 +29,8 @@ function createTestDB() {
 }
 
 after(async () => {
-  await testClient.end();
+  await closeAllDbs();
+  await testClient.end({ timeout: 1 });
 });
 describe('Google OAuth 2.0 Federation Tests', () => {
   it('1. Google OAuth state JWT creation and verification', async () => {
