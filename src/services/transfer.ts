@@ -1,4 +1,4 @@
-import { DrizzleD1Database } from "drizzle-orm/d1";
+import type { Database } from "../db";
 import * as schema from "../db/schema";
 import { eq, and, sql } from "drizzle-orm";
 import {
@@ -39,7 +39,7 @@ export interface TransferFundsParams {
 }
 
 export async function transferFunds(
-  db: DrizzleD1Database<typeof schema>,
+  db: Database,
   userId: string,
   params: TransferFundsParams
 ) {
@@ -113,7 +113,7 @@ export async function transferFunds(
   const cleanAdminFee =
     isValidFiniteNumber(adminFee) && adminFee >= 0 ? adminFee : 0;
 
-  const sourceWallet = await db
+  const [sourceWallet] = await db
     .select()
     .from(schema.wallets)
     .where(
@@ -122,10 +122,10 @@ export async function transferFunds(
         eq(schema.wallets.walletUserId, userId)
       )
     )
-    .get();
+    .limit(1);
   if (!sourceWallet) notFound("Source Wallet", cleanSourceWalletId);
 
-  const targetWallet = await db
+  const [targetWallet] = await db
     .select()
     .from(schema.wallets)
     .where(
@@ -134,7 +134,7 @@ export async function transferFunds(
         eq(schema.wallets.walletUserId, userId)
       )
     )
-    .get();
+    .limit(1);
   if (!targetWallet) notFound("Target Wallet", cleanTargetWalletId);
 
   let cleanCategoryId: string | null = null;
@@ -150,7 +150,7 @@ export async function transferFunds(
       );
     }
     const targetCatId = categoryId.trim();
-    const category = await db
+    const [category] = await db
       .select()
       .from(schema.categories)
       .where(
@@ -159,11 +159,11 @@ export async function transferFunds(
           eq(schema.categories.categoryUserId, userId)
         )
       )
-      .get();
+      .limit(1);
     if (!category) notFound("Category", targetCatId);
     cleanCategoryId = targetCatId;
   } else {
-    let transferCat = await db
+    let [transferCat] = await db
       .select()
       .from(schema.categories)
       .where(
@@ -172,7 +172,7 @@ export async function transferFunds(
           eq(schema.categories.categoryName, "Transfer")
         )
       )
-      .get();
+      .limit(1);
     if (!transferCat) {
       const newCatId = crypto.randomUUID();
       const created = await db

@@ -1,6 +1,6 @@
 {
   "name": "reedrich-mcp",
-  "version": "1.13.3",
+  "version": "1.14.0",
   "description": "Reedrich MCP Server — Mathematical Intelligence & Financial Planning Engine for AI Agents on Cloudflare Workers",
   "main": "src/index.ts",
   "scripts": {
@@ -47,7 +47,8 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
     "drizzle-orm": "^0.45.2",
-    "hono": "^4.13.1"
+    "hono": "^4.13.1",
+    "postgres": "^3.4.9"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260811.1",

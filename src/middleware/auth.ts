@@ -1,4 +1,4 @@
-import { DrizzleD1Database } from 'drizzle-orm/d1';
+import type { Database } from '../db';
 import * as schema from '../db/schema';
 import { eq } from 'drizzle-orm';
 import { hashApiKey, verifyUserToken } from '../utils/token';
@@ -18,7 +18,7 @@ export function extractBearerToken(authHeader?: string | null): string | null {
 }
 
 async function tryResolveCandidate(
-  db: DrizzleD1Database<typeof schema>,
+  db: Database,
   secret: string,
   candidate: string
 ): Promise<string | null> {
@@ -29,11 +29,11 @@ async function tryResolveCandidate(
   if (clean.startsWith('rd_live_') || clean.startsWith('fp_live_')) {
     try {
       const keyHash = await hashApiKey(clean);
-      const user = await db
+      const [user] = await db
         .select({ userId: schema.users.userId })
         .from(schema.users)
         .where(eq(schema.users.userApiKeyHash, keyHash))
-        .get();
+        .limit(1);
       return user ? user.userId : null;
     } catch {
       return null;
@@ -61,11 +61,11 @@ async function tryResolveCandidate(
   // Case D: Fallback raw hash lookup (in case raw non-prefixed key was provided)
   try {
     const keyHash = await hashApiKey(clean);
-    const user = await db
+    const [user] = await db
       .select({ userId: schema.users.userId })
       .from(schema.users)
       .where(eq(schema.users.userApiKeyHash, keyHash))
-      .get();
+      .limit(1);
     return user ? user.userId : null;
   } catch {
     return null;
@@ -73,7 +73,7 @@ async function tryResolveCandidate(
 }
 
 export async function resolveUserId(
-  db: DrizzleD1Database<typeof schema>,
+  db: Database,
   secret: string,
   opts: ResolveUserOptions
 ): Promise<string | null> {

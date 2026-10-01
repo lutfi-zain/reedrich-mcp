@@ -1,4 +1,4 @@
-import { DrizzleD1Database } from "drizzle-orm/d1";
+import type { Database } from "../db";
 import * as schema from "../db/schema";
 import { eq, and, desc, sql, gt } from "drizzle-orm";
 import {
@@ -17,7 +17,7 @@ import {
 } from "./errors";
 
 export async function listRecurringTemplates(
-  db: DrizzleD1Database<typeof schema>,
+  db: Database,
   userId: string,
   isActive?: unknown
 ) {
@@ -35,7 +35,7 @@ export async function listRecurringTemplates(
     .orderBy(desc(schema.recurringTemplates.templateCreatedAt));
 }
 export async function getRecurringTemplateById(
-  db: DrizzleD1Database<typeof schema>,
+  db: Database,
   userId: string,
   templateId: unknown
 ) {
@@ -43,7 +43,7 @@ export async function getRecurringTemplateById(
     validationError("Validation Error: Valid string 'templateId' (UUID) is required", "templateId");
   }
   const cleanId = (templateId as string).trim();
-  const template = await db
+  const [template] = await db
     .select()
     .from(schema.recurringTemplates)
     .where(
@@ -52,7 +52,7 @@ export async function getRecurringTemplateById(
         eq(schema.recurringTemplates.templateUserId, userId)
       )
     )
-    .get();
+    .limit(1);
 
   if (!template) {
     notFound("Recurring Template", cleanId);
@@ -108,7 +108,7 @@ export interface CreateRecurringTemplateParams {
 }
 
 export async function createRecurringTemplate(
-  db: DrizzleD1Database<typeof schema>,
+  db: Database,
   userId: string,
   params: CreateRecurringTemplateParams
 ) {
@@ -147,7 +147,7 @@ export async function createRecurringTemplate(
     );
   }
 
-  const sourceWallet = await db
+  const [sourceWallet] = await db
     .select()
     .from(schema.wallets)
     .where(
@@ -156,7 +156,7 @@ export async function createRecurringTemplate(
         eq(schema.wallets.walletUserId, userId)
       )
     )
-    .get();
+    .limit(1);
   if (!sourceWallet) notFound("Wallet", walletId.trim());
 
   const cleanType =
@@ -177,7 +177,7 @@ export async function createRecurringTemplate(
         "Validation Error: 'walletId' and 'targetWalletId' cannot be identical for transfers"
       );
     }
-    const destWallet = await db
+    const [destWallet] = await db
       .select()
       .from(schema.wallets)
       .where(
@@ -186,7 +186,7 @@ export async function createRecurringTemplate(
           eq(schema.wallets.walletUserId, userId)
         )
       )
-      .get();
+      .limit(1);
     if (!destWallet) notFound("Target Wallet", targetWalletId.trim());
     cleanTargetWalletId = targetWalletId.trim();
   }
@@ -199,7 +199,7 @@ export async function createRecurringTemplate(
         "categoryId"
       );
     }
-    const cat = await db
+    const [cat] = await db
       .select()
       .from(schema.categories)
       .where(
@@ -208,7 +208,7 @@ export async function createRecurringTemplate(
           eq(schema.categories.categoryUserId, userId)
         )
       )
-      .get();
+      .limit(1);
     if (!cat) notFound("Category", categoryId.trim());
     cleanCategoryId = categoryId.trim();
   }
@@ -371,7 +371,7 @@ export interface UpdateRecurringTemplateParams {
 }
 
 export async function updateRecurringTemplate(
-  db: DrizzleD1Database<typeof schema>,
+  db: Database,
   userId: string,
   templateId: unknown,
   params: UpdateRecurringTemplateParams
@@ -383,7 +383,7 @@ export async function updateRecurringTemplate(
     );
   }
   const cleanTemplateId = templateId.trim();
-  const existingTemplate = await db
+  const [existingTemplate] = await db
     .select()
     .from(schema.recurringTemplates)
     .where(
@@ -392,7 +392,7 @@ export async function updateRecurringTemplate(
         eq(schema.recurringTemplates.templateUserId, userId)
       )
     )
-    .get();
+    .limit(1);
 
   if (!existingTemplate) {
     notFound("Recurring Template", cleanTemplateId);
@@ -445,7 +445,7 @@ export async function updateRecurringTemplate(
         "walletId"
       );
     }
-    const w = await db
+    const [w] = await db
       .select()
       .from(schema.wallets)
       .where(
@@ -454,7 +454,7 @@ export async function updateRecurringTemplate(
           eq(schema.wallets.walletUserId, userId)
         )
       )
-      .get();
+      .limit(1);
     if (!w) notFound("Wallet", walletId.trim());
     updateData.templateWalletId = walletId.trim();
   }
@@ -466,7 +466,7 @@ export async function updateRecurringTemplate(
           "targetWalletId"
         );
       }
-      const tw = await db
+      const [tw] = await db
         .select()
         .from(schema.wallets)
         .where(
@@ -475,7 +475,7 @@ export async function updateRecurringTemplate(
             eq(schema.wallets.walletUserId, userId)
           )
         )
-        .get();
+        .limit(1);
       if (!tw) notFound("Target Wallet", targetWalletId.trim());
       updateData.templateTargetWalletId = targetWalletId.trim();
     } else {
@@ -490,7 +490,7 @@ export async function updateRecurringTemplate(
           "categoryId"
         );
       }
-      const cat = await db
+      const [cat] = await db
         .select()
         .from(schema.categories)
         .where(
@@ -499,7 +499,7 @@ export async function updateRecurringTemplate(
             eq(schema.categories.categoryUserId, userId)
           )
         )
-        .get();
+        .limit(1);
       if (!cat) notFound("Category", categoryId.trim());
       updateData.templateCategoryId = categoryId.trim();
     } else {
@@ -654,8 +654,7 @@ export async function updateRecurringTemplate(
           eq(schema.transactions.transactionIsPlanned, 1),
           gt(schema.transactions.transactionDate, nowIso)
         )
-      )
-      .run();
+      );
     const fresh = updated[0];
     const occurrences = planOccurrenceDates(
       fresh.templateNextRunDate > nowIso.split("T")[0]
@@ -703,15 +702,14 @@ export async function updateRecurringTemplate(
           eq(schema.transactions.transactionIsPlanned, 1),
           gt(schema.transactions.transactionDate, nowIso)
         )
-      )
-      .run();
+      );
   }
 
   return { ...updated[0], propagatedCount };
 }
 
 export async function deleteRecurringTemplate(
-  db: DrizzleD1Database<typeof schema>,
+  db: Database,
   userId: string,
   templateId: unknown
 ) {
@@ -732,8 +730,7 @@ export async function deleteRecurringTemplate(
         eq(schema.transactions.transactionIsPlanned, 1),
         gt(schema.transactions.transactionDate, nowIso)
       )
-    )
-    .run();
+    );
   const deleted = await db
     .delete(schema.recurringTemplates)
     .where(
@@ -759,7 +756,7 @@ export interface RealizeRecurringOccurrenceParams {
 }
 
 export async function applyRecurringTemplate(
-  db: DrizzleD1Database<typeof schema>,
+  db: Database,
   userId: string,
   templateId: unknown,
   executionDate?: unknown,
@@ -778,7 +775,7 @@ export async function applyRecurringTemplate(
         "transactionId"
       );
     }
-    const planned = await db
+    const [planned] = await db
       .select()
       .from(schema.transactions)
       .where(
@@ -787,7 +784,7 @@ export async function applyRecurringTemplate(
           eq(schema.transactions.transactionUserId, userId)
         )
       )
-      .get();
+      .limit(1);
     if (!planned) notFound("Planned transaction", plannedTxId);
     if (planned.transactionIsPlanned !== 1) {
       validationError(
@@ -852,7 +849,7 @@ export async function applyRecurringTemplate(
     );
   }
   const cleanTemplateId = (templateId as string).trim();
-  const template = await db
+  const [template] = await db
     .select()
     .from(schema.recurringTemplates)
     .where(
@@ -861,7 +858,7 @@ export async function applyRecurringTemplate(
         eq(schema.recurringTemplates.templateUserId, userId)
       )
     )
-    .get();
+    .limit(1);
 
   if (!template) {
     notFound("Recurring Template", cleanTemplateId);
@@ -881,7 +878,7 @@ export async function applyRecurringTemplate(
     : `${template.templateNextRunDate}T12:00:00.000Z`;
   const occurrenceDay = txDate.split("T")[0];
 
-  const existingPlanned = await db
+  const [existingPlanned] = await db
     .select({ transactionId: schema.transactions.transactionId })
     .from(schema.transactions)
     .where(
@@ -892,7 +889,7 @@ export async function applyRecurringTemplate(
         eq(schema.transactions.transactionOccurrenceDate, occurrenceDay)
       )
     )
-    .get();
+    .limit(1);
   if (existingPlanned) {
     return applyRecurringTemplate(db, userId, templateId, executionDate, {
       ...params,
@@ -903,7 +900,7 @@ export async function applyRecurringTemplate(
   const fee = template.templateAdminFee || 0.0;
   const amt = template.templateAmount;
 
-  const sourceWallet = await db
+  const [sourceWallet] = await db
     .select()
     .from(schema.wallets)
     .where(
@@ -912,7 +909,7 @@ export async function applyRecurringTemplate(
         eq(schema.wallets.walletUserId, userId)
       )
     )
-    .get();
+    .limit(1);
   if (!sourceWallet) {
     notFound("Source wallet", template.templateWalletId);
   }

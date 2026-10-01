@@ -1,6 +1,5 @@
 import { Hono } from "hono";
-import { drizzle } from "drizzle-orm/d1";
-import * as schema from "../db/schema";
+import { getDb } from "../db";
 import {
   listGoals,
   getGoalById,
@@ -16,7 +15,7 @@ const goals = new Hono<AppEnv>();
 
 goals.get("/", async (c) => {
   const userId = c.get("userId");
-  const db = drizzle(c.env.DB, { schema });
+  const db = getDb(c.env);
   const status = c.req.query("status");
 
   const result = await listGoals(db, userId!, status);
@@ -25,7 +24,7 @@ goals.get("/", async (c) => {
 
 goals.get("/:goalId", async (c) => {
   const userId = c.get("userId");
-  const db = drizzle(c.env.DB, { schema });
+  const db = getDb(c.env);
   const goalId = c.req.param("goalId");
   const result = await getGoalById(db, userId!, goalId, fetch);
   return c.json(result, 200);
@@ -33,7 +32,7 @@ goals.get("/:goalId", async (c) => {
 
 goals.post("/", async (c) => {
   const userId = c.get("userId");
-  const db = drizzle(c.env.DB, { schema });
+  const db = getDb(c.env);
   const body = (await c.req.json()) as Record<string, unknown>;
 
   const result = await createGoal(db, userId!, body as any);
@@ -42,7 +41,7 @@ goals.post("/", async (c) => {
 
 goals.patch("/:goalId", async (c) => {
   const userId = c.get("userId");
-  const db = drizzle(c.env.DB, { schema });
+  const db = getDb(c.env);
   const goalId = c.req.param("goalId");
   const body = (await c.req.json()) as Record<string, unknown>;
   const result = await updateGoal(db, userId!, goalId, body as any);
@@ -51,7 +50,7 @@ goals.patch("/:goalId", async (c) => {
 
 goals.delete("/:goalId", async (c) => {
   const userId = c.get("userId");
-  const db = drizzle(c.env.DB, { schema });
+  const db = getDb(c.env);
   const goalId = c.req.param("goalId");
   const result = await deleteGoal(db, userId!, goalId);
   return c.json(result, 200);
@@ -60,7 +59,7 @@ goals.delete("/:goalId", async (c) => {
 
 goals.post("/:goalId/wallets", async (c) => {
   const userId = c.get("userId");
-  const db = drizzle(c.env.DB, { schema });
+  const db = getDb(c.env);
   const goalId = c.req.param("goalId");
   const body = (await c.req.json()) as Record<string, unknown>;
   const walletId = body?.walletId;
@@ -70,7 +69,7 @@ goals.post("/:goalId/wallets", async (c) => {
 
 goals.delete("/:goalId/wallets/:walletId", async (c) => {
   const userId = c.get("userId");
-  const db = drizzle(c.env.DB, { schema });
+  const db = getDb(c.env);
   const goalId = c.req.param("goalId");
   const walletId = c.req.param("walletId");
   const result = await unlinkGoalWallet(db, userId!, goalId, walletId);

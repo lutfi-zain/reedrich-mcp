@@ -1,6 +1,5 @@
 import { Hono } from "hono";
-import { drizzle } from "drizzle-orm/d1";
-import * as schema from "../db/schema";
+import { getDb } from "../db";
 import { getAccountDetail } from "../services/account-snapshot";
 import type { AppEnv } from "../index";
 
@@ -8,7 +7,7 @@ const accountDetail = new Hono<AppEnv>();
 
 accountDetail.get("/", async (c) => {
   const userId = c.get("userId");
-  const db = drizzle(c.env.DB, { schema });
+  const db = getDb(c.env);
   const startDate = c.req.query("startDate");
   const endDate = c.req.query("endDate");
   const baseCurrency = c.req.query("baseCurrency");

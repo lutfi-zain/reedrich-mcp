@@ -1,4 +1,4 @@
-import { DrizzleD1Database } from "drizzle-orm/d1";
+import type { Database } from "../db";
 import * as schema from "../db/schema";
 import { eq, and, sql } from "drizzle-orm";
 import { currentIsoTimestamp } from "../utils/date";
@@ -41,7 +41,7 @@ export type WalletWithLastTransaction = typeof schema.wallets.$inferSelect & {
   lastTransaction?: WalletLastTransaction | null;
 };
 
-interface RawWalletLastTxRow {
+interface RawWalletLastTxRow extends Record<string, unknown> {
   transaction_id: string;
   wallet_id: string;
   transaction_amount: number;
@@ -53,7 +53,7 @@ interface RawWalletLastTxRow {
 }
 
 export async function fetchLatestTransactionsByWallet(
-  db: DrizzleD1Database<typeof schema>,
+  db: Database,
   userId: string
 ): Promise<Map<string, WalletLastTransaction>> {
   const query = sql`
@@ -117,7 +117,7 @@ export async function fetchLatestTransactionsByWallet(
     WHERE rn = 1
   `;
 
-  const rows = await db.all<RawWalletLastTxRow>(query);
+  const rows = (await db.execute<RawWalletLastTxRow>(query)) as unknown as RawWalletLastTxRow[];
   const map = new Map<string, WalletLastTransaction>();
   for (const row of rows) {
     map.set(row.wallet_id, {
@@ -134,7 +134,7 @@ export async function fetchLatestTransactionsByWallet(
 }
 
 export async function listWallets(
-  db: DrizzleD1Database<typeof schema>,
+  db: Database,
   userId: string,
   isLockedFilter?: unknown,
   includeLastTransaction: boolean = true
@@ -165,7 +165,7 @@ export async function listWallets(
   }));
 }
 export async function getWalletById(
-  db: DrizzleD1Database<typeof schema>,
+  db: Database,
   userId: string,
   walletId: unknown,
   includeLastTransaction: boolean = true
@@ -174,7 +174,7 @@ export async function getWalletById(
     validationError("Validation Error: Valid string 'walletId' (UUID) is required", "walletId");
   }
   const cleanId = (walletId as string).trim();
-  const wallet = await db
+  const [wallet] = await db
     .select()
     .from(schema.wallets)
     .where(
@@ -183,7 +183,7 @@ export async function getWalletById(
         eq(schema.wallets.walletUserId, userId)
       )
     )
-    .get();
+    .limit(1);
 
   if (!wallet) {
     notFound("Wallet", cleanId);
@@ -202,7 +202,7 @@ export async function getWalletById(
 }
 
 export async function createWallet(
-  db: DrizzleD1Database<typeof schema>,
+  db: Database,
   userId: string,
   params: CreateWalletParams
 ) {
@@ -280,7 +280,7 @@ export async function createWallet(
 }
 
 export async function updateWallet(
-  db: DrizzleD1Database<typeof schema>,
+  db: Database,
   userId: string,
   walletId: unknown,
   params: UpdateWalletParams
@@ -293,7 +293,7 @@ export async function updateWallet(
   }
 
   const cleanWalletId = walletId.trim();
-  const existing = await db
+  const [existing] = await db
     .select()
     .from(schema.wallets)
     .where(
@@ -302,8 +302,7 @@ export async function updateWallet(
         eq(schema.wallets.walletUserId, userId)
       )
     )
-    .get();
-
+    .limit(1);
   if (!existing) {
     notFound("Wallet", cleanWalletId);
   }
@@ -401,7 +400,7 @@ export async function updateWallet(
   return result[0];
 }
 export async function deleteWallet(
-  db: DrizzleD1Database<typeof schema>,
+  db: Database,
   userId: string,
   walletId: unknown
 ) {
@@ -416,7 +415,7 @@ export async function deleteWallet(
   }
 
   // 2. Active Goal Link Guard
-  const linkedGoal = await db
+  const [linkedGoal] = await db
     .select({ goalName: schema.goals.goalName })
     .from(schema.goalWallets)
     .innerJoin(schema.goals, eq(schema.goalWallets.goalId, schema.goals.goalId))
@@ -427,7 +426,7 @@ export async function deleteWallet(
         eq(schema.goals.goalStatus, "in_progress")
       )
     )
-    .get();
+    .limit(1);
 
   if (linkedGoal) {
     validationError(
@@ -437,7 +436,7 @@ export async function deleteWallet(
   }
 
   // 3. Active Recurring Template Guard
-  const linkedTemplate = await db
+  const [linkedTemplate] = await db
     .select({ templateName: schema.recurringTemplates.templateName })
     .from(schema.recurringTemplates)
     .where(
@@ -447,7 +446,7 @@ export async function deleteWallet(
         eq(schema.recurringTemplates.templateIsActive, 1)
       )
     )
-    .get();
+    .limit(1);
 
   if (linkedTemplate) {
     validationError(

@@ -1,6 +1,5 @@
 import { Hono } from "hono";
-import { drizzle } from "drizzle-orm/d1";
-import * as schema from "../db/schema";
+import { getDb } from "../db";
 import { listTransactions, getTransactionById, recordTransaction, updateTransaction, deleteTransaction } from "../services/transaction";
 import type { AppEnv } from "../index";
 
@@ -8,7 +7,7 @@ const transactions = new Hono<AppEnv>();
 
 transactions.get("/", async (c) => {
   const userId = c.get("userId");
-  const db = drizzle(c.env.DB, { schema });
+  const db = getDb(c.env);
   const q = c.req.query();
 
   const isPlannedParam =
@@ -44,7 +43,7 @@ transactions.get("/", async (c) => {
 });
 transactions.get("/:transactionId", async (c) => {
   const userId = c.get("userId");
-  const db = drizzle(c.env.DB, { schema });
+  const db = getDb(c.env);
   const transactionId = c.req.param("transactionId");
   const result = await getTransactionById(db, userId!, transactionId);
   return c.json(result, 200);
@@ -52,7 +51,7 @@ transactions.get("/:transactionId", async (c) => {
 
 transactions.post("/", async (c) => {
   const userId = c.get("userId");
-  const db = drizzle(c.env.DB, { schema });
+  const db = getDb(c.env);
   const body = (await c.req.json()) as Record<string, unknown>;
   const payload = {
     ...body,
@@ -64,7 +63,7 @@ transactions.post("/", async (c) => {
 
 transactions.patch("/:transactionId", async (c) => {
   const userId = c.get("userId");
-  const db = drizzle(c.env.DB, { schema });
+  const db = getDb(c.env);
   const transactionId = c.req.param("transactionId");
   const body = (await c.req.json()) as Record<string, unknown>;
   const payload = {
@@ -77,7 +76,7 @@ transactions.patch("/:transactionId", async (c) => {
 
 transactions.delete("/:transactionId", async (c) => {
   const userId = c.get("userId");
-  const db = drizzle(c.env.DB, { schema });
+  const db = getDb(c.env);
   const transactionId = c.req.param("transactionId");
   const result = await deleteTransaction(db, userId!, transactionId);
   return c.json(result, 200);

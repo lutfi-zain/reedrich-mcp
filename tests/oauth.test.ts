@@ -1,9 +1,7 @@
-import { describe, it } from 'node:test';
+import { describe, it, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { DatabaseSync } from 'node:sqlite';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { drizzle } from 'drizzle-orm/d1';
+import { drizzle } from 'drizzle-orm/postgres-js';
+import postgres from 'postgres';
 import { eq } from 'drizzle-orm';
 import * as schema from '../src/db/schema';
 import app from '../src/index';
@@ -17,88 +15,21 @@ import {
 } from '../src/utils/oauth';
 
 const TEST_JWT_SECRET = 'super-secure-test-jwt-secret-1234567890';
+const TEST_PG_URL =
+  process.env.DATABASE_URL ||
+  "postgres://postgres:3c412f0353f1ec974266c3613f9f9500@127.0.0.1:5432/reedrich_test";
 
-class MockD1Database {
-  private db: DatabaseSync;
-
-  constructor(db: DatabaseSync) {
-    this.db = db;
-  }
-
-  prepare(query: string) {
-    return new MockD1PreparedStatement(this.db, query);
-  }
-
-  async batch(statements: MockD1PreparedStatement[]) {
-    return Promise.all(statements.map((s) => s.all()));
-  }
-
-  async exec(query: string) {
-    this.db.exec(query);
-    return { count: 0, duration: 0 };
-  }
-}
-
-class MockD1PreparedStatement {
-  private db: DatabaseSync;
-  private query: string;
-  private params: unknown[] = [];
-
-  constructor(db: DatabaseSync, query: string, params: unknown[] = []) {
-    this.db = db;
-    this.query = query;
-    this.params = params;
-  }
-
-  bind(...params: unknown[]) {
-    return new MockD1PreparedStatement(this.db, this.query, params);
-  }
-
-  async all() {
-    const stmt = this.db.prepare(this.query);
-    const results = stmt.all(...(this.params as []));
-    return { results, success: true, meta: {} };
-  }
-
-  async get() {
-    const stmt = this.db.prepare(this.query);
-    const result = stmt.get(...(this.params as []));
-    return result || null;
-  }
-
-  async run() {
-    const stmt = this.db.prepare(this.query);
-    const info = stmt.run(...(this.params as []));
-    return { success: true, meta: { changes: info.changes, last_row_id: info.lastInsertRowid } };
-  }
-
-  async raw() {
-    const stmt = this.db.prepare(this.query);
-    return stmt.all(...(this.params as [])).map((r) => Object.values(r as Record<string, unknown>));
-  }
-}
+const testClient = postgres(TEST_PG_URL, { max: 10 });
+const testDb = drizzle(testClient, { schema });
+const testHyperdrive = { connectionString: TEST_PG_URL };
 
 function createTestDB() {
-  const sqlite = new DatabaseSync(':memory:');
-  sqlite.exec('PRAGMA foreign_keys = ON;');
-  const migrationFiles = ['0002_table_prefixed_schema_and_tz.sql', '0003_add_debts_loans.sql', '0004_add_feedbacks_table.sql'];
-  for (const file of migrationFiles) {
-    const ddlPath = join(__dirname, `../drizzle/${file}`);
-    const ddl = readFileSync(ddlPath, 'utf-8');
-    const statements = ddl.split('--> statement-breakpoint');
-    for (const statement of statements) {
-      const trimmed = statement.trim();
-      if (trimmed) {
-        sqlite.exec(trimmed);
-      }
-    }
-  }
-
-  const d1 = new MockD1Database(sqlite) as unknown as D1Database;
-  const db = drizzle(d1, { schema });
-  return { sqlite, d1, db };
+  return { sqlite: null, d1: testHyperdrive as any, db: testDb, hyperdrive: testHyperdrive };
 }
 
+after(async () => {
+  await testClient.end();
+});
 describe('Google OAuth 2.0 Federation Tests', () => {
   it('1. Google OAuth state JWT creation and verification', async () => {
     const state = await generateGoogleOAuthState(
@@ -249,7 +180,7 @@ describe('Google OAuth 2.0 Federation Tests', () => {
       assert.equal(codePayload?.code_challenge, challenge);
 
       // Verify user created in D1
-      const createdUser = await db.select().from(schema.users).where(eq(schema.users.userEmail, 'alice.google@example.com')).get();
+      const [createdUser] = await db.select().from(schema.users).where(eq(schema.users.userEmail, 'alice.google@example.com')).limit(1);
       assert.ok(createdUser);
       assert.equal(createdUser?.userId, codePayload?.sub);
       assert.equal(createdUser?.userFirstName, 'Alice');

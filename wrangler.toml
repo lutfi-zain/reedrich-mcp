@@ -1,12 +1,11 @@
 name = "reedrich-mcp"
 main = "src/index.ts"
 compatibility_date = "2024-03-20"
+compatibility_flags = ["nodejs_compat"]
 
 # Set secrets for local dev via .dev.vars (gitignored)
 # Set secrets for production via: wrangler secret put JWT_SECRET
 
-[[d1_databases]]
-binding = "DB"
-database_name = "finance_db"
-database_id = "f3be3b45-d0fb-4b7e-b776-4d4706112c3b"
-migrations_dir = "drizzle"
+[[hyperdrive]]
+binding = "HYPERDRIVE"
+id = "246e815964a44eed9464752afe346134"

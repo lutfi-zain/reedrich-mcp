@@ -1,6 +1,5 @@
 import { Hono } from "hono";
-import { drizzle } from "drizzle-orm/d1";
-import * as schema from "../db/schema";
+import { getDb } from "../db";
 import {
   listRecurringTemplates,
   getRecurringTemplateById,
@@ -15,7 +14,7 @@ const recurringTemplates = new Hono<AppEnv>();
 
 recurringTemplates.get("/", async (c) => {
   const userId = c.get("userId");
-  const db = drizzle(c.env.DB, { schema });
+  const db = getDb(c.env);
   const isActiveQuery = c.req.query("isActive");
   const isActive =
     isActiveQuery !== undefined
@@ -28,7 +27,7 @@ recurringTemplates.get("/", async (c) => {
 
 recurringTemplates.get("/:templateId", async (c) => {
   const userId = c.get("userId");
-  const db = drizzle(c.env.DB, { schema });
+  const db = getDb(c.env);
   const templateId = c.req.param("templateId");
   const result = await getRecurringTemplateById(db, userId!, templateId);
   return c.json(result, 200);
@@ -36,7 +35,7 @@ recurringTemplates.get("/:templateId", async (c) => {
 
 recurringTemplates.post("/", async (c) => {
   const userId = c.get("userId");
-  const db = drizzle(c.env.DB, { schema });
+  const db = getDb(c.env);
   const body = (await c.req.json()) as Record<string, unknown>;
 
   const result = await createRecurringTemplate(db, userId!, body as any);
@@ -45,7 +44,7 @@ recurringTemplates.post("/", async (c) => {
 
 recurringTemplates.post("/:templateId/apply", async (c) => {
   const userId = c.get("userId");
-  const db = drizzle(c.env.DB, { schema });
+  const db = getDb(c.env);
   const templateId = c.req.param("templateId");
 
   let executionDate: string | undefined = undefined;
@@ -78,7 +77,7 @@ recurringTemplates.post("/:templateId/apply", async (c) => {
 
 recurringTemplates.patch("/:templateId", async (c) => {
   const userId = c.get("userId");
-  const db = drizzle(c.env.DB, { schema });
+  const db = getDb(c.env);
   const templateId = c.req.param("templateId");
   const body = (await c.req.json()) as Record<string, unknown>;
   const result = await updateRecurringTemplate(db, userId!, templateId, body as any);
@@ -87,7 +86,7 @@ recurringTemplates.patch("/:templateId", async (c) => {
 
 recurringTemplates.delete("/:templateId", async (c) => {
   const userId = c.get("userId");
-  const db = drizzle(c.env.DB, { schema });
+  const db = getDb(c.env);
   const templateId = c.req.param("templateId");
   const result = await deleteRecurringTemplate(db, userId!, templateId);
   return c.json(result, 200);

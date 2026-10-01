@@ -1,6 +1,5 @@
 import { Hono } from "hono";
-import { drizzle } from "drizzle-orm/d1";
-import * as schema from "../db/schema";
+import { getDb } from "../db";
 import {
   listDebtsLoans,
   getDebtLoanById,
@@ -15,7 +14,7 @@ const debtsLoans = new Hono<AppEnv>();
 
 debtsLoans.get("/", async (c) => {
   const userId = c.get("userId");
-  const db = drizzle(c.env.DB, { schema });
+  const db = getDb(c.env);
   const status = c.req.query("status");
   const type = c.req.query("type");
 
@@ -25,7 +24,7 @@ debtsLoans.get("/", async (c) => {
 
 debtsLoans.get("/:debtLoanId", async (c) => {
   const userId = c.get("userId");
-  const db = drizzle(c.env.DB, { schema });
+  const db = getDb(c.env);
   const debtLoanId = c.req.param("debtLoanId");
   const result = await getDebtLoanById(db, userId!, debtLoanId);
   return c.json(result, 200);
@@ -33,7 +32,7 @@ debtsLoans.get("/:debtLoanId", async (c) => {
 
 debtsLoans.post("/", async (c) => {
   const userId = c.get("userId");
-  const db = drizzle(c.env.DB, { schema });
+  const db = getDb(c.env);
   const body = (await c.req.json()) as Record<string, unknown>;
   const result = await createDebtLoan(db, userId!, body as any);
   return c.json(result, 201);
@@ -41,7 +40,7 @@ debtsLoans.post("/", async (c) => {
 
 debtsLoans.post("/:debtLoanId/repay", async (c) => {
   const userId = c.get("userId");
-  const db = drizzle(c.env.DB, { schema });
+  const db = getDb(c.env);
   const debtLoanId = c.req.param("debtLoanId");
   const body = (await c.req.json()) as Record<string, unknown>;
   const result = await repayDebtLoan(db, userId!, debtLoanId, body as any);
@@ -50,7 +49,7 @@ debtsLoans.post("/:debtLoanId/repay", async (c) => {
 
 debtsLoans.patch("/:debtLoanId", async (c) => {
   const userId = c.get("userId");
-  const db = drizzle(c.env.DB, { schema });
+  const db = getDb(c.env);
   const debtLoanId = c.req.param("debtLoanId");
   const body = (await c.req.json()) as Record<string, unknown>;
   const result = await updateDebtLoan(db, userId!, debtLoanId, body as any);
@@ -59,7 +58,7 @@ debtsLoans.patch("/:debtLoanId", async (c) => {
 
 debtsLoans.delete("/:debtLoanId", async (c) => {
   const userId = c.get("userId");
-  const db = drizzle(c.env.DB, { schema });
+  const db = getDb(c.env);
   const debtLoanId = c.req.param("debtLoanId");
   const result = await deleteDebtLoan(db, userId!, debtLoanId);
   return c.json(result, 200);

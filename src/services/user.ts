@@ -1,4 +1,4 @@
-import { DrizzleD1Database } from "drizzle-orm/d1";
+import type { Database } from "../db";
 import * as schema from "../db/schema";
 import { eq } from "drizzle-orm";
 import { notFound, unauthorized, validationError } from "./errors";
@@ -15,14 +15,14 @@ export interface UserProfileDTO {
 }
 
 export async function getUserProfile(
-  db: DrizzleD1Database<typeof schema>,
+  db: Database,
   userId: string
 ): Promise<UserProfileDTO> {
   if (!userId || typeof userId !== "string" || userId.trim().length === 0) {
     unauthorized("Authentication required");
   }
 
-  const user = await db
+  const [user] = await db
     .select({
       userId: schema.users.userId,
       userFirstName: schema.users.userFirstName,
@@ -33,8 +33,7 @@ export async function getUserProfile(
     })
     .from(schema.users)
     .where(eq(schema.users.userId, userId))
-    .get();
-
+    .limit(1);
   if (!user) {
     notFound("User", userId);
   }
@@ -56,7 +55,7 @@ export interface UpdateUserProfileParams {
 }
 
 export async function updateUserProfile(
-  db: DrizzleD1Database<typeof schema>,
+  db: Database,
   userId: string,
   params: UpdateUserProfileParams
 ): Promise<UserProfileDTO> {

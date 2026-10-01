@@ -1,4 +1,4 @@
-import { DrizzleD1Database } from "drizzle-orm/d1";
+import type { Database } from "../db";
 import * as schema from "../db/schema";
 import { eq, and, or, asc, desc, gte, lte, sql, inArray } from "drizzle-orm";
 import {
@@ -26,7 +26,7 @@ export class WalletRequiredError extends ServiceError {
 }
 
 export async function applyBalanceDelta(
-  db: DrizzleD1Database<typeof schema>,
+  db: Database,
   userId: string,
   txType: string,
   wId: string,
@@ -109,7 +109,7 @@ export interface ListTransactionsFilters {
 }
 
 export async function listTransactions(
-  db: DrizzleD1Database<typeof schema>,
+  db: Database,
   userId: string,
   filters: ListTransactionsFilters = {}
 ) {
@@ -315,7 +315,7 @@ export async function listTransactions(
 }
 
 export async function getTransactionById(
-  db: DrizzleD1Database<typeof schema>,
+  db: Database,
   userId: string,
   transactionId: unknown
 ) {
@@ -323,7 +323,7 @@ export async function getTransactionById(
     validationError("Validation Error: Valid string 'transactionId' (UUID) is required", "transactionId");
   }
   const cleanId = (transactionId as string).trim();
-  const tx = await db
+  const [tx] = await db
     .select()
     .from(schema.transactions)
     .where(
@@ -332,7 +332,7 @@ export async function getTransactionById(
         eq(schema.transactions.transactionUserId, userId)
       )
     )
-    .get();
+    .limit(1);
 
   if (!tx) {
     notFound("Transaction", cleanId);
@@ -353,7 +353,7 @@ export interface RecordTransactionParams {
 }
 
 export async function recordTransaction(
-  db: DrizzleD1Database<typeof schema>,
+  db: Database,
   userId: string,
   params: RecordTransactionParams
 ) {
@@ -411,7 +411,7 @@ export async function recordTransaction(
   const cleanAdminFee = isValidFiniteNumber(adminFee) && adminFee >= 0 ? adminFee : 0;
   const txType = type === "income" ? "income" : "expense";
 
-  const wallet = await db
+  const [wallet] = await db
     .select()
     .from(schema.wallets)
     .where(
@@ -420,10 +420,10 @@ export async function recordTransaction(
         eq(schema.wallets.walletUserId, userId)
       )
     )
-    .get();
+    .limit(1);
   if (!wallet) notFound("Wallet", cleanWalletId);
 
-  const category = await db
+  const [category] = await db
     .select()
     .from(schema.categories)
     .where(
@@ -432,7 +432,7 @@ export async function recordTransaction(
         eq(schema.categories.categoryUserId, userId)
       )
     )
-    .get();
+    .limit(1);
   if (!category) notFound("Category", cleanCategoryId);
 
   let cleanBudgetId: string | null = null;
@@ -441,7 +441,7 @@ export async function recordTransaction(
       validationError("Validation Error: 'budgetId' must be a valid string (UUID)", "budgetId");
     }
     const targetBudgetId = budgetId.trim();
-    const budget = await db
+    const [budget] = await db
       .select()
       .from(schema.budgets)
       .where(
@@ -450,7 +450,7 @@ export async function recordTransaction(
           eq(schema.budgets.budgetUserId, userId)
         )
       )
-      .get();
+      .limit(1);
     if (!budget) notFound("Budget", targetBudgetId);
     cleanBudgetId = targetBudgetId;
   }
@@ -517,7 +517,7 @@ export interface UpdateTransactionParams {
   isPlanned?: unknown;
 }
 export async function updateTransaction(
-  db: DrizzleD1Database<typeof schema>,
+  db: Database,
   userId: string,
   transactionId: unknown,
   params: UpdateTransactionParams
@@ -526,7 +526,7 @@ export async function updateTransaction(
     validationError("Validation Error: Valid string 'transactionId' (UUID) is required", "transactionId");
   }
   const cleanTxId = transactionId.trim();
-  const existingTx = await db
+  const [existingTx] = await db
     .select()
     .from(schema.transactions)
     .where(
@@ -535,7 +535,7 @@ export async function updateTransaction(
         eq(schema.transactions.transactionUserId, userId)
       )
     )
-    .get();
+    .limit(1);
 
   if (!existingTx) {
     notFound("Transaction", cleanTxId);
@@ -591,7 +591,7 @@ export async function updateTransaction(
   if (walletId !== undefined) {
     if (!isValidUUID(walletId)) validationError("Validation Error: 'walletId' must be a valid UUID", "walletId");
     const cleanWId = walletId.trim();
-    const w = await db
+    const [w] = await db
       .select()
       .from(schema.wallets)
       .where(
@@ -600,7 +600,7 @@ export async function updateTransaction(
           eq(schema.wallets.walletUserId, userId)
         )
       )
-      .get();
+      .limit(1);
     if (!w) notFound("Wallet", cleanWId);
     newWalletId = cleanWId;
   }
@@ -621,7 +621,7 @@ export async function updateTransaction(
         );
       }
       const cleanTWId = (targetWalletId as string).trim();
-      const tw = await db
+      const [tw] = await db
         .select()
         .from(schema.wallets)
         .where(
@@ -630,7 +630,7 @@ export async function updateTransaction(
             eq(schema.wallets.walletUserId, userId)
           )
         )
-        .get();
+        .limit(1);
       if (!tw) notFound("Target Wallet", cleanTWId);
       newTargetWalletId = cleanTWId;
     } else if (!newTargetWalletId) {
@@ -663,7 +663,7 @@ export async function updateTransaction(
     } else {
       if (!isValidUUID(categoryId)) validationError("Validation Error: 'categoryId' must be a valid UUID", "categoryId");
       const cleanCatId = categoryId.trim();
-      const cat = await db
+      const [cat] = await db
         .select()
         .from(schema.categories)
         .where(
@@ -672,7 +672,7 @@ export async function updateTransaction(
             eq(schema.categories.categoryUserId, userId)
           )
         )
-        .get();
+        .limit(1);
       if (!cat) notFound("Category", cleanCatId);
       newCategoryId = cleanCatId;
     }
@@ -687,7 +687,7 @@ export async function updateTransaction(
     } else {
       if (!isValidUUID(budgetId)) validationError("Validation Error: 'budgetId' must be a valid UUID", "budgetId");
       const cleanBId = (budgetId as string).trim();
-      const b = await db
+      const [b] = await db
         .select()
         .from(schema.budgets)
         .where(
@@ -696,7 +696,7 @@ export async function updateTransaction(
             eq(schema.budgets.budgetUserId, userId)
           )
         )
-        .get();
+        .limit(1);
       if (!b) notFound("Budget", cleanBId);
       newBudgetId = cleanBId;
     }
@@ -771,7 +771,7 @@ export async function updateTransaction(
     newIsPlannedInt === 0 &&
     newWalletId
   ) {
-    const sourceWallet = await db
+    const [sourceWallet] = await db
       .select()
       .from(schema.wallets)
       .where(
@@ -780,7 +780,7 @@ export async function updateTransaction(
           eq(schema.wallets.walletUserId, userId)
         )
       )
-      .get();
+      .limit(1);
     if (sourceWallet && Number(sourceWallet.walletIsLocked) === 1) {
       notice = `Notice: ${newType === "expense" ? "Expense recorded" : "Outward transfer"} on locked wallet '${newWalletId}'. Protected capital reserve reduced.`;
     }
@@ -793,7 +793,7 @@ export async function updateTransaction(
 }
 
 export async function deleteTransaction(
-  db: DrizzleD1Database<typeof schema>,
+  db: Database,
   userId: string,
   transactionId: unknown
 ): Promise<{ success: boolean; message: string; deletedTransactionId: string }> {
@@ -802,7 +802,7 @@ export async function deleteTransaction(
   }
 
   const cleanTxId = (transactionId as string).trim();
-  const existingTx = await db
+  const [existingTx] = await db
     .select()
     .from(schema.transactions)
     .where(
@@ -811,7 +811,7 @@ export async function deleteTransaction(
         eq(schema.transactions.transactionUserId, userId)
       )
     )
-    .get();
+    .limit(1);
 
   if (!existingTx) {
     notFound("Transaction", cleanTxId);

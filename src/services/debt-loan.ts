@@ -1,4 +1,4 @@
-import { DrizzleD1Database } from "drizzle-orm/d1";
+import type { Database } from "../db";
 import * as schema from "../db/schema";
 import { eq, and, desc, sql } from "drizzle-orm";
 import {
@@ -18,7 +18,7 @@ export interface ListDebtsLoansFilters {
 }
 
 export async function listDebtsLoans(
-  db: DrizzleD1Database<typeof schema>,
+  db: Database,
   userId: string,
   filters: ListDebtsLoansFilters = {}
 ) {
@@ -42,7 +42,7 @@ export async function listDebtsLoans(
     .orderBy(desc(schema.debtsLoans.debtLoanCreatedAt));
 }
 export async function getDebtLoanById(
-  db: DrizzleD1Database<typeof schema>,
+  db: Database,
   userId: string,
   debtLoanId: unknown
 ) {
@@ -50,7 +50,7 @@ export async function getDebtLoanById(
     validationError("Validation Error: Valid string 'debtLoanId' (UUID) is required", "debtLoanId");
   }
   const cleanId = (debtLoanId as string).trim();
-  const dl = await db
+  const [dl] = await db
     .select()
     .from(schema.debtsLoans)
     .where(
@@ -59,7 +59,7 @@ export async function getDebtLoanById(
         eq(schema.debtsLoans.debtLoanUserId, userId)
       )
     )
-    .get();
+    .limit(1);
 
   if (!dl) {
     notFound("Debt/Loan", cleanId);
@@ -78,7 +78,7 @@ export interface CreateDebtLoanParams {
 }
 
 export async function createDebtLoan(
-  db: DrizzleD1Database<typeof schema>,
+  db: Database,
   userId: string,
   params: CreateDebtLoanParams
 ) {
@@ -122,7 +122,7 @@ export async function createDebtLoan(
         "walletId"
       );
     }
-    const targetWallet = await db
+    const [targetWallet] = await db
       .select()
       .from(schema.wallets)
       .where(
@@ -131,7 +131,7 @@ export async function createDebtLoan(
           eq(schema.wallets.walletUserId, userId)
         )
       )
-      .get();
+      .limit(1);
     if (!targetWallet) {
       notFound("Wallet", walletId.trim());
     }
@@ -212,7 +212,7 @@ export interface RepayDebtLoanParams {
 }
 
 export async function repayDebtLoan(
-  db: DrizzleD1Database<typeof schema>,
+  db: Database,
   userId: string,
   debtLoanId: unknown,
   params: RepayDebtLoanParams
@@ -232,7 +232,7 @@ export async function repayDebtLoan(
   }
 
   const cleanId = debtLoanId.trim();
-  const existingRecord = await db
+  const [existingRecord] = await db
     .select()
     .from(schema.debtsLoans)
     .where(
@@ -241,7 +241,7 @@ export async function repayDebtLoan(
         eq(schema.debtsLoans.debtLoanUserId, userId)
       )
     )
-    .get();
+    .limit(1);
 
   if (!existingRecord) {
     notFound("Debt/Loan", cleanId);
@@ -269,7 +269,7 @@ export async function repayDebtLoan(
         "walletId"
       );
     }
-    const targetWallet = await db
+    const [targetWallet] = await db
       .select()
       .from(schema.wallets)
       .where(
@@ -278,7 +278,7 @@ export async function repayDebtLoan(
           eq(schema.wallets.walletUserId, userId)
         )
       )
-      .get();
+      .limit(1);
     if (!targetWallet) {
       notFound("Wallet", walletId.trim());
     }
@@ -339,7 +339,7 @@ export interface UpdateDebtLoanParams {
 }
 
 export async function updateDebtLoan(
-  db: DrizzleD1Database<typeof schema>,
+  db: Database,
   userId: string,
   debtLoanId: unknown,
   params: UpdateDebtLoanParams
@@ -351,7 +351,7 @@ export async function updateDebtLoan(
     );
   }
   const cleanId = debtLoanId.trim();
-  const existingRecord = await db
+  const [existingRecord] = await db
     .select()
     .from(schema.debtsLoans)
     .where(
@@ -360,7 +360,7 @@ export async function updateDebtLoan(
         eq(schema.debtsLoans.debtLoanUserId, userId)
       )
     )
-    .get();
+    .limit(1);
 
   if (!existingRecord) {
     notFound("Debt/Loan", cleanId);
@@ -428,7 +428,7 @@ export async function updateDebtLoan(
   return updated[0];
 }
 export async function deleteDebtLoan(
-  db: DrizzleD1Database<typeof schema>,
+  db: Database,
   userId: string,
   debtLoanId: unknown
 ) {

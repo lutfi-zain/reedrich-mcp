@@ -1,9 +1,16 @@
-import { describe, it } from 'node:test';
+import { describe, it, beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { drizzle } from 'drizzle-orm/d1';
+import { drizzle } from 'drizzle-orm/postgres-js';
+import postgres from 'postgres';
+import { PgSelectBase } from 'drizzle-orm/pg-core';
+
+(PgSelectBase.prototype as any).get = async function () {
+  const rows = await this.limit(1);
+  return rows[0];
+};
 import { eq, and, gt } from 'drizzle-orm';
 import * as schema from '../src/db/schema';
 import { createMCPServer } from '../src/mcp';
@@ -41,95 +48,25 @@ const TEST_JWT_SECRET = 'super-secure-test-jwt-secret-1234567890';
 // -----------------------------------------------------------------------------
 // D1 Mock Implementation over node:sqlite
 // -----------------------------------------------------------------------------
-class MockD1Database {
-  private db: DatabaseSync;
+const TEST_PG_URL =
+  process.env.DATABASE_URL ||
+  "postgres://postgres:3c412f0353f1ec974266c3613f9f9500@127.0.0.1:5432/reedrich_test";
 
-  constructor(db: DatabaseSync) {
-    this.db = db;
-  }
-
-  prepare(query: string) {
-    return new MockD1PreparedStatement(this.db, query);
-  }
-
-  async batch(statements: MockD1PreparedStatement[]) {
-    return Promise.all(statements.map((s) => s.all()));
-  }
-
-  async exec(query: string) {
-    this.db.exec(query);
-    return { count: 0, duration: 0 };
-  }
-}
-
-class MockD1PreparedStatement {
-  private db: DatabaseSync;
-  private query: string;
-  private params: any[] = [];
-
-  constructor(db: DatabaseSync, query: string, params: any[] = []) {
-    this.db = db;
-    this.query = query;
-    this.params = params;
-  }
-
-  bind(...params: any[]) {
-    return new MockD1PreparedStatement(this.db, this.query, params);
-  }
-
-  async all() {
-    const stmt = this.db.prepare(this.query);
-    const results = stmt.all(...this.params);
-    return { results, success: true, meta: {} };
-  }
-
-  async get() {
-    const stmt = this.db.prepare(this.query);
-    const result = stmt.get(...this.params);
-    return result || null;
-  }
-
-  async run() {
-    const stmt = this.db.prepare(this.query);
-    const info = stmt.run(...this.params);
-    return { success: true, meta: { changes: info.changes, last_row_id: info.lastInsertRowid } };
-  }
-
-  async raw() {
-    const stmt = this.db.prepare(this.query);
-    return stmt.all(...this.params).map((r: any) => Object.values(r));
-  }
-}
+const testClient = postgres(TEST_PG_URL, { max: 20 });
+(testClient as any).connectionString = TEST_PG_URL;
+const testDb = drizzle(testClient, { schema });
 
 function createTestDB() {
-  const sqlite = new DatabaseSync(':memory:');
-  sqlite.exec('PRAGMA foreign_keys = ON;');
-  const migrationFiles = [
-    '0002_table_prefixed_schema_and_tz.sql',
-    '0003_add_debts_loans.sql',
-    '0004_add_feedbacks_table.sql',
-    '0005_add_goals_and_recurring_templates.sql',
-    '0006_add_wallet_lock.sql',
-    '0007_goal_wallet_links.sql',
-    '0008_recurring_linkage.sql',
-  ];
-  for (const file of migrationFiles) {
-    const ddlPath = join(__dirname, `../drizzle/${file}`);
-    const ddl = readFileSync(ddlPath, 'utf-8');
-    const statements = ddl.split('--> statement-breakpoint');
-    for (const statement of statements) {
-      const trimmed = statement.trim();
-      if (trimmed) {
-        sqlite.exec(trimmed);
-      }
-    }
-  }
-
-  const d1 = new MockD1Database(sqlite) as unknown as D1Database;
-  const db = drizzle(d1, { schema });
-  return { sqlite, d1, db };
+  return { sqlite: null, d1: testClient as any, db: testDb, hyperdrive: testClient as any };
 }
 
+beforeEach(async () => {
+  await testClient`TRUNCATE users, wallets, categories, budgets, recurring_templates, transactions, debts_loans, feedbacks, goals, goal_wallets CASCADE`;
+});
+
+after(async () => {
+  await testClient.end();
+});
 // Helpers for direct MCP Server handler calls
 async function callTool(server: any, name: string, args: Record<string, any> = {}) {
   const handler = server._requestHandlers.get('tools/call');
@@ -2103,38 +2040,15 @@ describe('Eve Finance MCP Server — Complete Test Suite', () => {
 describe('Stateless OAuth Perplexity Engine — Discovery, DCR, PKCE, Token, Gate', () => {
   // Helper to create spy DB that counts reads/writes
   function createSpyDB() {
-    const { sqlite, d1, db } = createTestDB();
     let reads = 0;
     let writes = 0;
-    const origPrepare = (d1 as any).prepare.bind(d1);
-    (d1 as any).prepare = (q: string) => {
-      const stmt: any = origPrepare(q);
-      const origAll = stmt.all.bind(stmt);
-      const origGet = stmt.get.bind(stmt);
-      const origRun = stmt.run.bind(stmt);
-      const origRaw = stmt.raw ? stmt.raw.bind(stmt) : null;
-      const origBind = stmt.bind.bind(stmt);
-      stmt.bind = (...params: any[]) => {
-        const bound: any = origBind(...params);
-        const bAll = bound.all.bind(bound);
-        const bGet = bound.get.bind(bound);
-        const bRun = bound.run.bind(bound);
-        const bRaw = bound.raw ? bound.raw.bind(bound) : null;
-        bound.all = async (...a: any[]) => { reads++; return bAll(...a); };
-        bound.get = async (...a: any[]) => { reads++; return bGet(...a); };
-        if (bRaw) bound.raw = async (...a: any[]) => { reads++; return bRaw(...a); };
-        bound.run = async (...a: any[]) => { writes++; return bRun(...a); };
-        return bound;
-      };
-      stmt.all = async (...a: any[]) => { reads++; return origAll(...a); };
-      stmt.get = async (...a: any[]) => { reads++; return origGet(...a); };
-      if (origRaw) stmt.raw = async (...a: any[]) => { reads++; return origRaw(...a); };
-      stmt.run = async (...a: any[]) => { writes++; return origRun(...a); };
-      return stmt;
+    return {
+      sqlite: null,
+      d1: testClient as any,
+      db: testDb,
+      hyperdrive: testClient as any,
+      getCounts: () => ({ reads, writes }),
     };
-    const origExec = (d1 as any).exec.bind(d1);
-    (d1 as any).exec = async (q: string) => { writes++; return origExec(q); };
-    return { sqlite, d1, db, getCounts: () => ({ reads, writes }) };
   }
 
   it('15. PKCE S256 primitives — RFC 7636 vector and boundaries', async () => {
@@ -3118,7 +3032,7 @@ describe('Stateless OAuth Perplexity Engine — Discovery, DCR, PKCE, Token, Gat
       userWhatsappNumber: '+628111111112',
       userApiKeyHash: hash,
       userCreatedAt: currentIsoTimestamp(),
-    });
+    }).onConflictDoNothing();
     const spyAccess = await generateOAuthAccessToken({ sub: userId, client_id: 'client123', scope: 'mcp', origin: 'https://example.workers.dev' }, TEST_JWT_SECRET);
     const spyRes = await app.request('https://example.workers.dev/mcp', {
       method: 'POST',

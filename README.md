@@ -1,6 +1,6 @@
-# Reedrich MCP Server (Cloudflare Workers + D1)
+# Reedrich MCP Server (Cloudflare Workers + PostgreSQL via Hyperdrive)
 
-Stateless Model Context Protocol (MCP) server for personal finance & deterministic wealth planning, inspired by **Reed Richards (Mister Fantastic)**—giving AI Agents mathematical superpowers to project, optimize, and solve user finances on **Cloudflare Workers** with **Cloudflare D1** (SQLite) and **Drizzle ORM**.
+Stateless Model Context Protocol (MCP) server for personal finance & deterministic wealth planning, inspired by **Reed Richards (Mister Fantastic)**—giving AI Agents mathematical superpowers to project, optimize, and solve user finances on **Cloudflare Workers** with **PostgreSQL 16** (via **Cloudflare Hyperdrive** & **PgBouncer**) and **Drizzle ORM**.
 
 ---
 
