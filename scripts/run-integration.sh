@@ -6,13 +6,13 @@ JWT_SECRET="${JWT_SECRET:-reedrich_production_secret_key_8492048591823746}"
 
 echo ""
 echo "╔════════════════════════════════════════════════════════════╗"
-echo "║  Reedrich MCP — Remote Cloudflare D1 Integration (E2E)    ║"
+echo "║  Reedrich MCP — Remote Hyperdrive + PostgreSQL (E2E)       ║"
 echo "╚════════════════════════════════════════════════════════════╝"
 echo ""
 
 # 1. Deploy latest code
 echo "🚀 Deploying worker to Cloudflare..."
-npm run deploy
+env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy npm run deploy
 echo ""
 
 # 2. Wait a moment for deployment propagation
@@ -36,20 +36,20 @@ WORKER_URL="${WORKER_URL}" JWT_SECRET="${JWT_SECRET}" npx tsx --test tests/integ
 TEST_EXIT=$?
 echo ""
 
-# 5. Cleanup test data from remote D1 (only delete test users with test email pattern)
+# 5. Cleanup test data from remote PostgreSQL reedrich
 if [ "$KEEP_DATA" = "1" ]; then
-  echo "ℹ️  KEEP_DATA=1 detected. Skipping teardown/cleanup so test data stays in D1."
+  echo "ℹ️  KEEP_DATA=1 detected. Skipping teardown/cleanup so test data stays in PostgreSQL."
 else
-  echo "🧹 Cleaning up test-only data from remote D1..."
-  npx wrangler d1 execute finance_db --remote \
-    --command="DELETE FROM users WHERE user_email LIKE '%@example.com' AND user_first_name IN ('Budi', 'Other', 'Citra');" 2>/dev/null || true
+  echo "🧹 Cleaning up test-only data from remote PostgreSQL reedrich..."
+  docker exec postgres-primary psql -U postgres -d reedrich \
+    -c "DELETE FROM users WHERE user_email LIKE '%@example.com' AND user_first_name IN ('Budi', 'Other', 'Citra');" > /dev/null 2>&1 || true
   echo "✅ Test-specific data cleaned up."
 fi
 echo ""
 
 if [ $TEST_EXIT -eq 0 ]; then
   echo "╔════════════════════════════════════════════════════════════╗"
-  echo "║  ✅ All remote D1 integration tests PASSED!               ║"
+  echo "║  ✅ All remote integration tests PASSED!                   ║"
   echo "╚════════════════════════════════════════════════════════════╝"
 else
   echo "╔════════════════════════════════════════════════════════════╗"

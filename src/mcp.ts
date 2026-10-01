@@ -7,7 +7,7 @@ import {
   ListPromptsRequestSchema,
   GetPromptRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { DrizzleD1Database } from "drizzle-orm/d1";
+import type { Database } from "./db";
 import * as schema from "./db/schema";
 import { eq, and, desc, gte, lte, sql } from "drizzle-orm";
 import { currentIsoTimestamp } from "./utils/date";
@@ -66,7 +66,7 @@ export type MCPOptions = {
   fetchFn?: typeof fetch;
 };
 export function createMCPServer(
-  db: DrizzleD1Database<typeof schema>,
+  db: Database,
   userId: string | null,
   jwtSecret: string,
   options?: MCPOptions

@@ -1,4 +1,4 @@
-import { DrizzleD1Database } from "drizzle-orm/d1";
+import type { Database } from "../db";
 import * as schema from "../db/schema";
 import { eq, and, gte, lte } from "drizzle-orm";
 import {
@@ -22,7 +22,7 @@ export interface CreateBudgetParams {
 }
 
 export async function listBudgets(
-  db: DrizzleD1Database<typeof schema>,
+  db: Database,
   userId: string
 ) {
   return db
@@ -32,7 +32,7 @@ export async function listBudgets(
 }
 
 export async function createBudget(
-  db: DrizzleD1Database<typeof schema>,
+  db: Database,
   userId: string,
   params: CreateBudgetParams
 ) {
@@ -82,7 +82,7 @@ export async function createBudget(
       );
     }
     const targetCatId = categoryId.trim();
-    const category = await db
+    const [category] = await db
       .select()
       .from(schema.categories)
       .where(
@@ -91,7 +91,7 @@ export async function createBudget(
           eq(schema.categories.categoryUserId, userId)
         )
       )
-      .get();
+      .limit(1);
     if (!category) {
       throw notFound("Category", targetCatId);
     }
@@ -118,7 +118,7 @@ export async function createBudget(
 }
 
 export async function budgetStatus(
-  db: DrizzleD1Database<typeof schema>,
+  db: Database,
   userId: string
 ) {
   const budgets = await db
@@ -164,7 +164,7 @@ export async function budgetStatus(
   return statusList;
 }
 export async function getBudgetById(
-  db: DrizzleD1Database<typeof schema>,
+  db: Database,
   userId: string,
   budgetId: unknown
 ) {
@@ -172,7 +172,7 @@ export async function getBudgetById(
     validationError("Validation Error: Valid string 'budgetId' (UUID) is required", "budgetId");
   }
   const cleanId = (budgetId as string).trim();
-  const budget = await db
+  const [budget] = await db
     .select()
     .from(schema.budgets)
     .where(
@@ -181,7 +181,7 @@ export async function getBudgetById(
         eq(schema.budgets.budgetUserId, userId)
       )
     )
-    .get();
+    .limit(1);
 
   if (!budget) {
     notFound("Budget", cleanId);
@@ -222,7 +222,7 @@ export interface UpdateBudgetParams {
 }
 
 export async function updateBudget(
-  db: DrizzleD1Database<typeof schema>,
+  db: Database,
   userId: string,
   budgetId: unknown,
   params: UpdateBudgetParams
@@ -231,7 +231,7 @@ export async function updateBudget(
     validationError("Validation Error: Valid string 'budgetId' (UUID) is required", "budgetId");
   }
   const cleanId = (budgetId as string).trim();
-  const existing = await db
+  const [existing] = await db
     .select()
     .from(schema.budgets)
     .where(
@@ -240,7 +240,7 @@ export async function updateBudget(
         eq(schema.budgets.budgetUserId, userId)
       )
     )
-    .get();
+    .limit(1);
 
   if (!existing) {
     notFound("Budget", cleanId);
@@ -292,7 +292,7 @@ export async function updateBudget(
         validationError("Validation Error: 'categoryId' must be a valid UUID", "categoryId");
       }
       const cleanCatId = (categoryId as string).trim();
-      const cat = await db
+      const [cat] = await db
         .select()
         .from(schema.categories)
         .where(
@@ -301,7 +301,7 @@ export async function updateBudget(
             eq(schema.categories.categoryUserId, userId)
           )
         )
-        .get();
+        .limit(1);
       if (!cat) notFound("Category", cleanCatId);
       updates.budgetCategoryId = cleanCatId;
     }
@@ -322,7 +322,7 @@ export async function updateBudget(
   return getBudgetById(db, userId, cleanId);
 }
 export async function deleteBudget(
-  db: DrizzleD1Database<typeof schema>,
+  db: Database,
   userId: string,
   budgetId: unknown
 ) {

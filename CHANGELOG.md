@@ -4,6 +4,18 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/): `Added`, `Changed`,
 `Deprecated`, `Removed`, `Fixed`, `Security` sections per release.
 
+## [1.14.0] — 2026-10-01
+
+### Added
+- **PostgreSQL 16 Persistence Migration via Cloudflare Hyperdrive**:
+  - Migrated entire persistence layer from Cloudflare D1 (SQLite) to self-hosted PostgreSQL 16 on VPS via PgBouncer (`0.0.0.0:6432`) and Cloudflare Hyperdrive (`binding = "HYPERDRIVE"`, ID `246e815964a44eed9464752afe346134`).
+  - Created dedicated `reedrich` production database and `reedrich_test` unit/E2E test database in PostgreSQL.
+  - Refactored Drizzle ORM schema from `drizzle-orm/sqlite-core` to `drizzle-orm/pg-core` across all 10 domain entities (`users`, `wallets`, `categories`, `budgets`, `recurring_templates`, `transactions`, `debts_loans`, `feedbacks`, `goals`, `goal_wallets`).
+  - Replaced `drizzle-orm/d1` with `drizzle-orm/postgres-js` and per-request `postgres` client instantiation (`max: 1`) to preserve Cloudflare Workers request socket lifecycle boundaries.
+  - One-time ETL migration (`scripts/migrate-d1-to-pg.ts`) transferred all 3,469 records from remote D1 to PostgreSQL with 100% referential, foreign key, and balance parity. Zero remote D1 records deleted.
+  - Modernized unit tests (`tests/mcp.test.ts`) and E2E integration test scripts (`scripts/run-local-integration.sh`, `scripts/run-integration.sh`) to run against PostgreSQL, eliminating mock SQLite dialect discrepancies.
+  - Permanently eliminates Cloudflare D1's 5,000,000 scanned row reads/day limit (`code: 7500`) while preserving edge runtime execution and API contracts.
+
 ## [1.13.3] — 2026-09-30
 
 ### Added

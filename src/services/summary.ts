@@ -1,4 +1,4 @@
-import { DrizzleD1Database } from "drizzle-orm/d1";
+import type { Database } from "../db";
 import * as schema from "../db/schema";
 import { eq, and, gte, lte, sql, inArray } from "drizzle-orm";
 import {
@@ -17,7 +17,7 @@ export interface FinancialSummaryParams {
 }
 
 export async function financialSummary(
-  db: DrizzleD1Database<typeof schema>,
+  db: Database,
   userId: string,
   params: FinancialSummaryParams = {},
   fetchFn?: typeof fetch

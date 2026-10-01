@@ -1,4 +1,4 @@
-import { DrizzleD1Database } from "drizzle-orm/d1";
+import type { Database } from "../db";
 import * as schema from "../db/schema";
 import { eq, and, desc, sql, inArray } from "drizzle-orm";
 import {
@@ -21,7 +21,7 @@ import {
 } from "./errors";
 
 export async function listGoals(
-  db: DrizzleD1Database<typeof schema>,
+  db: Database,
   userId: string,
   statusFilter?: unknown,
   fetchFn?: typeof fetch
@@ -47,7 +47,7 @@ export async function listGoals(
   return withProgress;
 }
 export async function getGoalById(
-  db: DrizzleD1Database<typeof schema>,
+  db: Database,
   userId: string,
   goalId: unknown,
   fetchFn?: typeof fetch
@@ -80,7 +80,7 @@ async function attachDerivedProgress<
     goalStatus: string;
   }
 >(
-  db: DrizzleD1Database<typeof schema>,
+  db: Database,
   goal: T,
   fetchFn?: typeof fetch
 ) {
@@ -161,7 +161,7 @@ export interface CreateGoalParams {
 }
 
 export async function createGoal(
-  db: DrizzleD1Database<typeof schema>,
+  db: Database,
   userId: string,
   params: CreateGoalParams
 ) {
@@ -218,7 +218,7 @@ export async function createGoal(
         "walletId"
       );
     }
-    const w = await db
+    const [w] = await db
       .select()
       .from(schema.wallets)
       .where(
@@ -227,7 +227,7 @@ export async function createGoal(
           eq(schema.wallets.walletUserId, userId)
         )
       )
-      .get();
+      .limit(1);
     if (!w) notFound("Wallet", walletId.trim());
     cleanWalletId = walletId.trim();
   }
@@ -240,7 +240,7 @@ export async function createGoal(
         "categoryId"
       );
     }
-    const cat = await db
+    const [cat] = await db
       .select()
       .from(schema.categories)
       .where(
@@ -249,7 +249,7 @@ export async function createGoal(
           eq(schema.categories.categoryUserId, userId)
         )
       )
-      .get();
+      .limit(1);
     if (!cat) notFound("Category", categoryId.trim());
     cleanCategoryId = categoryId.trim();
   }
@@ -327,7 +327,7 @@ export async function createGoal(
 
   for (const linkWalletId of walletIdsToLink) {
     if (linkWalletId === cleanWalletId) continue;
-    const w = await db
+    const [w] = await db
       .select({ walletId: schema.wallets.walletId })
       .from(schema.wallets)
       .where(
@@ -336,27 +336,25 @@ export async function createGoal(
           eq(schema.wallets.walletUserId, userId)
         )
       )
-      .get();
+      .limit(1);
     if (!w) notFound("Wallet", linkWalletId);
     await db
       .insert(schema.goalWallets)
       .values({ goalId: createdGoalId, walletId: linkWalletId })
-      .onConflictDoNothing()
-      .run();
+      .onConflictDoNothing();
   }
   if (cleanWalletId) {
     await db
       .insert(schema.goalWallets)
       .values({ goalId: createdGoalId, walletId: cleanWalletId })
-      .onConflictDoNothing()
-      .run();
+      .onConflictDoNothing();
   }
 
   return attachDerivedProgress(db, newGoal[0], fetchFn);
 }
 
 async function requireOwnedGoal(
-  db: DrizzleD1Database<typeof schema>,
+  db: Database,
   userId: string,
   goalId: unknown
 ) {
@@ -367,7 +365,7 @@ async function requireOwnedGoal(
     );
   }
   const cleanGoalId = (goalId as string).trim();
-  const existingGoal = await db
+  const [existingGoal] = await db
     .select()
     .from(schema.goals)
     .where(
@@ -376,7 +374,7 @@ async function requireOwnedGoal(
         eq(schema.goals.goalUserId, userId)
       )
     )
-    .get();
+    .limit(1);
   if (!existingGoal) {
     notFound("Goal", cleanGoalId);
   }
@@ -390,7 +388,7 @@ export interface ContributeGoalParams {
 }
 
 export async function contributeGoal(
-  _db: DrizzleD1Database<typeof schema>,
+  _db: Database,
   _userId: string,
   _goalId: unknown,
   _params: ContributeGoalParams
@@ -402,7 +400,7 @@ export async function contributeGoal(
 }
 
 export async function linkGoalWallet(
-  db: DrizzleD1Database<typeof schema>,
+  db: Database,
   userId: string,
   goalId: unknown,
   walletId: unknown,
@@ -416,7 +414,7 @@ export async function linkGoalWallet(
     );
   }
   const cleanWalletId = (walletId as string).trim();
-  const wallet = await db
+  const [wallet] = await db
     .select({ walletId: schema.wallets.walletId })
     .from(schema.wallets)
     .where(
@@ -425,24 +423,23 @@ export async function linkGoalWallet(
         eq(schema.wallets.walletUserId, userId)
       )
     )
-    .get();
+    .limit(1);
   if (!wallet) notFound("Wallet", cleanWalletId);
   await db
     .insert(schema.goalWallets)
     .values({ goalId: existingGoal.goalId, walletId: cleanWalletId })
-    .onConflictDoNothing()
-    .run();
-  const refreshed = await db
+    .onConflictDoNothing();
+  const [refreshed] = await db
     .select()
     .from(schema.goals)
     .where(eq(schema.goals.goalId, existingGoal.goalId))
-    .get();
+    .limit(1);
   if (!refreshed) notFound("Goal", existingGoal.goalId);
   return attachDerivedProgress(db, refreshed, fetchFn);
 }
 
 export async function unlinkGoalWallet(
-  db: DrizzleD1Database<typeof schema>,
+  db: Database,
   userId: string,
   goalId: unknown,
   walletId: unknown,
@@ -463,13 +460,12 @@ export async function unlinkGoalWallet(
         eq(schema.goalWallets.goalId, existingGoal.goalId),
         eq(schema.goalWallets.walletId, cleanWalletId)
       )
-    )
-    .run();
-  const refreshed = await db
+    );
+  const [refreshed] = await db
     .select()
     .from(schema.goals)
     .where(eq(schema.goals.goalId, existingGoal.goalId))
-    .get();
+    .limit(1);
   if (!refreshed) notFound("Goal", existingGoal.goalId);
   return attachDerivedProgress(db, refreshed, fetchFn);
 }
@@ -487,7 +483,7 @@ export interface UpdateGoalParams {
 }
 
 export async function updateGoal(
-  db: DrizzleD1Database<typeof schema>,
+  db: Database,
   userId: string,
   goalId: unknown,
   params: UpdateGoalParams & { fetchFn?: typeof fetch }
@@ -499,7 +495,7 @@ export async function updateGoal(
     );
   }
   const cleanGoalId = goalId.trim();
-  const existingGoal = await db
+  const [existingGoal] = await db
     .select()
     .from(schema.goals)
     .where(
@@ -508,8 +504,7 @@ export async function updateGoal(
         eq(schema.goals.goalUserId, userId)
       )
     )
-    .get();
-
+    .limit(1);
   if (!existingGoal) {
     notFound("Goal", cleanGoalId);
   }
@@ -588,7 +583,7 @@ export async function updateGoal(
           "walletId"
         );
       }
-      const w = await db
+      const [w] = await db
         .select()
         .from(schema.wallets)
         .where(
@@ -597,7 +592,7 @@ export async function updateGoal(
             eq(schema.wallets.walletUserId, userId)
           )
         )
-        .get();
+        .limit(1);
       if (!w) notFound("Wallet", walletId.trim());
       updateData.goalWalletId = walletId.trim();
     } else {
@@ -612,7 +607,7 @@ export async function updateGoal(
           "categoryId"
         );
       }
-      const cat = await db
+      const [cat] = await db
         .select()
         .from(schema.categories)
         .where(
@@ -621,7 +616,7 @@ export async function updateGoal(
             eq(schema.categories.categoryUserId, userId)
           )
         )
-        .get();
+        .limit(1);
       if (!cat) notFound("Category", categoryId.trim());
       updateData.goalCategoryId = categoryId.trim();
     } else {
@@ -672,7 +667,7 @@ export async function updateGoal(
 }
 
 export async function deleteGoal(
-  db: DrizzleD1Database<typeof schema>,
+  db: Database,
   userId: string,
   goalId: unknown
 ) {

@@ -12,7 +12,7 @@ This file is the authoritative guide for AI coding agents working in this reposi
 ```bash
 # MANDATORY before finalising any change — run in this exact order:
 npm run typecheck            # TypeScript static check (zero errors required)
-npm test                     # Unit tests via MockD1 in-memory sqlite (node:sqlite)
+npm test                     # Unit tests via local PostgreSQL test database (reedrich_test)
 npm run test:local           # Integration tests vs local Wrangler dev server
 npm run test:remote          # Integration tests vs deployed Cloudflare Workers
 ```
@@ -59,11 +59,10 @@ MCP Tool Handler / Hono Route Handler
    Utility Function  (src/utils/*.ts)
          │
          ▼  (Drizzle query builder, never raw SQL strings)
-   Cloudflare D1  (src/db/schema.ts)
-```
+   PostgreSQL 16 via Cloudflare Hyperdrive & PgBouncer  (src/db/schema.ts)
 
 **Rules:**
-- Route handlers (`src/routes/*.ts`) MUST be **thin** — extract `userId`, instantiate `drizzle(c.env.DB)`, call one service function, return `c.json()`. Zero business logic.
+- Route handlers (`src/routes/*.ts`) MUST be **thin** — extract `userId`, instantiate `getDb(c.env)`, call one service function, return `c.json()`. Zero business logic.
 - Service functions (`src/services/*.ts`) MUST be transport-neutral — no `Request`, `Response`, `Hono`, or MCP SDK imports. Accept `(db, userId, params)`, return plain objects, or throw `ServiceError`.
 - Utility functions (`src/utils/*.ts`) MUST be pure — no DB calls, no side effects, fully unit-testable in isolation.
 - **Never write raw SQL strings.** Use Drizzle ORM query builder exclusively.
@@ -117,8 +116,8 @@ For the canonical implementation patterns, refer to these Gold Standard files:
 ## Dependencies & Environment
 
 - **Runtime:** Cloudflare Workers (workerd / V8 Isolate). No Node.js process model. No persistent memory between requests.
-- **Database:** Cloudflare D1 (SQLite at the edge). ORM: Drizzle (`drizzle-orm/d1`). Schema source of truth: `src/db/schema.ts`. Migrations: `drizzle/` directory.
-- **Test DB:** `node:sqlite` in-memory (`DatabaseSync`) via `MockD1Database` in `tests/mcp.test.ts`. New migration files MUST be appended to the `migrationFiles` array in `createTestDB()`.
+- **Database:** PostgreSQL 16 (on VPS via Cloudflare Hyperdrive & PgBouncer). ORM: Drizzle (`drizzle-orm/postgres-js`). Schema source of truth: `src/db/schema.ts`.
+- **Test DB:** Local PostgreSQL (`reedrich_test`) on `127.0.0.1:5432`. Tables truncated via `beforeEach` in `tests/mcp.test.ts`.
 - **Secrets Management:** All secrets (`JWT_SECRET`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`) are Cloudflare Worker Secrets. Local dev uses `.dev.vars`. NEVER hardcode secrets in source files.
 - **Date/Time:** All dates stored as ISO-8601 strings with timezone. Use `src/utils/date.ts` (`currentIsoTimestamp`, `normalizeToIsoTimestamp`, `isValidIsoDateOrTimestamp`). Never use `new Date().toISOString()` directly in service functions.
 - **FX Rates:** Live rates fetched from `open.er-api.com` with 3-second timeout. On timeout/error, fall back to `FALLBACK_RATES_USD_BASE` in `src/utils/fx.ts`. Never block on FX failure.
@@ -136,3 +135,4 @@ For the canonical implementation patterns, refer to these Gold Standard files:
 - **OpenSpec MODIFIED blocks:** When writing a delta spec that modifies an existing requirement, copy ALL original scenarios into the `## MODIFIED Requirements` block. Dropping any scenario causes `openspec validate` to fail with a hard error at archive time.
 - **`ServiceError` over raw `Error`:** Never `throw new Error("...")` for domain failures. Always use typed helpers: `validationError()`, `notFound()`, `unauthorized()`, `forbidden()`, `conflict()`. This ensures MCP and REST transports map errors to correct codes automatically.
 - **YAML quoting:** In `openspec/config.yaml`, always quote rule strings containing colons (e.g. `'prefers-reduced-motion: reduce'`) to prevent YAML parsers from misinterpreting them as key-value objects.
+- **Worker Socket Lifecycles:** In Cloudflare Workers with Hyperdrive/postgres.js, NEVER cache a database client with open sockets in a global variable across requests. Instantiate per-request with `{ max: 1 }` as Hyperdrive handles connection pooling at the edge and PgBouncer at the origin.

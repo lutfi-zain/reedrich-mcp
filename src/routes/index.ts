@@ -1,6 +1,5 @@
 import { Hono } from "hono";
-import { drizzle } from "drizzle-orm/d1";
-import * as schema from "../db/schema";
+import { getDb } from "../db";
 import { resolveUserId, extractBearerToken } from "../middleware/auth";
 import { ServiceError, HTTP_STATUS_MAP } from "../services/errors";
 import type { AppEnv } from "../index";
@@ -24,7 +23,7 @@ const api = new Hono<AppEnv>();
 // Scoped Auth Middleware for REST API (/api/v1/*)
 api.use("*", async (c, next) => {
   const secret = c.env?.JWT_SECRET;
-  const db = drizzle(c.env.DB, { schema });
+  const db = getDb(c.env);
   const authHeader = c.req.header("Authorization");
   const bearerToken =
     extractBearerToken(authHeader) ||

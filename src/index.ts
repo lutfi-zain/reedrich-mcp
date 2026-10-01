@@ -3,7 +3,7 @@ import { observabilityMiddleware, type AppVariables } from './middleware/observa
 import api from './routes/index';
 import { resolveUserId, extractBearerToken } from './middleware/auth';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
-import { drizzle, type DrizzleD1Database } from 'drizzle-orm/d1';
+import { getDb, type Database } from './db';
 import { eq, and, desc, gte, lte, sql } from 'drizzle-orm';
 import * as schema from './db/schema';
 import { generateOpenApiSpec } from './docs/openapi';
@@ -33,7 +33,8 @@ import {
 } from './utils/oauth';
 
 export type Bindings = {
-  DB: D1Database;
+  HYPERDRIVE?: Hyperdrive;
+  DB?: any;
   JWT_SECRET: string;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
@@ -224,7 +225,7 @@ function getProtectedResourceMetadata(origin: string): Record<string, unknown> {
 // Now also supports stateless OAuth access tokens (15m HS256 JWT)
 async function extractAuthenticatedUserId(
   c: Context<AppEnv>,
-  db: DrizzleD1Database<typeof schema>
+  db: Database
 ): Promise<string | null> {
   const secret = c.env?.JWT_SECRET;
   if (!secret) return null;
@@ -255,7 +256,7 @@ function escapeHtml(str: string): string {
 }
 
 export async function loginUser(
-  db: DrizzleD1Database<typeof schema>,
+  db: Database,
   secret: string,
   apiKey: string
 ): Promise<string> {
@@ -264,7 +265,7 @@ export async function loginUser(
   }
   const clean = apiKey.trim();
   const keyHash = await hashApiKey(clean);
-  const user = await db.select({ userId: schema.users.userId }).from(schema.users).where(eq(schema.users.userApiKeyHash, keyHash)).get();
+  const [user] = await db.select({ userId: schema.users.userId }).from(schema.users).where(eq(schema.users.userApiKeyHash, keyHash)).limit(1);
   if (!user) {
     throw new Error('API Key tidak valid. Pastikan Anda menyalin rd_live_... dengan benar atau daftar akun baru.');
   }
@@ -272,7 +273,7 @@ export async function loginUser(
 }
 
 export async function registerUser(
-  db: DrizzleD1Database<typeof schema>,
+  db: Database,
   secret: string,
   params: { firstName: string; lastName: string; email: string; whatsappNumber: string }
 ): Promise<string> {
@@ -290,7 +291,7 @@ export async function registerUser(
     throw new Error('Format WhatsApp tidak valid. Harus diawali + kode negara, 6-14 digit (contoh: +6281234567890)');
   }
   const normalizedEmail = email.trim().toLowerCase();
-  const existing = await db.select().from(schema.users).where(eq(schema.users.userEmail, normalizedEmail)).get();
+  const [existing] = await db.select().from(schema.users).where(eq(schema.users.userEmail, normalizedEmail)).limit(1);
   if (existing) {
     throw new Error(`Email '${normalizedEmail}' sudah terdaftar. Silakan masuk dengan API Key.`);
   }
@@ -985,10 +986,7 @@ app.get('/oauth/authorize', async (c) => {
   }
 
   // Authenticate resource owner via existing Reedrich auth (Bearer rd_live_/JWT or ?token=)
-  if (!c.env?.DB) {
-    return c.json({ error: 'server_error', error_description: 'DB missing' }, 500);
-  }
-  const db = drizzle(c.env.DB, { schema });
+  const db = getDb(c.env);
   const userId = await extractAuthenticatedUserId(c, db);
   if (!userId) {
     // Direct IdP routing (e.g. ?provider=google or ?idp=google)
@@ -1153,8 +1151,8 @@ app.get('/oauth/google/callback', async (c) => {
   if (!secret) {
     return c.json({ error: 'server_error', error_description: 'JWT_SECRET missing' }, 500);
   }
-  if (!c.env?.DB) {
-    return c.json({ error: 'server_error', error_description: 'DB missing' }, 500);
+  if (!c.env?.HYPERDRIVE && !c.env?.DB) {
+    return c.json({ error: 'server_error', error_description: 'Database binding missing' }, 500);
   }
 
   const code = c.req.query('code');
@@ -1292,12 +1290,12 @@ app.get('/oauth/google/callback', async (c) => {
     });
   }
 
-  // Database Upsert in D1
-  const db = drizzle(c.env.DB, { schema });
+  // Database Upsert
+  const db = getDb(c.env);
   const normalizedEmail = email.trim().toLowerCase();
   let userId: string;
 
-  const existing = await db.select({ userId: schema.users.userId }).from(schema.users).where(eq(schema.users.userEmail, normalizedEmail)).get();
+  const [existing] = await db.select({ userId: schema.users.userId }).from(schema.users).where(eq(schema.users.userEmail, normalizedEmail)).limit(1);
   if (existing) {
     userId = existing.userId;
   } else {
@@ -1481,13 +1479,13 @@ app.post('/oauth/authorize', async (c) => {
     c.header('Pragma', 'no-cache');
     return c.json({ error: 'invalid_request', error_description: desc }, 400);
   }
-  if (!c.env?.DB) return c.json({ error: 'server_error', error_description: 'DB missing' }, 500);
+  if (!c.env?.HYPERDRIVE && !c.env?.DB) return c.json({ error: 'server_error', error_description: 'Database binding missing' }, 500);
 
   // Try to authenticate via Bearer/query token first (for already-logged-in users)
   let userId: string | null = null;
   let authError: string | null = null;
   try {
-    const dbForBearer = drizzle(c.env.DB, { schema });
+    const dbForBearer = getDb(c.env);
     const bearerUser = await extractAuthenticatedUserId(c, dbForBearer);
     if (bearerUser) userId = bearerUser;
   } catch {}
@@ -1496,7 +1494,7 @@ app.post('/oauth/authorize', async (c) => {
   if (!userId) {
     const authMethodRaw = (bodyParams.auth_method ?? bodyParams.authMethod ?? '').trim();
     const authMethod = authMethodRaw.toLowerCase();
-    const db = drizzle(c.env.DB, { schema });
+    const db = getDb(c.env);
 
     if (authMethod === 'login') {
       const apiKey = (bodyParams.api_key ?? bodyParams.apiKey ?? bodyParams['apiKey'] ?? '').trim();
@@ -1875,8 +1873,8 @@ async function handleMcpRequest(c: Context<AppEnv>) {
   if (!secret) {
     return c.json({ error: 'Server Misconfiguration: JWT_SECRET environment variable is missing' }, 500);
   }
-  if (!c.env?.DB) {
-    return c.json({ error: 'Server Misconfiguration: Database (DB) binding is missing' }, 500);
+  if (!c.env?.HYPERDRIVE && !c.env?.DB) {
+    return c.json({ error: 'Server Misconfiguration: Database binding is missing' }, 500);
   }
 
   // Friendly tip for plain GET without SSE Accept header — public, no auth required
@@ -1909,7 +1907,7 @@ async function handleMcpRequest(c: Context<AppEnv>) {
 
   // Gate check: if not public body and not authenticated, return 401 with WWW-Authenticate
   const isPublic = isPublicMcpBody(parsedBody);
-  const db = drizzle(c.env.DB, { schema });
+  const db = getDb(c.env);
 
   // We need to reconstruct request for auth extraction that uses c.req.* but our early read consumed body.
   // For auth extraction, we need candidate from headers/query, not body, so it's fine.

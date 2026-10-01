@@ -1,4 +1,4 @@
-import { DrizzleD1Database } from "drizzle-orm/d1";
+import type { Database } from "../db";
 import * as schema from "../db/schema";
 import { eq, sql } from "drizzle-orm";
 import {
@@ -14,7 +14,7 @@ import { currentIsoTimestamp } from "../utils/date";
 import { validationError, unauthorized, conflict } from "./errors";
 
 export async function evaluateOnboarding(
-  db: DrizzleD1Database<typeof schema>,
+  db: Database,
   userId: string
 ): Promise<{
   isComplete: boolean;
@@ -61,7 +61,7 @@ export interface RegisterUserParams {
 }
 
 export async function registerUser(
-  db: DrizzleD1Database<typeof schema>,
+  db: Database,
   jwtSecret: string,
   params: RegisterUserParams
 ) {
@@ -112,11 +112,11 @@ export async function registerUser(
   }
 
   const normalizedEmail = email.trim().toLowerCase();
-  const existing = await db
+  const [existing] = await db
     .select()
     .from(schema.users)
     .where(eq(schema.users.userEmail, normalizedEmail))
-    .get();
+    .limit(1);
   if (existing) {
     conflict(
       `Registration Error: Email '${normalizedEmail}' is already registered. Please login with your API key using the 'login_user' tool.`
@@ -170,7 +170,7 @@ export async function registerUser(
 }
 
 export async function loginUser(
-  db: DrizzleD1Database<typeof schema>,
+  db: Database,
   jwtSecret: string,
   apiKey: unknown
 ) {
@@ -180,11 +180,11 @@ export async function loginUser(
 
   const cleanKey = apiKey.trim();
   const apiKeyHash = await hashApiKey(cleanKey);
-  const user = await db
+  const [user] = await db
     .select()
     .from(schema.users)
     .where(eq(schema.users.userApiKeyHash, apiKeyHash))
-    .get();
+    .limit(1);
   if (!user) {
     unauthorized(
       "Authentication Error: Invalid API Key. User not found. Please verify your API Key or register via 'register_user'."

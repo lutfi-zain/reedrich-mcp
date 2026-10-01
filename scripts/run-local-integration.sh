@@ -4,30 +4,30 @@ set -e
 LOCAL_PORT=8799
 LOCAL_URL="http://localhost:${LOCAL_PORT}"
 DEV_SECRET="reedrich_local_dev_jwt_secret_9948271038571204"
+PG_TEST_URL="postgres://postgres:3c412f0353f1ec974266c3613f9f9500@127.0.0.1:5432/reedrich_test"
 
 echo ""
 echo "╔════════════════════════════════════════════════════════════╗"
-echo "║  Reedrich MCP — Local D1 Integration Test (E2E)           ║"
+echo "║  Reedrich MCP — Local PostgreSQL Integration Test (E2E)    ║"
 echo "╚════════════════════════════════════════════════════════════╝"
 echo ""
 
-# 1. Reset and apply migrations to local D1 (glob from the canonical 0002
-# baseline used by tests/mcp.test.ts; legacy 0000/0001 predate the prefixed
-# schema and must stay excluded)
-echo "📦 Migrating local D1 database..."
-for migration in $(ls ./drizzle/000[2-9]*.sql ./drizzle/00[1-9][0-9]*.sql 2>/dev/null | sort -u); do
-  echo "  → Applying ${migration}..."
-  npx wrangler d1 execute finance_db --local --file="${migration}" > /dev/null 2>&1 || true
-done
-echo "✅ Local D1 database ready."
+# 1. Reset local PostgreSQL test database
+echo "📦 Resetting local PostgreSQL test database (reedrich_test)..."
+docker exec postgres-primary psql -U postgres -d reedrich_test -c "TRUNCATE users, wallets, categories, budgets, recurring_templates, transactions, debts_loans, feedbacks, goals, goal_wallets CASCADE;" > /dev/null 2>&1 || true
+echo "✅ Local PostgreSQL test database ready."
 echo ""
 
 # Kill any lingering process on the port before starting
 pkill -9 -f "wrangler.*${LOCAL_PORT}" > /dev/null 2>&1 || true
 pkill -9 -f "workerd.*${LOCAL_PORT}" > /dev/null 2>&1 || true
 sleep 1
-# 2. Start wrangler dev in background
+
+# 2. Start wrangler dev in background with Hyperdrive local connection string
 echo "🚀 Starting wrangler dev on port ${LOCAL_PORT}..."
+CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE="${PG_TEST_URL}" \
+WRANGLER_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE="${PG_TEST_URL}" \
+DATABASE_URL="${PG_TEST_URL}" \
 npx wrangler dev --port ${LOCAL_PORT} --ip 127.0.0.1 > /tmp/wrangler_local_dev.log 2>&1 &
 DEV_PID=$!
 
@@ -58,28 +58,27 @@ echo "✅ Local server is healthy and responding on ${LOCAL_URL}!"
 echo ""
 
 # 4. Run integration tests against local server
-echo "🧪 Running full E2E user journey against Local D1..."
+echo "🧪 Running full E2E user journey against Local PostgreSQL..."
 echo ""
-WORKER_URL="${LOCAL_URL}" JWT_SECRET="${DEV_SECRET}" npx tsx --test tests/integration.test.ts
+WORKER_URL="${LOCAL_URL}" JWT_SECRET="${DEV_SECRET}" DATABASE_URL="${PG_TEST_URL}" npx tsx --test tests/integration.test.ts
 TEST_EXIT=$?
 echo ""
 
-# 5. Cleanup test data from local D1 (unless KEEP_DATA=1)
+# 5. Cleanup test data from local PostgreSQL (unless KEEP_DATA=1)
 if [ "$KEEP_DATA" = "1" ]; then
-  echo "ℹ️  KEEP_DATA=1 detected. Skipping teardown/cleanup so test data stays in Local D1."
+  echo "ℹ️  KEEP_DATA=1 detected. Skipping teardown/cleanup so test data stays in Local DB."
 else
-  echo "🧹 Cleaning up test data from local D1..."
-  npx wrangler d1 execute finance_db --local \
-    --command="DELETE FROM transactions WHERE transaction_user_id LIKE 'usr_%'; DELETE FROM budgets WHERE budget_user_id LIKE 'usr_%'; DELETE FROM categories WHERE category_user_id LIKE 'usr_%'; DELETE FROM wallets WHERE wallet_user_id LIKE 'usr_%'; DELETE FROM users WHERE user_id LIKE 'usr_%';" > /dev/null 2>&1 || true
+  echo "🧹 Cleaning up test data from local PostgreSQL..."
+  docker exec postgres-primary psql -U postgres -d reedrich_test -c "TRUNCATE users, wallets, categories, budgets, recurring_templates, transactions, debts_loans, feedbacks, goals, goal_wallets CASCADE;" > /dev/null 2>&1 || true
 fi
 
 if [ $TEST_EXIT -eq 0 ]; then
   echo "╔════════════════════════════════════════════════════════════╗"
-  echo "║  ✅ Local D1 integration tests PASSED!                    ║"
+  echo "║  ✅ Local PostgreSQL integration tests PASSED!            ║"
   echo "╚════════════════════════════════════════════════════════════╝"
 else
   echo "╔════════════════════════════════════════════════════════════╗"
-  echo "║  ❌ Local D1 integration tests FAILED (code: ${TEST_EXIT})        ║"
+  echo "║  ❌ Local PostgreSQL integration tests FAILED (code: ${TEST_EXIT}) ║"
   echo "╚════════════════════════════════════════════════════════════╝"
   exit $TEST_EXIT
 fi

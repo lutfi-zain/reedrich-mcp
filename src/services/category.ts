@@ -1,4 +1,4 @@
-import { DrizzleD1Database } from "drizzle-orm/d1";
+import type { Database } from "../db";
 import * as schema from "../db/schema";
 import { eq, and } from "drizzle-orm";
 import { currentIsoTimestamp } from "../utils/date";
@@ -28,7 +28,7 @@ export interface CreateCategoryParams {
 }
 
 export async function listCategories(
-  db: DrizzleD1Database<typeof schema>,
+  db: Database,
   userId: string
 ) {
   return db
@@ -37,7 +37,7 @@ export async function listCategories(
     .where(eq(schema.categories.categoryUserId, userId));
 }
 export async function getCategoryById(
-  db: DrizzleD1Database<typeof schema>,
+  db: Database,
   userId: string,
   categoryId: unknown
 ) {
@@ -45,7 +45,7 @@ export async function getCategoryById(
     validationError("Validation Error: Valid string 'categoryId' (UUID) is required", "categoryId");
   }
   const cleanId = (categoryId as string).trim();
-  const category = await db
+  const [category] = await db
     .select()
     .from(schema.categories)
     .where(
@@ -54,8 +54,7 @@ export async function getCategoryById(
         eq(schema.categories.categoryUserId, userId)
       )
     )
-    .get();
-
+    .limit(1);
   if (!category) {
     notFound("Category", cleanId);
   }
@@ -63,7 +62,7 @@ export async function getCategoryById(
 }
 
 export async function createCategory(
-  db: DrizzleD1Database<typeof schema>,
+  db: Database,
   userId: string,
   params: CreateCategoryParams
 ) {
@@ -108,7 +107,7 @@ export interface UpdateCategoryParams {
 }
 
 export async function updateCategory(
-  db: DrizzleD1Database<typeof schema>,
+  db: Database,
   userId: string,
   categoryId: unknown,
   params: UpdateCategoryParams
@@ -167,7 +166,7 @@ export async function updateCategory(
   return result[0];
 }
 export async function deleteCategory(
-  db: DrizzleD1Database<typeof schema>,
+  db: Database,
   userId: string,
   categoryId: unknown
 ) {
@@ -200,7 +199,7 @@ export const ADJUSTMENT_CATEGORY_NAME = "Adjustment";
 export const ADJUSTMENT_CATEGORY_ICON = "🧮";
 
 export async function ensureAdjustmentCategory(
-  db: DrizzleD1Database<typeof schema>,
+  db: Database,
   userId: string
 ) {
   const existing = await db
@@ -226,7 +225,7 @@ export async function ensureAdjustmentCategory(
 }
 
 export async function seedDefaults(
-  db: DrizzleD1Database<typeof schema>,
+  db: Database,
   userId: string
 ) {
   const existing = await db

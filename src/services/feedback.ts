@@ -1,4 +1,4 @@
-import { DrizzleD1Database } from "drizzle-orm/d1";
+import type { Database } from "../db";
 import * as schema from "../db/schema";
 import { eq } from "drizzle-orm";
 import { currentIsoTimestamp } from "../utils/date";
@@ -15,7 +15,7 @@ export interface SubmitFeedbackParams {
 }
 
 export async function submitFeedback(
-  db: DrizzleD1Database<typeof schema>,
+  db: Database,
   userId: string | null,
   params: SubmitFeedbackParams
 ) {
@@ -73,11 +73,11 @@ export async function submitFeedback(
 
   if (userId) {
     foundUserId = userId;
-    const user = await db
+    const [user] = await db
       .select()
       .from(schema.users)
       .where(eq(schema.users.userId, userId))
-      .get();
+      .limit(1);
     if (user) {
       if (!userName) {
         userName = `${user.userFirstName} ${user.userLastName}`.trim();
@@ -116,8 +116,7 @@ export async function submitFeedback(
       feedbackSubmitterEmail: userEmail,
       feedbackStatus: "new",
       feedbackCreatedAt: now,
-    })
-    .run();
+    });
 
   return {
     success: true,
