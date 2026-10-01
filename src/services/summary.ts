@@ -193,10 +193,10 @@ export async function financialSummary(
   const categoryBreakdown: Record<string, number> = {};
 
   for (const tx of txs) {
-    const isAdjustment =
-      tx.transactionCategoryId &&
-      categoryMap.get(tx.transactionCategoryId) === "Adjustment";
-    if (isAdjustment) {
+    const isOpeningBalance =
+      tx.transactionDescription &&
+      tx.transactionDescription.startsWith("Initial balance:");
+    if (isOpeningBalance) {
       continue;
     }
 

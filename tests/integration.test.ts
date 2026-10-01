@@ -358,26 +358,26 @@ describe('Integration Test: Full User Journey (Deployed Worker + Remote D1)', ()
   // Step 15-18: List Transactions with Filters
   // -------------------------------------------------------------------------
   it('Step 15-18: List Transactions with Filters (list_transactions)', async () => {
-    // Step 15: No filter — 4 recorded + 1 Step-7 balance adjustment = 5
+    // Step 15: No filter — 4 recorded + 1 Step-7 balance adjustment + 2 opening balances = 7
     const all = await callTool('list_transactions', {}, state.userA.token);
-    assert.equal(all.length, 5, 'Should have 5 total transactions (4 recorded + 1 adjustment)');
+    assert.equal(all.length, 7, 'Should have 7 total transactions (4 recorded + 1 adjustment + 2 opening balances)');
 
-    // Step 16: Filter by BCA wallet — 3 recorded + 1 adjustment = 4
+    // Step 16: Filter by BCA wallet — 3 recorded + 1 adjustment + 1 opening balance = 5
     const bcaTxs = await callTool('list_transactions', {
       walletId: state.wallets.bca.walletId,
     }, state.userA.token);
-    assert.equal(bcaTxs.length, 4, 'BCA wallet should have 4 transactions (3 + adjustment)');
+    assert.equal(bcaTxs.length, 5, 'BCA wallet should have 5 transactions (3 + adjustment + opening balance)');
 
-    // Step 17: Filter by type=income — salary 15M + adjustment 2M = 2
+    // Step 17: Filter by type=income — salary 15M + adjustment 2M + 2 opening balances = 4
     const incomeTxs = await callTool('list_transactions', { type: 'income' }, state.userA.token);
-    assert.equal(incomeTxs.length, 2, 'Should have 2 income transactions (salary + adjustment)');
+    assert.equal(incomeTxs.length, 4, 'Should have 4 income transactions (salary + adjustment + 2 opening balances)');
     assert.ok(incomeTxs.some((t: any) => t.transactionAmount === 15000000));
 
     // Step 18: Filter by isPlanned=true — should return 1
     const plannedTxs = await callTool('list_transactions', { isPlanned: true }, state.userA.token);
     assert.equal(plannedTxs.length, 1, 'Should have 1 planned transaction');
 
-    console.log(`    ✓ Filtered transactions: all=5, BCA=4, income=2, planned=1`);
+    console.log(`    ✓ Filtered transactions: all=7, BCA=5, income=4, planned=1`);
   });
 
   // -------------------------------------------------------------------------
