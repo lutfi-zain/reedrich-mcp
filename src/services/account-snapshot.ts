@@ -174,8 +174,25 @@ export async function getAccountDetail(
   ] = await Promise.all([
     listWallets(db, userId, undefined, true),
     db.select().from(schema.categories).where(eq(schema.categories.categoryUserId, userId)),
-    db.select().from(schema.budgets).where(eq(schema.budgets.budgetUserId, userId)),
-    db.select().from(schema.goals).where(and(eq(schema.goals.goalUserId, userId), sql`goal_status != 'cancelled'`)),
+    db
+      .select()
+      .from(schema.budgets)
+      .where(
+        and(
+          eq(schema.budgets.budgetUserId, userId),
+          lte(schema.budgets.budgetPeriodStart, periodEnd),
+          gte(schema.budgets.budgetPeriodEnd, periodStart)
+        )
+      ),
+    db
+      .select()
+      .from(schema.goals)
+      .where(
+        and(
+          eq(schema.goals.goalUserId, userId),
+          eq(schema.goals.goalStatus, "in_progress")
+        )
+      ),
     db.select().from(schema.debtsLoans).where(and(eq(schema.debtsLoans.debtLoanUserId, userId), sql`debt_loan_status != 'paid'`)),
     getExchangeRates(fetchFn),
   ]);

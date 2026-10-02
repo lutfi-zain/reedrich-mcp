@@ -6037,6 +6037,7 @@ describe('Wallet Snapshots, Zero Ghost Transactions & 2D Interval Horizon Suite'
     });
 
     // 4. Create Goal with targetDate and currency
+    // 4. Create Goals: 1 in_progress and 1 completed
     await db.insert(schema.goals).values({
       goalUserId: userId,
       goalName: 'New Car Fund',
@@ -6045,6 +6046,15 @@ describe('Wallet Snapshots, Zero Ghost Transactions & 2D Interval Horizon Suite'
       goalCurrency: 'IDR',
       goalTargetDate: '2027-12-31',
       goalStatus: 'in_progress',
+    });
+
+    await db.insert(schema.goals).values({
+      goalUserId: userId,
+      goalName: 'Completed Goal',
+      goalTargetAmount: 10000000,
+      goalCurrentAmount: 10000000,
+      goalCurrency: 'IDR',
+      goalStatus: 'completed',
     });
 
     // 5. Create Debt and Loan with amount, walletId, and notes
@@ -6064,8 +6074,8 @@ describe('Wallet Snapshots, Zero Ghost Transactions & 2D Interval Horizon Suite'
     const mcpRes = await callTool(server, 'get_account_detail', {});
     const snap = JSON.parse(mcpRes.content[0].text) as AccountDetailResult;
 
-    // Verify Budgets
-    assert.equal(snap.budgets.length, 3);
+    // Verify Budgets in default (October) window: bUpcoming in November is excluded
+    assert.equal(snap.budgets.length, 2);
     const itemWarn = snap.budgets.find((b) => b.budgetId === bWarn.budgetId);
     assert.ok(itemWarn);
     assert.equal(itemWarn.spent, 850000);
@@ -6082,11 +6092,19 @@ describe('Wallet Snapshots, Zero Ghost Transactions & 2D Interval Horizon Suite'
     assert.equal(itemExceeded.spent, 600000);
     assert.equal(itemExceeded.status, 'exceeded');
 
-    const itemUpcoming = snap.budgets.find((b) => b.budgetId === bUpcoming.budgetId);
-    assert.ok(itemUpcoming);
-    assert.equal(itemUpcoming.status, 'upcoming');
-    assert.equal(itemUpcoming.spent, 0);
+    // Upcoming budget outside October is excluded from default call
+    assert.equal(snap.budgets.find((b) => b.budgetId === bUpcoming.budgetId), undefined);
 
+    // 6.2 Query for November specifically: only bUpcoming appears
+    const mcpNovRes = await callTool(server, 'get_account_detail', {
+      startDate: '2026-11-01T00:00:00.000Z',
+      endDate: '2026-11-30T23:59:59.999Z',
+    });
+    const snapNov = JSON.parse(mcpNovRes.content[0].text) as AccountDetailResult;
+    assert.equal(snapNov.budgets.length, 1);
+    assert.equal(snapNov.budgets[0].budgetId, bUpcoming.budgetId);
+    assert.equal(snapNov.budgets[0].status, 'upcoming');
+    assert.equal(snapNov.budgets[0].spent, 0);
     // Verify Goals
     assert.equal(snap.goals.length, 1);
     const carGoal = snap.goals[0];
@@ -6113,7 +6131,7 @@ describe('Wallet Snapshots, Zero Ghost Transactions & 2D Interval Horizon Suite'
     }, env);
     assert.equal(restRes.status, 200);
     const restData = (await restRes.json()) as AccountDetailResult;
-    assert.equal(restData.budgets.length, 3);
+    assert.equal(restData.budgets.length, 2);
     assert.equal(restData.goals.length, 1);
     assert.equal(restData.obligations.activeDebts.length, 1);
   });

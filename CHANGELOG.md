@@ -4,6 +4,15 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/): `Added`, `Changed`,
 `Deprecated`, `Removed`, `Fixed`, `Security` sections per release.
 
+## [1.17.0] — 2026-10-02
+
+### Added
+- **Account Detail Budget Window Overlap Filtering (`src/services/account-snapshot.ts`)**:
+  - Budgets in `get_account_detail` and `GET /api/v1/account-detail` are now filtered by temporal overlap against the requested snapshot window `[periodStart, periodEnd]`: $\text{budgetPeriodStart} \le \text{periodEnd} \land \text{budgetPeriodEnd} \ge \text{periodStart}$.
+  - Automatically filters out expired budgets from prior months and unstarted budgets from future planning cycles from cluttering the current situational snapshot.
+- **Active In-Progress Goals Filtering (`src/services/account-snapshot.ts`)**:
+  - Goals in `get_account_detail` and `GET /api/v1/account-detail` are now filtered strictly to active in-progress milestones (`goalStatus = 'in_progress'`), excluding completed and cancelled goals from situational planning.
+
 ## [1.16.0] — 2026-10-01
 
 ### Added
