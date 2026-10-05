@@ -6542,3 +6542,180 @@ describe('Goal Current Amount Descending Sort Suite', () => {
     assert.equal(mcpListData[2].goalId, gC.goalId);
   });
 });
+
+describe('Cashflow Spendable & Locked Partition Suite', () => {
+  async function setupPartitionUser() {
+    const { d1 } = createTestDB();
+    const env = { DB: d1 as unknown as D1Database, JWT_SECRET: TEST_JWT_SECRET };
+    const db = drizzle(d1 as unknown as D1Database, { schema });
+    const userId = crypto.randomUUID();
+    const token = await generateUserToken({ userId }, TEST_JWT_SECRET);
+    const server = createMCPServer(db, userId, TEST_JWT_SECRET);
+
+    await db.insert(schema.users).values({
+      userId,
+      userFirstName: 'Partition',
+      userLastName: 'Tester',
+      userEmail: `partition_${userId}@example.com`,
+      userWhatsappNumber: '+6281234566666',
+      userApiKeyHash: `hash_${userId}`,
+    });
+
+    return { db, env, userId, token, server };
+  }
+
+  it('1. GET /api/v1/analytics/horizon partitions cashflow into netSpendable and netLocked across transfers', async () => {
+    const { db, env, userId, token, server } = await setupPartitionUser();
+
+    const [wSpend] = await db.insert(schema.wallets).values({
+      walletUserId: userId,
+      walletName: 'BCA Spendable',
+      walletBalance: 10000000,
+      walletCurrency: 'IDR',
+      walletIsLocked: 0,
+    }).returning();
+
+    const [wLock] = await db.insert(schema.wallets).values({
+      walletUserId: userId,
+      walletName: 'Bibit Locked',
+      walletBalance: 5000000,
+      walletCurrency: 'IDR',
+      walletIsLocked: 1,
+    }).returning();
+
+    // Period 2026-10 transactions:
+    // 1. Income into spendable: 20,475,000
+    await db.insert(schema.transactions).values({
+      transactionUserId: userId,
+      transactionWalletId: wSpend.walletId,
+      transactionAmount: 20475000,
+      transactionType: 'income',
+      transactionIsPlanned: 1,
+      transactionDate: '2026-10-05T10:00:00Z',
+    });
+
+    // 2. Expense from spendable: 11,503,300
+    await db.insert(schema.transactions).values({
+      transactionUserId: userId,
+      transactionWalletId: wSpend.walletId,
+      transactionAmount: 11503300,
+      transactionType: 'expense',
+      transactionIsPlanned: 1,
+      transactionDate: '2026-10-12T10:00:00Z',
+    });
+
+    // 3. Transfer from spendable to locked: 7,000,000
+    await db.insert(schema.transactions).values({
+      transactionUserId: userId,
+      transactionWalletId: wSpend.walletId,
+      transactionTargetWalletId: wLock.walletId,
+      transactionAmount: 7000000,
+      transactionType: 'transfer',
+      transactionIsPlanned: 1,
+      transactionDate: '2026-10-20T10:00:00Z',
+    });
+
+    // 1.1 Test REST endpoint
+    const res = await app.request('https://example.workers.dev/api/v1/analytics/horizon?periods=2026-10&baseCurrency=IDR', {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal(res.status, 200);
+    const data = await res.json<any>();
+
+    const p1 = data.periods[0];
+    assert.equal(p1.cashflow.income, 20475000);
+    assert.equal(p1.cashflow.expense, 11503300);
+    assert.equal(p1.cashflow.net, 8971700);
+    assert.equal(p1.cashflow.netSpendable, 1971700);
+    assert.equal(p1.cashflow.netLocked, 7000000);
+
+    // Invariant: netSpendable + netLocked == net
+    assert.equal(p1.cashflow.netSpendable + p1.cashflow.netLocked, p1.cashflow.net);
+
+    // Invariant: Period netWorth deltas match cashflow partition
+    assert.equal(p1.netWorth.spendable, 11971700); // 10M + 1.9717M
+    assert.equal(p1.netWorth.locked, 12000000);    // 5M + 7M
+
+    // 1.2 Test MCP tool
+    const mcpRes = await callTool(server, 'get_horizon_projections', {
+      periods: '2026-10',
+      baseCurrency: 'IDR',
+    });
+    const mcpData = JSON.parse(mcpRes.content[0].text);
+    assert.equal(mcpData.periods[0].cashflow.netSpendable, 1971700);
+    assert.equal(mcpData.periods[0].cashflow.netLocked, 7000000);
+  });
+
+  it('2. GET /api/v1/account-detail and GET /api/v1/summary report netSpendable and netLocked', async () => {
+    const { db, env, userId, token } = await setupPartitionUser();
+
+    const [wSpend] = await db.insert(schema.wallets).values({
+      walletUserId: userId,
+      walletName: 'BCA Spendable',
+      walletBalance: 10000000,
+      walletCurrency: 'IDR',
+      walletIsLocked: 0,
+    }).returning();
+
+    const [wLock] = await db.insert(schema.wallets).values({
+      walletUserId: userId,
+      walletName: 'Bibit Locked',
+      walletBalance: 5000000,
+      walletCurrency: 'IDR',
+      walletIsLocked: 1,
+    }).returning();
+
+    // Realized transactions:
+    await db.insert(schema.transactions).values({
+      transactionUserId: userId,
+      transactionWalletId: wSpend.walletId,
+      transactionAmount: 15000000,
+      transactionType: 'income',
+      transactionIsPlanned: 0,
+      transactionDate: '2026-10-05T10:00:00Z',
+    });
+
+    await db.insert(schema.transactions).values({
+      transactionUserId: userId,
+      transactionWalletId: wSpend.walletId,
+      transactionAmount: 5000000,
+      transactionType: 'expense',
+      transactionIsPlanned: 0,
+      transactionDate: '2026-10-10T10:00:00Z',
+    });
+
+    await db.insert(schema.transactions).values({
+      transactionUserId: userId,
+      transactionWalletId: wSpend.walletId,
+      transactionTargetWalletId: wLock.walletId,
+      transactionAmount: 6000000,
+      transactionType: 'transfer',
+      transactionIsPlanned: 0,
+      transactionDate: '2026-10-15T10:00:00Z',
+    });
+
+    // 2.1 Verify GET /api/v1/account-detail
+    const adRes = await app.request('https://example.workers.dev/api/v1/account-detail?startDate=2026-10-01&endDate=2026-10-31', {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal(adRes.status, 200);
+    const adData = await adRes.json<any>();
+    assert.equal(adData.monthlyCashFlow.totalIncome, 15000000);
+    assert.equal(adData.monthlyCashFlow.totalExpense, 5000000);
+    assert.equal(adData.monthlyCashFlow.netSavings, 10000000);
+    assert.equal(adData.monthlyCashFlow.netSpendable, 4000000);
+    assert.equal(adData.monthlyCashFlow.netLocked, 6000000);
+
+    // 2.2 Verify GET /api/v1/summary
+    const sRes = await app.request('https://example.workers.dev/api/v1/summary?startDate=2026-10-01&endDate=2026-10-31', {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal(sRes.status, 200);
+    const sData = await sRes.json<any>();
+    assert.equal(sData.totalIncome, 15000000);
+    assert.equal(sData.totalExpense, 5000000);
+    assert.equal(sData.netSavings, 10000000);
+    assert.equal(sData.netSpendable, 4000000);
+    assert.equal(sData.netLocked, 6000000);
+  });
+});

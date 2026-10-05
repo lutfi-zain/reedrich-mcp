@@ -393,6 +393,8 @@ export function generateOpenApiSpec(origin: string): Record<string, unknown> {
             totalExpense: { type: "number" },
             totalAdminFees: { type: "number" },
             netSavings: { type: "number" },
+            netSpendable: { type: "number", description: "Net period cashflow across unlocked wallets" },
+            netLocked: { type: "number", description: "Net period cashflow across locked wallets" },
             totalDebt: { type: "number" },
             totalReceivable: { type: "number" },
             activeGoals: { type: "array", description: "Active financial goals ordered by currentAmount descending (converted to baseCurrency)", items: { type: "object" } },
@@ -492,8 +494,10 @@ export function generateOpenApiSpec(origin: string): Record<string, unknown> {
                       income: { type: "number", example: 15000000 },
                       expense: { type: "number", example: 8000000 },
                       net: { type: "number", example: 7000000 },
+                      netSpendable: { type: "number", example: 5000000, description: "Net period cashflow in spendable wallets" },
+                      netLocked: { type: "number", example: 2000000, description: "Net period cashflow in locked wallets" },
                     },
-                    required: ["income", "expense", "net"],
+                    required: ["income", "expense", "net", "netSpendable", "netLocked"],
                   },
                   netWorth: {
                     type: "object",
@@ -593,6 +597,8 @@ export function generateOpenApiSpec(origin: string): Record<string, unknown> {
                 totalIncome: { type: "number" },
                 totalExpense: { type: "number" },
                 netSavings: { type: "number" },
+                netSpendable: { type: "number", description: "Net period cashflow in spendable wallets" },
+                netLocked: { type: "number", description: "Net period cashflow in locked wallets" },
                 categoryBreakdown: {
                   type: "array",
                   items: {

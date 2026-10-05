@@ -53,6 +53,8 @@ export interface AccountDetailResult {
     totalIncome: number;
     totalExpense: number;
     netSavings: number;
+    netSpendable: number;
+    netLocked: number;
     categoryBreakdown: Array<{
       categoryName: string;
       amount: number;
@@ -269,6 +271,9 @@ export async function getAccountDetail(
     consolidatedTotal += convertCurrency(bal, curr, resolvedBaseCurrency, fxRates.rates);
   }
 
+  const walletsById = new Map<string, (typeof walletsWithTx)[number]>();
+  for (const w of walletsWithTx) walletsById.set(w.walletId, w);
+
   // 2. Monthly Cashflow & Category Breakdown
   const txConditions = [
     eq(schema.transactions.transactionUserId, userId),
@@ -280,23 +285,62 @@ export async function getAccountDetail(
 
   let totalIncome = 0;
   let totalExpense = 0;
+  let netSpendable = 0;
+  let netLocked = 0;
   const expenseByCategory: Record<string, number> = {};
 
   for (const t of txs) {
     const fee = t.transactionAdminFee || 0;
+    const srcWallet = walletsById.get(t.transactionWalletId);
+    const srcCurrency = (srcWallet?.walletCurrency || resolvedBaseCurrency).toUpperCase();
+    const srcIsLocked = srcWallet ? srcWallet.walletIsLocked === 1 : false;
+
     if (t.transactionType === "income") {
       if (t.transactionDescription && t.transactionDescription.startsWith("Initial balance:")) {
         continue;
       }
-      totalIncome += t.transactionAmount - fee;
+      const netAmt = t.transactionAmount - fee;
+      totalIncome += netAmt;
+      const convertedIncome = convertCurrency(netAmt, srcCurrency, resolvedBaseCurrency, fxRates.rates);
+      if (srcIsLocked) {
+        netLocked += convertedIncome;
+      } else {
+        netSpendable += convertedIncome;
+      }
     } else if (t.transactionType === "expense") {
       const totalCost = t.transactionAmount + fee;
       totalExpense += totalCost;
+      const convertedCost = convertCurrency(totalCost, srcCurrency, resolvedBaseCurrency, fxRates.rates);
+      if (srcIsLocked) {
+        netLocked -= convertedCost;
+      } else {
+        netSpendable -= convertedCost;
+      }
       const catName = t.transactionCategoryId
         ? categoryMap.get(t.transactionCategoryId) || "Uncategorized"
         : "Uncategorized";
       expenseByCategory[catName] = (expenseByCategory[catName] || 0) + totalCost;
     } else if (t.transactionType === "transfer") {
+      const totalDebit = t.transactionAmount + fee;
+      const convertedDebit = convertCurrency(totalDebit, srcCurrency, resolvedBaseCurrency, fxRates.rates);
+      if (srcIsLocked) {
+        netLocked -= convertedDebit;
+      } else {
+        netSpendable -= convertedDebit;
+      }
+
+      if (t.transactionTargetWalletId) {
+        const tgtWallet = walletsById.get(t.transactionTargetWalletId);
+        const tgtCurrency = (tgtWallet?.walletCurrency || srcCurrency).toUpperCase();
+        const tgtIsLocked = tgtWallet ? tgtWallet.walletIsLocked === 1 : false;
+        const convertedCredit = convertCurrency(t.transactionAmount, tgtCurrency, resolvedBaseCurrency, fxRates.rates);
+        if (tgtIsLocked) {
+          netLocked += convertedCredit;
+        } else {
+          netSpendable += convertedCredit;
+        }
+      }
+
       if (fee > 0) {
         totalExpense += fee;
         const catName = t.transactionCategoryId
@@ -306,6 +350,7 @@ export async function getAccountDetail(
       }
     }
   }
+
   const categoryBreakdown = Object.entries(expenseByCategory).map(([categoryName, amount]) => {
     const percentage = totalExpense > 0 ? Number(((amount / totalExpense) * 100).toFixed(2)) : 0;
     return {
@@ -395,8 +440,7 @@ export async function getAccountDetail(
     }
   }
 
-  const walletsById = new Map<string, (typeof walletsWithTx)[number]>();
-  for (const w of walletsWithTx) walletsById.set(w.walletId, w);
+
 
   const goals: AccountDetailResult["goals"] = goalsData.map((g) => {
     const linkedIds = goalLinksByGoalId.get(g.goalId) || [];
@@ -560,6 +604,8 @@ export async function getAccountDetail(
       totalIncome: Number(totalIncome.toFixed(2)),
       totalExpense: Number(totalExpense.toFixed(2)),
       netSavings: Number((totalIncome - totalExpense).toFixed(2)),
+      netSpendable: Number(netSpendable.toFixed(2)),
+      netLocked: Number(netLocked.toFixed(2)),
       categoryBreakdown,
     },
     budgets,

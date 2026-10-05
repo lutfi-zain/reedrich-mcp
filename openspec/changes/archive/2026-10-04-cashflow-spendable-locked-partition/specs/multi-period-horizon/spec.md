@@ -1,58 +1,4 @@
-# multi-period-horizon Specification
-
-## Purpose
-
-Defines the behavioral specification and mathematical simulation contract for the Multi-Period Horizon Board engine (`GET /api/v1/analytics/horizon` and MCP tool `get_horizon_projections`), delivering forward-looking multi-month cashflow projections, point-in-time wallet balance roll-forward accumulation, spendable vs locked net worth trajectory, and goal milestone achievements across flexible 2D interval arrays or calendar months.
-
-## Requirements
-
-### Requirement: Multi-Period Horizon Board Computation
-
-The system MUST expose `GET /api/v1/analytics/horizon` and MCP tool `get_horizon_projections` to compute a deterministic multi-period financial roadmap for the authenticated user:
-
-1. **Input Parameters**:
-   - `months`: Optional integer between 1 and 24 (default: `6`). Rejects values less than 1 or greater than 24 with HTTP `400 Bad Request` (`VALIDATION`). Used when `periods` is omitted to generate consecutive monthly periods starting from the current month.
-   - `periods`: Optional flexible period definition supporting two formats:
-     * **2D Array Format (Preferred)**: An array of 2-element tuples `[[startDate, endDate], ...]` where each element is an ISO date or timestamp string defining custom interval boundaries (e.g. `[["2026-09-25", "2026-10-24"], ["2026-10-25", "2026-11-24"]]`). Provided via JSON request body or JSON-encoded query parameter.
-     * **Legacy Calendar Format**: Comma-separated list of calendar months formatted as `YYYY-MM` (e.g. `2026-10,2026-11,2026-12`). Automatically normalized into UTC month boundary tuples `[YYYY-MM-01T00:00:00.000Z, YYYY-MM-LastDayT23:59:59.999Z]`.
-   - `filter`: Optional status filter (`realized`, `planned`, or `all`, default: `all`). Determines whether historical realized baselines, future planned items, or both are aggregated across the periods.
-   - `baseCurrency`: Optional 3-letter currency code (default: `"IDR"`). All multi-currency assets and transactions SHALL be converted to this base currency using live exchange rates with fallback.
-
-2. **Top-Level Output Structure**:
-   The response MUST return a JSON object with:
-   - `baseCurrency`: The evaluated base currency code.
-   - `generatedAt`: ISO-8601 generation timestamp.
-   - `startingNetWorth`: Object containing `total`, `spendable`, and `locked` net worth at the start of the first period.
-   - `periods`: Array of chronological period projection objects.
-
-#### Scenario: Generate default 6-month horizon board
-
-- **GIVEN** an authenticated user with active wallets, planned transactions, and goals
-- **WHEN** the client invokes `GET /api/v1/analytics/horizon` without parameters
-- **THEN** the system MUST respond with HTTP `200 OK`
-- **THEN** `periods` MUST contain exactly 6 consecutive calendar month objects starting from the current or subsequent calendar month
-- **THEN** each period MUST contain `cashflow`, `netWorth`, `walletBalances`, and `goals`
-
-#### Scenario: Reject out-of-range months parameter
-
-- **WHEN** the client invokes `GET /api/v1/analytics/horizon?months=0` or `?months=25`
-- **THEN** the system MUST respond with HTTP `400 Bad Request` and error code `VALIDATION`
-
-#### Scenario: Generate horizon board with 2D date intervals array
-
-- **GIVEN** an authenticated user with active wallets
-- **WHEN** the client invokes `GET /api/v1/analytics/horizon` with `periods=[["2026-09-25","2026-10-24"],["2026-10-25","2026-11-24"]]`
-- **THEN** the system MUST respond with HTTP `200 OK`
-- **THEN** `periods` MUST contain exactly 2 period objects matching the specified custom date ranges
-- **THEN** period 1 startDate MUST equal `2026-09-25T00:00:00.000Z` and endDate MUST equal `2026-10-24T23:59:59.999Z`
-- **THEN** period 2 startDate MUST equal `2026-10-25T00:00:00.000Z` and endDate MUST equal `2026-11-24T23:59:59.999Z`
-
-#### Scenario: Reject invalid 2D date interval format
-
-- **WHEN** the client invokes `GET /api/v1/analytics/horizon` with `periods=[["2026-10-01"]]` or `periods=[["invalid-date","2026-10-31"]]`
-- **THEN** the system MUST respond with HTTP `400 Bad Request` and error code `VALIDATION`
-
----
+## MODIFIED Requirements
 
 ### Requirement: Deterministic Roll-Forward Balance and Cashflow Accumulator
 
@@ -71,13 +17,15 @@ For each period in the horizon board, the system MUST compute deterministic roll
    - `net`: `income - expense`.
    - `netSpendable`: Net period cashflow across unlocked wallets (`walletIsLocked = 0`) converted to `baseCurrency` (spendable incomes minus spendable expenses and admin fees, minus outward transfers and fees from spendable wallets, plus inward transfers into spendable wallets).
    - `netLocked`: Net period cashflow across locked wallets (`walletIsLocked = 1`) converted to `baseCurrency` (locked incomes minus locked expenses and admin fees, minus outward transfers and fees from locked wallets, plus inward transfers into locked wallets), satisfying $\text{netSpendable} + \text{netLocked} = \text{net}$.
+
 3. **Chained Point-in-Time Wallet Balances**:
    - For the initial period ($P_0$), starting balances for each wallet SHALL be computed at $P_0.startDate$ using baseline anchoring (realized balance plus any planned movements prior to $P_0.startDate$).
    - For every subsequent period ($P_N$), the starting balance for each wallet MUST strictly equal the ending balance from period $P_{N-1}$:
      $$\text{Balance}_{\text{start}, P_N} = \text{Balance}_{\text{end}, P_{N-1}}$$
-  - Ending balance for each period SHALL equal:
-    $$\text{Balance}_{\text{end}} = \text{Balance}_{\text{start}} + \text{Inward Movements} - \text{Outward Movements}$$
-  - In every period projection object, the `walletBalances` array MUST be sorted in descending order by each wallet's projected ending balance converted to `baseCurrency`, with raw `balance` descending and `walletId` ascending as deterministic tie-breakers.
+   - Ending balance for each period SHALL equal:
+     $$\text{Balance}_{\text{end}} = \text{Balance}_{\text{start}} + \text{Inward Movements} - \text{Outward Movements}$$
+   - In every period projection object, the `walletBalances` array MUST be sorted in descending order by each wallet's projected ending balance converted to `baseCurrency`, with raw `balance` descending and `walletId` ascending as deterministic tie-breakers.
+
 4. **Net Worth Partitioning**:
    - `spendable`: Sum of projected balances for wallets with `walletIsLocked = 0`, converted to `baseCurrency`.
    - `locked`: Sum of projected balances for wallets with `walletIsLocked = 1`, converted to `baseCurrency`.
@@ -85,9 +33,9 @@ For each period in the horizon board, the system MUST compute deterministic roll
 
 5. **Goal Milestone Projections**:
    For each active goal, the system MUST evaluate its projected progress at the end of each period:
-  - If the goal has linked wallets, its projected balance SHALL equal the sum of those linked wallets' projected balances at that period's end.
-  - The payload SHALL report `currentAmount`, `progressPercentage`, and `isReached: currentAmount >= targetAmount`.
-  - In every period projection object, the `goals` array MUST be sorted in descending order by each goal's projected `currentAmount` converted to `baseCurrency`, with raw `currentAmount` descending and `goalId` ascending as deterministic tie-breakers.
+   - If the goal has linked wallets, its projected balance SHALL equal the sum of those linked wallets' projected balances at that period's end.
+   - The payload SHALL report `currentAmount`, `progressPercentage`, and `isReached: currentAmount >= targetAmount`.
+   - In every period projection object, the `goals` array MUST be sorted in descending order by each goal's projected `currentAmount` converted to `baseCurrency`, with raw `currentAmount` descending and `goalId` ascending as deterministic tie-breakers.
 
 #### Scenario: Roll-forward simulation accumulates balances over sequential months
 

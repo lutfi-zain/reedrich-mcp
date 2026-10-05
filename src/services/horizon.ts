@@ -27,6 +27,8 @@ export interface PeriodProjection {
     income: number;
     expense: number;
     net: number;
+    netSpendable: number;
+    netLocked: number;
   };
   netWorth: {
     total: number;
@@ -191,10 +193,13 @@ export async function getHorizonProjections(
 
     let periodIncome = 0;
     let periodExpense = 0;
+    let periodNetSpendable = 0;
+    let periodNetLocked = 0;
 
     for (const tx of periodTxs) {
       const srcWallet = walletsById.get(tx.walletId);
       const srcCurrency = srcWallet ? srcWallet.walletCurrency : cleanBaseCurrency;
+      const srcIsLocked = srcWallet ? Number(srcWallet.walletIsLocked) === 1 : false;
 
       if (tx.type === "income") {
         const netAmt = tx.amount - (tx.adminFee || 0);
@@ -203,6 +208,11 @@ export async function getHorizonProjections(
 
         const convertedIncome = convertCurrency(netAmt, srcCurrency, cleanBaseCurrency, fxRates.rates);
         periodIncome += convertedIncome;
+        if (srcIsLocked) {
+          periodNetLocked += convertedIncome;
+        } else {
+          periodNetSpendable += convertedIncome;
+        }
       } else if (tx.type === "expense") {
         const totalDebit = tx.amount + (tx.adminFee || 0);
         const currBal = runningBalances.get(tx.walletId) ?? 0;
@@ -210,6 +220,11 @@ export async function getHorizonProjections(
 
         const convertedExpense = convertCurrency(totalDebit, srcCurrency, cleanBaseCurrency, fxRates.rates);
         periodExpense += convertedExpense;
+        if (srcIsLocked) {
+          periodNetLocked -= convertedExpense;
+        } else {
+          periodNetSpendable -= convertedExpense;
+        }
       } else if (tx.type === "transfer" && tx.targetWalletId) {
         const totalDebit = tx.amount + (tx.adminFee || 0);
         const srcBal = runningBalances.get(tx.walletId) ?? 0;
@@ -217,6 +232,25 @@ export async function getHorizonProjections(
 
         const tgtBal = runningBalances.get(tx.targetWalletId) ?? 0;
         runningBalances.set(tx.targetWalletId, tgtBal + tx.amount);
+
+        const tgtWallet = walletsById.get(tx.targetWalletId);
+        const tgtCurrency = tgtWallet ? tgtWallet.walletCurrency : srcCurrency;
+        const tgtIsLocked = tgtWallet ? Number(tgtWallet.walletIsLocked) === 1 : false;
+
+        const convertedDebit = convertCurrency(totalDebit, srcCurrency, cleanBaseCurrency, fxRates.rates);
+        const convertedCredit = convertCurrency(tx.amount, tgtCurrency, cleanBaseCurrency, fxRates.rates);
+
+        if (srcIsLocked) {
+          periodNetLocked -= convertedDebit;
+        } else {
+          periodNetSpendable -= convertedDebit;
+        }
+
+        if (tgtIsLocked) {
+          periodNetLocked += convertedCredit;
+        } else {
+          periodNetSpendable += convertedCredit;
+        }
 
         if ((tx.adminFee || 0) > 0) {
           const convertedFee = convertCurrency(tx.adminFee!, srcCurrency, cleanBaseCurrency, fxRates.rates);
@@ -334,6 +368,8 @@ export async function getHorizonProjections(
         income: Number(periodIncome.toFixed(2)),
         expense: Number(periodExpense.toFixed(2)),
         net: Number((periodIncome - periodExpense).toFixed(2)),
+        netSpendable: Number(periodNetSpendable.toFixed(2)),
+        netLocked: Number(periodNetLocked.toFixed(2)),
       },
       netWorth: {
         total: Number((periodSpendable + periodLocked).toFixed(2)),

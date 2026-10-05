@@ -152,6 +152,9 @@ export async function financialSummary(
     isEstimated,
     exchangeRatesSource: fxRates.source,
   };
+  const walletsById = new Map<string, (typeof walletsData)[number]>();
+  for (const w of walletsData) walletsById.set(w.walletId, w);
+
   // 2. Query non-planned transactions
   const conditions = [
     eq(schema.transactions.transactionUserId, userId),
@@ -189,6 +192,8 @@ export async function financialSummary(
   let totalIncome = 0;
   let totalExpense = 0;
   let totalAdminFees = 0;
+  let netSpendable = 0;
+  let netLocked = 0;
   let transfersCount = 0;
   const categoryBreakdown: Record<string, number> = {};
 
@@ -203,11 +208,28 @@ export async function financialSummary(
     const fee = tx.transactionAdminFee || 0;
     totalAdminFees += fee;
 
+    const srcWallet = walletsById.get(tx.transactionWalletId);
+    const srcCurrency = (srcWallet?.walletCurrency || resolvedBaseCurrency).toUpperCase();
+    const srcIsLocked = srcWallet ? Number(srcWallet.walletIsLocked) === 1 : false;
+
     if (tx.transactionType === "income") {
-      totalIncome += tx.transactionAmount - fee;
+      const netAmt = tx.transactionAmount - fee;
+      totalIncome += netAmt;
+      const convertedIncome = convertCurrency(netAmt, srcCurrency, resolvedBaseCurrency, fxRates.rates);
+      if (srcIsLocked) {
+        netLocked += convertedIncome;
+      } else {
+        netSpendable += convertedIncome;
+      }
     } else if (tx.transactionType === "expense") {
       const totalCost = tx.transactionAmount + fee;
       totalExpense += totalCost;
+      const convertedCost = convertCurrency(totalCost, srcCurrency, resolvedBaseCurrency, fxRates.rates);
+      if (srcIsLocked) {
+        netLocked -= convertedCost;
+      } else {
+        netSpendable -= convertedCost;
+      }
       const catName = tx.transactionCategoryId
         ? categoryMap.get(tx.transactionCategoryId) ||
           `Category #${tx.transactionCategoryId}`
@@ -217,6 +239,26 @@ export async function financialSummary(
       );
     } else if (tx.transactionType === "transfer") {
       transfersCount += 1;
+      const totalDebit = tx.transactionAmount + fee;
+      const convertedDebit = convertCurrency(totalDebit, srcCurrency, resolvedBaseCurrency, fxRates.rates);
+      if (srcIsLocked) {
+        netLocked -= convertedDebit;
+      } else {
+        netSpendable -= convertedDebit;
+      }
+
+      if (tx.transactionTargetWalletId) {
+        const tgtWallet = walletsById.get(tx.transactionTargetWalletId);
+        const tgtCurrency = (tgtWallet?.walletCurrency || srcCurrency).toUpperCase();
+        const tgtIsLocked = tgtWallet ? Number(tgtWallet.walletIsLocked) === 1 : false;
+        const convertedCredit = convertCurrency(tx.transactionAmount, tgtCurrency, resolvedBaseCurrency, fxRates.rates);
+        if (tgtIsLocked) {
+          netLocked += convertedCredit;
+        } else {
+          netSpendable += convertedCredit;
+        }
+      }
+
       if (fee > 0) {
         totalExpense += fee;
         const catName = tx.transactionCategoryId
@@ -229,7 +271,6 @@ export async function financialSummary(
       }
     }
   }
-
   // 4. Query active debts & loans for summary totals
   const activeDebtsLoans = await db
     .select()
@@ -276,8 +317,7 @@ export async function financialSummary(
     }
   }
   const linkedWalletIds = [...new Set([...goalLinksByGoalId.values()].flat())];
-  const walletsById = new Map<string, (typeof walletsData)[number]>();
-  for (const w of walletsData) walletsById.set(w.walletId, w);
+
   if (linkedWalletIds.length > 0) {
     const missingIds = linkedWalletIds.filter((id) => !walletsById.has(id));
     if (missingIds.length > 0) {
@@ -488,6 +528,8 @@ export async function financialSummary(
     totalExpense: Number(totalExpense.toFixed(2)),
     totalAdminFees: Number(totalAdminFees.toFixed(2)),
     netSavings: Number((totalIncome - totalExpense).toFixed(2)),
+    netSpendable: Number(netSpendable.toFixed(2)),
+    netLocked: Number(netLocked.toFixed(2)),
     totalDebt: Number(totalDebt.toFixed(2)),
     totalReceivable: Number(totalReceivable.toFixed(2)),
     activeGoals,
