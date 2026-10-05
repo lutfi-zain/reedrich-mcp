@@ -10,7 +10,7 @@ import {
 import type { Database } from "./db";
 import { APP_VERSION } from "./version";
 import * as schema from "./db/schema";
-import { eq, and, desc, gte, lte, sql } from "drizzle-orm";
+import { eq, and, desc, asc, gte, lte, sql } from "drizzle-orm";
 import { currentIsoTimestamp } from "./utils/date";
 import { resolveUserId } from "./middleware/auth";
 import { registerUser, loginUser, evaluateOnboarding } from "./services/auth";
@@ -213,7 +213,11 @@ export function createMCPServer(
     }
 
     if (uri === "reedrich://wallets/list") {
-      const userWallets = await db.select().from(schema.wallets).where(eq(schema.wallets.walletUserId, effectiveUserId));
+      const userWallets = await db
+        .select()
+        .from(schema.wallets)
+        .where(eq(schema.wallets.walletUserId, effectiveUserId))
+        .orderBy(desc(schema.wallets.walletBalance), asc(schema.wallets.walletId));
       return {
         contents: [
           {

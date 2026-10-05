@@ -1,7 +1,4 @@
-## Purpose
-Provides end-to-end financial goal tracking, target amount management, contribution recording, and savings pacing calculations within Reedrich MCP and ChatGPT Actions.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Goal Lifecycle Management
 The system SHALL support creating, listing, updating, linking wallets to, and deleting financial goals scoped strictly to the authenticated user. The `contribute` action is removed: top-ups are recorded via the normal `record_transaction` / `transfer_funds` flow against linked wallets, and progress updates automatically on the next read. When listing goals via `manage_goal(action: "list")` or returning `activeGoals` in `financial_summary`, the system MUST sort the returned goal collection in descending order by evaluated `currentAmount` / `goalCurrentAmount` (converted to `baseCurrency` in `financial_summary`), with raw `currentAmount` descending and `goalId` ascending as deterministic tie-breakers.
@@ -30,11 +27,3 @@ The system SHALL support creating, listing, updating, linking wallets to, and de
 - **GIVEN** an authenticated user with Goal A (derived `goalCurrentAmount: 4000000` IDR) and Goal B (derived `goalCurrentAmount: 18000000` IDR)
 - **WHEN** the user invokes `manage_goal(action: "list")` or `financial_summary`
 - **THEN** the returned goals array MUST place Goal B (`18000000`) before Goal A (`4000000`)
-
-### Requirement: Goal Pacing & Velocity Metrics
-The system SHALL compute dynamic pacing metrics for active goals based on elapsed time, remaining target balance, and target deadline.
-
-#### Scenario: Active goal pacing calculation
-- **GIVEN** an active goal with targetAmount 12000000, currentAmount 3000000, and 90 days remaining until targetDate
-- **WHEN** the user requests a financial summary or goal status
-- **THEN** the system SHALL return the remaining amount (9000000), percentage achieved (25%), required daily savings (100000/day), and required monthly savings (3000000/month).

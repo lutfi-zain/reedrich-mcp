@@ -340,6 +340,13 @@ export async function financialSummary(
       });
       derivedTotal = Number((derivedTotal + converted).toFixed(2));
     }
+    breakdown.sort((a, b) => {
+      const diffConverted = b.convertedAmount - a.convertedAmount;
+      if (Math.abs(diffConverted) > 1e-6) return diffConverted;
+      const diffBal = b.balance - a.balance;
+      if (Math.abs(diffBal) > 1e-6) return diffBal;
+      return a.walletId.localeCompare(b.walletId);
+    });
     const pacing = calculateGoalPacing(
       g.goalTargetAmount,
       derivedTotal,
@@ -359,6 +366,17 @@ export async function financialSummary(
     };
   });
 
+  activeGoals.sort((a, b) => {
+    const aAmount = a.currentAmount;
+    const bAmount = b.currentAmount;
+    const aConverted = convertCurrency(aAmount, a.currency || resolvedBaseCurrency, resolvedBaseCurrency, fxRates.rates);
+    const bConverted = convertCurrency(bAmount, b.currency || resolvedBaseCurrency, resolvedBaseCurrency, fxRates.rates);
+    const diffConverted = bConverted - aConverted;
+    if (Math.abs(diffConverted) > 1e-6) return diffConverted;
+    const diffAmount = bAmount - aAmount;
+    if (Math.abs(diffAmount) > 1e-6) return diffAmount;
+    return a.goalId.localeCompare(b.goalId);
+  });
   // 6. Query recurring templates & forward 30-day cashflow projection
   const templatesData = await db
     .select()

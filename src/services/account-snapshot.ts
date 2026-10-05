@@ -205,9 +205,8 @@ export async function getAccountDetail(
   // 1. Wallets Partitioning & Net Worth
   const netWorthByCurrency: Record<string, number> = {};
   const netWorthByInstitution: Record<string, number> = {};
-  const spendableItems: WalletSnapshotItem[] = [];
-  const lockedItems: WalletSnapshotItem[] = [];
-
+  const spendableEntries: Array<{ item: WalletSnapshotItem; converted: number }> = [];
+  const lockedEntries: Array<{ item: WalletSnapshotItem; converted: number }> = [];
   let spendableTotalConverted = 0;
   let lockedTotalConverted = 0;
 
@@ -233,13 +232,34 @@ export async function getAccountDetail(
     };
 
     if (w.walletIsLocked === 1) {
-      lockedItems.push(item);
+      lockedEntries.push({ item, converted });
       lockedTotalConverted += converted;
     } else {
-      spendableItems.push(item);
+      spendableEntries.push({ item, converted });
       spendableTotalConverted += converted;
     }
   }
+
+  const compareWalletEntries = (
+    a: { item: WalletSnapshotItem; converted: number },
+    b: { item: WalletSnapshotItem; converted: number }
+  ) => {
+    const diffConverted = b.converted - a.converted;
+    if (Math.abs(diffConverted) > 1e-6) {
+      return diffConverted;
+    }
+    const diffBalance = b.item.balance - a.item.balance;
+    if (Math.abs(diffBalance) > 1e-6) {
+      return diffBalance;
+    }
+    return a.item.walletId.localeCompare(b.item.walletId);
+  };
+
+  spendableEntries.sort(compareWalletEntries);
+  lockedEntries.sort(compareWalletEntries);
+
+  const spendableItems = spendableEntries.map((e) => e.item);
+  const lockedItems = lockedEntries.map((e) => e.item);
 
   let consolidatedTotal = 0;
   const isEstimated = Object.keys(netWorthByCurrency).some(
@@ -433,6 +453,14 @@ export async function getAccountDetail(
       derivedTotal = Number((derivedTotal + converted).toFixed(2));
     }
 
+    linkedBreakdown.sort((a, b) => {
+      const diffConverted = b.convertedAmount - a.convertedAmount;
+      if (Math.abs(diffConverted) > 1e-6) return diffConverted;
+      const diffBal = b.balance - a.balance;
+      if (Math.abs(diffBal) > 1e-6) return diffBal;
+      return a.walletId.localeCompare(b.walletId);
+    });
+
     const pacing = calculateGoalPacing(
       g.goalTargetAmount,
       derivedTotal,
@@ -458,6 +486,15 @@ export async function getAccountDetail(
     };
   });
 
+  goals.sort((a, b) => {
+    const aConverted = convertCurrency(a.currentAmount, a.currency, resolvedBaseCurrency, fxRates.rates);
+    const bConverted = convertCurrency(b.currentAmount, b.currency, resolvedBaseCurrency, fxRates.rates);
+    const diffConverted = bConverted - aConverted;
+    if (Math.abs(diffConverted) > 1e-6) return diffConverted;
+    const diffCurrent = b.currentAmount - a.currentAmount;
+    if (Math.abs(diffCurrent) > 1e-6) return diffCurrent;
+    return a.goalId.localeCompare(b.goalId);
+  });
   // 5. Obligations Aggregation
   let totalDebt = 0;
   let totalReceivable = 0;

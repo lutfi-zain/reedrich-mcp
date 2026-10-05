@@ -7,7 +7,7 @@ Defines the behavior contract for read-only REST API endpoints that expose finan
 ### Requirement: Read-Only Wallet Listing
 
 The system MUST expose `GET /api/v1/wallets` that returns all wallets for the authenticated user.
-The endpoint SHALL require a valid `Authorization: Bearer <token>` header or `X-API-Key` header. It SHALL respond with HTTP `200` and a JSON array of wallet objects. It SHALL respond with HTTP `401` if no valid credential is provided.
+The endpoint SHALL require a valid `Authorization: Bearer <token>` header or `X-API-Key` header. It SHALL respond with HTTP `200` and a JSON array of wallet objects ordered by `walletBalance` descending, then `walletId` ascending. It SHALL respond with HTTP `401` if no valid credential is provided.
 
 #### Scenario: Authenticated user retrieves wallets
 
@@ -16,6 +16,12 @@ The endpoint SHALL require a valid `Authorization: Bearer <token>` header or `X-
 - **THEN** the response SHALL be HTTP `200` with a JSON array of 3 wallet objects
 - **THEN** each wallet object SHALL contain `walletId`, `walletName`, `walletInstitution`, `walletType`, `walletBalance`, `walletCurrency`, `walletCreatedAt`, and `walletIsLocked` (integer `0` or `1`)
 
+
+#### Scenario: Wallets are returned sorted by walletBalance descending
+
+- **GIVEN** an authenticated user with wallets having balances `2500000`, `50000000`, and `10000000`
+- **WHEN** `GET /api/v1/wallets` is called (even after balance-mutating transactions update rows in the database)
+- **THEN** the returned array MUST list the wallets in order `[50000000, 10000000, 2500000]`
 #### Scenario: Unauthenticated request is rejected
 
 - **WHEN** `GET /api/v1/wallets` is called without any authentication header
@@ -88,13 +94,19 @@ The system MUST expose `GET /api/v1/debts-loans` that returns all debts and loan
 
 ### Requirement: Read-Only Goals Listing with Pacing
 
-The system MUST expose `GET /api/v1/goals` that returns goals for the authenticated user with pacing information. An optional `status` query parameter SHALL filter by goal status (`in_progress`, `completed`, `cancelled`).
+The system MUST expose `GET /api/v1/goals` that returns goals for the authenticated user with pacing information, ordered by evaluated `goalCurrentAmount` descending, then `goalId` ascending. An optional `status` query parameter SHALL filter by goal status (`in_progress`, `completed`, `cancelled`).
 
 #### Scenario: Goals with pacing data
 
 - **GIVEN** an authenticated user with an in-progress goal targeting 10,000,000 IDR with 3,000,000 IDR saved
 - **WHEN** `GET /api/v1/goals` is called
 - **THEN** the response SHALL include the goal with pacing data (progress percentage, estimated completion)
+
+#### Scenario: Goals are returned sorted by evaluated goalCurrentAmount descending
+
+- **GIVEN** an authenticated user with goals having evaluated `goalCurrentAmount` values of `3000000`, `45000000`, and `12000000`
+- **WHEN** `GET /api/v1/goals` is called
+- **THEN** the returned array MUST list the goals in order `[45000000, 12000000, 3000000]`
 
 ### Requirement: Read-Only Recurring Templates Listing
 

@@ -1,6 +1,6 @@
 import type { Database } from "../db";
 import * as schema from "../db/schema";
-import { eq, and, sql } from "drizzle-orm";
+import { eq, and, sql, desc, asc } from "drizzle-orm";
 import { currentIsoTimestamp, isValidIsoDateOrTimestamp } from "../utils/date";
 import {
   calculateWalletPeriodSnapshot,
@@ -192,8 +192,8 @@ export async function listWallets(
   const wallets = await db
     .select()
     .from(schema.wallets)
-    .where(and(...conditions));
-
+    .where(and(...conditions))
+    .orderBy(desc(schema.wallets.walletBalance), asc(schema.wallets.walletId));
   // Check if snapshot is requested
   const wantsSnapshot =
     startDateParam !== undefined || endDateParam !== undefined || filterParam !== undefined;
@@ -274,7 +274,7 @@ export async function listWallets(
   }
 
   const nowIso = currentIsoTimestamp();
-  return wallets.map((w) => {
+  const result = wallets.map((w) => {
     const item: WalletWithLastTransaction = {
       ...w,
       lastTransaction: lastTxMap ? lastTxMap.get(w.walletId) ?? null : undefined,
@@ -294,6 +294,20 @@ export async function listWallets(
 
     return item;
   });
+
+  if (wantsSnapshot) {
+    result.sort((a, b) => {
+      const aBal = a.snapshot?.totalBalance ?? a.walletBalance;
+      const bBal = b.snapshot?.totalBalance ?? b.walletBalance;
+      const diffBal = bBal - aBal;
+      if (Math.abs(diffBal) > 1e-6) {
+        return diffBal;
+      }
+      return a.walletId.localeCompare(b.walletId);
+    });
+  }
+
+  return result;
 }
 export async function getWalletById(
   db: Database,

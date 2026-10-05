@@ -1,55 +1,4 @@
-## Purpose
-
-Defines the behavioral contract for the comprehensive account snapshot service (`get_account_detail` MCP tool and `GET /api/v1/account-detail` REST endpoint), consolidating multi-currency net worth, partitioned wallet balances with last transaction metadata, monthly cashflows, active budgets, goal pacing, and debt/loan obligations into a single atomic payload.
-
-## Requirements
-
-### Requirement: Comprehensive Account Snapshot via MCP
-
-The system MUST expose an MCP tool named `get_account_detail` that accepts optional `startDate`, `endDate`, and `baseCurrency` parameters, returning an atomic financial snapshot object for the authenticated user.
-
-If `startDate` is omitted, it SHALL default to the start of the current month (`YYYY-MM-01T00:00:00.000Z`).
-If `endDate` is omitted, it SHALL default to the end of the current month (`YYYY-MM-[last_day]T23:59:59.999Z`).
-If `baseCurrency` is omitted, it SHALL default to `"IDR"`.
-
-#### Scenario: User queries account snapshot with default parameters
-- **GIVEN** an authenticated user with active wallets, monthly transactions, budgets, goals, and debts
-- **WHEN** the user invokes `get_account_detail` with no parameters
-- **THEN** the system SHALL return a unified JSON payload containing `netWorth`, `wallets`, `monthlyCashFlow`, `budgets`, `goals`, and `obligations`
-- **THEN** `monthlyCashFlow.period` SHALL span from the first day to the last day of the current calendar month
-
-#### Scenario: User queries account snapshot with custom date range and base currency
-- **GIVEN** an authenticated user
-- **WHEN** the user invokes `get_account_detail` with `startDate: "2026-08-01T00:00:00.000Z"`, `endDate: "2026-08-31T23:59:59.999Z"`, and `baseCurrency: "USD"`
-- **THEN** the system SHALL calculate net worth and cashflows converted to `USD` using active exchange rates
-- **THEN** `monthlyCashFlow.period` SHALL reflect the requested date range
-
-#### Scenario: Validation error on malformed date string
-- **GIVEN** an authenticated user
-- **WHEN** the user invokes `get_account_detail` with `startDate: "not-a-date"`
-- **THEN** the system SHALL reject the request with a `VALIDATION` error specifying that `startDate` must be a valid ISO date or timestamp
-
----
-
-### Requirement: Partitioned Wallet Balances and Transaction Metadata
-
-The snapshot payload MUST group user wallets into `spendable` (unlocked) and `locked` (protected reserves) categories, with consolidated sub-totals and an embedded `lastTransaction` object on each wallet record.
-
-Within both `wallets.spendable.items` and `wallets.locked.items`, wallet records MUST be sorted in descending order by their balance converted to `baseCurrency`, with raw `balance` descending and `walletId` ascending as deterministic tie-breakers.
-
-#### Scenario: Spendable and locked wallets partition with mutation metadata
-- **GIVEN** an authenticated user with an unlocked bank wallet (balance Rp 5.000.000) and a locked investment wallet (balance Rp 20.000.000)
-- **WHEN** the user queries `get_account_detail`
-- **THEN** `wallets.spendable.total` SHALL be `5000000`
-- **THEN** `wallets.locked.total` SHALL be `20000000`
-- **THEN** each wallet in both groups SHALL include its respective `lastTransaction` object or `null` if no transactions exist
-
-
-#### Scenario: Spendable and locked wallet items are ordered by converted balance descending
-- **GIVEN** an authenticated user with three unlocked wallets: Wallet A (`1000000` IDR), Wallet B (`25000000` IDR), and Wallet C (`500` USD, equivalent to `> 7500000` IDR)
-- **WHEN** the user queries `GET /api/v1/account-detail?baseCurrency=IDR` or invokes `get_account_detail`
-- **THEN** `wallets.spendable.items` MUST be ordered as `[Wallet B, Wallet C, Wallet A]`
----
+## MODIFIED Requirements
 
 ### Requirement: Unified Budget, Goal, and Obligation Aggregation
 
@@ -102,6 +51,7 @@ The snapshot payload MUST include active budgets with realized spend and pacing 
    - `isReached`: boolean (`currentAmount >= targetAmount`)
    - `linkedWalletsBreakdown`: optional array of linked wallet balance details when `isDerived: true`
    The `goals` array MUST be sorted in descending order by each goal's `currentAmount` converted to `baseCurrency`, with raw `currentAmount` descending and `goalId` ascending as deterministic tie-breakers.
+
 5. **Enriched Obligations Contract**:
    Each item in `obligations.activeDebts` and `obligations.activeLoans` MUST include:
    - `debtLoanId`: UUID string
@@ -167,17 +117,3 @@ The snapshot payload MUST include active budgets with realized spend and pacing 
 - **GIVEN** an authenticated user with two active goals: Goal A (`currentAmount: 5000000` IDR) and Goal B (`currentAmount: 25000000` IDR)
 - **WHEN** the user queries `GET /api/v1/account-detail` or invokes `get_account_detail`
 - **THEN** `goals` MUST be ordered as `[Goal B, Goal A]`
----
-
-### Requirement: REST Endpoint for Account Snapshot
-
-The system MUST expose an HTTP route `GET /api/v1/account-detail` authenticated via JWT Bearer token or API key, producing the identical JSON payload structure as the MCP tool.
-
-#### Scenario: Authenticated HTTP request retrieves account snapshot
-- **GIVEN** a valid Bearer token for an authenticated user
-- **WHEN** a client sends `GET /api/v1/account-detail`
-- **THEN** the server SHALL respond with HTTP status `200` and the snapshot JSON payload
-
-#### Scenario: Unauthenticated HTTP request is rejected
-- **WHEN** a client sends `GET /api/v1/account-detail` without credentials
-- **THEN** the server SHALL respond with HTTP status `401 Unauthorized`

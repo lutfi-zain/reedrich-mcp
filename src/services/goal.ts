@@ -44,6 +44,11 @@ export async function listGoals(
   for (const g of goalsList) {
     withProgress.push(await attachDerivedProgress(db, g, fetchFn));
   }
+  withProgress.sort((a, b) => {
+    const diffCurrent = b.goalCurrentAmount - a.goalCurrentAmount;
+    if (Math.abs(diffCurrent) > 1e-6) return diffCurrent;
+    return a.goalId.localeCompare(b.goalId);
+  });
   return withProgress;
 }
 export async function getGoalById(
@@ -130,6 +135,14 @@ async function attachDerivedProgress<
     });
     derivedTotal = Number((derivedTotal + converted).toFixed(2));
   }
+
+  breakdown.sort((a, b) => {
+    const diffConverted = b.convertedAmount - a.convertedAmount;
+    if (Math.abs(diffConverted) > 1e-6) return diffConverted;
+    const diffBal = b.balance - a.balance;
+    if (Math.abs(diffBal) > 1e-6) return diffBal;
+    return a.walletId.localeCompare(b.walletId);
+  });
 
   const pacing = calculateGoalPacing(
     goal.goalTargetAmount,

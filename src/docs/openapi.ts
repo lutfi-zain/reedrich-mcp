@@ -395,7 +395,7 @@ export function generateOpenApiSpec(origin: string): Record<string, unknown> {
             netSavings: { type: "number" },
             totalDebt: { type: "number" },
             totalReceivable: { type: "number" },
-            activeGoals: { type: "array", items: { type: "object" } },
+            activeGoals: { type: "array", description: "Active financial goals ordered by currentAmount descending (converted to baseCurrency)", items: { type: "object" } },
             cashflowProjections: { type: "array", items: { type: "object" } },
             walletsCount: { type: "integer" },
             transactionsCount: { type: "integer" },
@@ -506,6 +506,7 @@ export function generateOpenApiSpec(origin: string): Record<string, unknown> {
                   },
                   walletBalances: {
                     type: "array",
+                    description: "Projected wallet balances ordered by balance descending (converted to baseCurrency)",
                     items: {
                       type: "object",
                       properties: {
@@ -520,6 +521,7 @@ export function generateOpenApiSpec(origin: string): Record<string, unknown> {
                   },
                   goals: {
                     type: "array",
+                    description: "Projected goal milestone progress ordered by currentAmount descending (converted to baseCurrency)",
                     items: {
                       type: "object",
                       properties: {
@@ -566,14 +568,14 @@ export function generateOpenApiSpec(origin: string): Record<string, unknown> {
                   type: "object",
                   properties: {
                     total: { type: "number" },
-                    items: { type: "array", items: { $ref: "#/components/schemas/Wallet" } },
+                    items: { type: "array", description: "Spendable wallets ordered by balance descending (converted to baseCurrency)", items: { $ref: "#/components/schemas/Wallet" } },
                   },
                 },
                 locked: {
                   type: "object",
                   properties: {
                     total: { type: "number" },
-                    items: { type: "array", items: { $ref: "#/components/schemas/Wallet" } },
+                    items: { type: "array", description: "Locked reserve wallets ordered by balance descending (converted to baseCurrency)", items: { $ref: "#/components/schemas/Wallet" } },
                   },
                 },
               },
@@ -627,6 +629,7 @@ export function generateOpenApiSpec(origin: string): Record<string, unknown> {
             },
             goals: {
               type: "array",
+              description: "Active goals ordered by currentAmount descending (converted to baseCurrency)",
               items: {
                 type: "object",
                 properties: {
@@ -1038,7 +1041,7 @@ export function generateOpenApiSpec(origin: string): Record<string, unknown> {
         get: {
           tags: ["Wallets"],
           summary: "List User Wallets",
-          description: "Returns all active accounts, bank accounts, and digital wallets for the authenticated user.",
+          description: "Returns all active accounts, bank accounts, and digital wallets for the authenticated user, ordered deterministically by wallet balance descending.",
           operationId: "listWallets",
           security: [{ bearerAuth: [] }, { apiKeyHeader: [] }],
           parameters: [
@@ -2040,7 +2043,7 @@ export function generateOpenApiSpec(origin: string): Record<string, unknown> {
         get: {
           tags: ["Goals"],
           summary: "List Financial Goals",
-          description: "Returns all financial goals with dynamic progress percentages and timeline pacing metrics.",
+          description: "Returns all financial goals ordered by evaluated current amount descending, with dynamic progress percentages and timeline pacing metrics.",
           operationId: "listGoals",
           security: [{ bearerAuth: [] }, { apiKeyHeader: [] }],
           parameters: [

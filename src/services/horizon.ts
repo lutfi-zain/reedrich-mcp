@@ -228,28 +228,50 @@ export async function getHorizonProjections(
     // Compute end-of-period net worth and per-wallet balances
     let periodSpendable = 0;
     let periodLocked = 0;
-    const periodWalletBalances: PeriodProjection["walletBalances"] = [];
+    const periodWalletEntries: Array<{
+      item: PeriodProjection["walletBalances"][number];
+      converted: number;
+    }> = [];
 
     for (const w of wallets) {
       const bal = Number((runningBalances.get(w.walletId) ?? 0).toFixed(2));
-      periodWalletBalances.push({
-        walletId: w.walletId,
-        walletName: w.walletName,
-        balance: bal,
-        currency: w.walletCurrency,
-        isLocked: Number(w.walletIsLocked) || 0,
-      });
-
       const converted = convertCurrency(bal, w.walletCurrency, cleanBaseCurrency, fxRates.rates);
       if (Number(w.walletIsLocked) === 1) {
         periodLocked += converted;
       } else {
         periodSpendable += converted;
       }
+
+      periodWalletEntries.push({
+        item: {
+          walletId: w.walletId,
+          walletName: w.walletName,
+          balance: bal,
+          currency: w.walletCurrency,
+          isLocked: Number(w.walletIsLocked) || 0,
+        },
+        converted,
+      });
     }
 
+    periodWalletEntries.sort((a, b) => {
+      const diffConverted = b.converted - a.converted;
+      if (Math.abs(diffConverted) > 1e-6) {
+        return diffConverted;
+      }
+      const diffBalance = b.item.balance - a.item.balance;
+      if (Math.abs(diffBalance) > 1e-6) {
+        return diffBalance;
+      }
+      return a.item.walletId.localeCompare(b.item.walletId);
+    });
+
+    const periodWalletBalances = periodWalletEntries.map((e) => e.item);
     // Evaluate goals at end of period
-    const periodGoals: PeriodProjection["goals"] = [];
+    const periodGoalEntries: Array<{
+      item: PeriodProjection["goals"][number];
+      converted: number;
+    }> = [];
     for (const g of goals) {
       const linkedIds = goalLinksByGoalId.get(g.goalId) || [];
       let goalCurrent = 0;
@@ -270,16 +292,39 @@ export async function getHorizonProjections(
       const target = g.goalTargetAmount;
       const progress = target > 0 ? Number(((goalCurrent / target) * 100).toFixed(2)) : 0;
       const reached = goalCurrent >= target;
+      const convertedCurrent = convertCurrency(
+        goalCurrent,
+        g.goalCurrency || cleanBaseCurrency,
+        cleanBaseCurrency,
+        fxRates.rates
+      );
 
-      periodGoals.push({
-        goalId: g.goalId,
-        name: g.goalName,
-        currentAmount: goalCurrent,
-        targetAmount: target,
-        progressPercentage: progress,
-        isReached: reached,
+      periodGoalEntries.push({
+        item: {
+          goalId: g.goalId,
+          name: g.goalName,
+          currentAmount: goalCurrent,
+          targetAmount: target,
+          progressPercentage: progress,
+          isReached: reached,
+        },
+        converted: convertedCurrent,
       });
     }
+
+    periodGoalEntries.sort((a, b) => {
+      const diffConverted = b.converted - a.converted;
+      if (Math.abs(diffConverted) > 1e-6) {
+        return diffConverted;
+      }
+      const diffCurrent = b.item.currentAmount - a.item.currentAmount;
+      if (Math.abs(diffCurrent) > 1e-6) {
+        return diffCurrent;
+      }
+      return a.item.goalId.localeCompare(b.item.goalId);
+    });
+
+    const periodGoals = periodGoalEntries.map((e) => e.item);
 
     periodsData.push({
       periodKey,

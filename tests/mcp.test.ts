@@ -12,7 +12,7 @@ import { PgSelectBase } from 'drizzle-orm/pg-core';
   const rows = await this.limit(1);
   return rows[0];
 };
-import { eq, and, gt } from 'drizzle-orm';
+import { eq, and, gt, sql } from 'drizzle-orm';
 import * as schema from '../src/db/schema';
 import { createMCPServer } from '../src/mcp';
 import app from '../src/index';
@@ -6134,5 +6134,411 @@ describe('Wallet Snapshots, Zero Ghost Transactions & 2D Interval Horizon Suite'
     assert.equal(restData.budgets.length, 2);
     assert.equal(restData.goals.length, 1);
     assert.equal(restData.obligations.activeDebts.length, 1);
+  });
+});
+
+describe('Wallet Balance Descending Sort Suite', () => {
+  async function setupSortUser() {
+    const { d1 } = createTestDB();
+    const env = { DB: d1 as unknown as D1Database, JWT_SECRET: TEST_JWT_SECRET };
+    const db = drizzle(d1 as unknown as D1Database, { schema });
+    const userId = crypto.randomUUID();
+    const token = await generateUserToken({ userId }, TEST_JWT_SECRET);
+    const server = createMCPServer(db, userId, TEST_JWT_SECRET);
+
+    await db.insert(schema.users).values({
+      userId,
+      userFirstName: 'Sort',
+      userLastName: 'Tester',
+      userEmail: `sort_${userId}@example.com`,
+      userWhatsappNumber: '+6281234569999',
+      userApiKeyHash: `hash_${userId}`,
+    });
+
+    return { db, env, userId, token, server };
+  }
+
+  it('1. GET /api/v1/analytics/horizon sorts walletBalances descending per period and reflects dynamic roll-forward changes', async () => {
+    const { db, env, userId, token, server } = await setupSortUser();
+
+    // Create 3 wallets with distinct balances and currencies:
+    // wLow: 5,000,000 IDR
+    // wMid: 15,000,000 IDR
+    // wHigh: 50,000,000 IDR
+    // wUsd: 500 USD (at fallback rate 1 USD = 15,500 IDR, this is 7,750,000 IDR -> ranks between wLow and wMid)
+    const [wLow] = await db.insert(schema.wallets).values({
+      walletUserId: userId,
+      walletName: 'Gopay Low',
+      walletBalance: 5000000,
+      walletCurrency: 'IDR',
+      walletIsLocked: 0,
+    }).returning();
+
+    const [wMid] = await db.insert(schema.wallets).values({
+      walletUserId: userId,
+      walletName: 'Mandiri Mid',
+      walletBalance: 15000000,
+      walletCurrency: 'IDR',
+      walletIsLocked: 0,
+    }).returning();
+
+    const [wHigh] = await db.insert(schema.wallets).values({
+      walletUserId: userId,
+      walletName: 'BCA High',
+      walletBalance: 50000000,
+      walletCurrency: 'IDR',
+      walletIsLocked: 0,
+    }).returning();
+
+    const [wUsd] = await db.insert(schema.wallets).values({
+      walletUserId: userId,
+      walletName: 'Wise USD',
+      walletBalance: 500,
+      walletCurrency: 'USD',
+      walletIsLocked: 0,
+    }).returning();
+
+    // Schedule a large planned income of 100,000,000 IDR into wLow in Period 2 (2026-11)
+    await db.insert(schema.transactions).values({
+      transactionUserId: userId,
+      transactionWalletId: wLow.walletId,
+      transactionAmount: 100000000,
+      transactionType: 'income',
+      transactionIsPlanned: 1,
+      transactionDate: '2026-11-15T10:00:00Z',
+    });
+
+    // 1.1 Test REST endpoint
+    const res = await app.request('https://example.workers.dev/api/v1/analytics/horizon?periods=2026-10,2026-11&baseCurrency=IDR', {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal(res.status, 200);
+    const horizonData = await res.json<any>();
+    assert.equal(horizonData.periods.length, 2);
+
+    // Period 1 (2026-10): wHigh (50M) > wMid (15M) > wUsd (~7.75M) > wLow (5M)
+    const p1Balances = horizonData.periods[0].walletBalances;
+    assert.equal(p1Balances.length, 4);
+    assert.equal(p1Balances[0].walletId, wHigh.walletId);
+    assert.equal(p1Balances[1].walletId, wMid.walletId);
+    assert.equal(p1Balances[2].walletId, wUsd.walletId);
+    assert.equal(p1Balances[3].walletId, wLow.walletId);
+
+    // Period 2 (2026-11): wLow received +100M -> becomes 105M! Order: wLow > wHigh > wMid > wUsd
+    const p2Balances = horizonData.periods[1].walletBalances;
+    assert.equal(p2Balances.length, 4);
+    assert.equal(p2Balances[0].walletId, wLow.walletId);
+    assert.equal(p2Balances[0].balance, 105000000);
+    assert.equal(p2Balances[1].walletId, wHigh.walletId);
+    assert.equal(p2Balances[2].walletId, wMid.walletId);
+    assert.equal(p2Balances[3].walletId, wUsd.walletId);
+
+    // 1.2 Test MCP tool get_horizon_projections produces identical ordering
+    const mcpRes = await callTool(server, 'get_horizon_projections', {
+      periods: '2026-10,2026-11',
+      baseCurrency: 'IDR',
+    });
+    const mcpData = JSON.parse(mcpRes.content[0].text);
+    assert.equal(mcpData.periods[0].walletBalances[0].walletId, wHigh.walletId);
+    assert.equal(mcpData.periods[1].walletBalances[0].walletId, wLow.walletId);
+  });
+
+  it('2. GET /api/v1/account-detail and GET /api/v1/wallets sort wallets by balance descending', async () => {
+    const { db, env, userId, token, server } = await setupSortUser();
+
+    // Create 2 unlocked wallets and 2 locked wallets:
+    const [wSpendLow] = await db.insert(schema.wallets).values({
+      walletUserId: userId,
+      walletName: 'Cash Spend Low',
+      walletBalance: 2000000,
+      walletCurrency: 'IDR',
+      walletIsLocked: 0,
+    }).returning();
+
+    const [wSpendHigh] = await db.insert(schema.wallets).values({
+      walletUserId: userId,
+      walletName: 'BCA Spend High',
+      walletBalance: 25000000,
+      walletCurrency: 'IDR',
+      walletIsLocked: 0,
+    }).returning();
+
+    const [wLockedLow] = await db.insert(schema.wallets).values({
+      walletUserId: userId,
+      walletName: 'Gold Locked Low',
+      walletBalance: 10000000,
+      walletCurrency: 'IDR',
+      walletIsLocked: 1,
+    }).returning();
+
+    const [wLockedHigh] = await db.insert(schema.wallets).values({
+      walletUserId: userId,
+      walletName: 'Deposito Locked High',
+      walletBalance: 75000000,
+      walletCurrency: 'IDR',
+      walletIsLocked: 1,
+    }).returning();
+
+    // 2.1 Verify GET /api/v1/account-detail sorts spendable and locked partitions
+    const adRes = await app.request('https://example.workers.dev/api/v1/account-detail?baseCurrency=IDR', {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal(adRes.status, 200);
+    const adData = await adRes.json<any>();
+
+    assert.equal(adData.wallets.spendable.items.length, 2);
+    assert.equal(adData.wallets.spendable.items[0].walletId, wSpendHigh.walletId);
+    assert.equal(adData.wallets.spendable.items[1].walletId, wSpendLow.walletId);
+
+    assert.equal(adData.wallets.locked.items.length, 2);
+    assert.equal(adData.wallets.locked.items[0].walletId, wLockedHigh.walletId);
+    assert.equal(adData.wallets.locked.items[1].walletId, wLockedLow.walletId);
+
+    // 2.2 Verify GET /api/v1/wallets sorts by walletBalance DESC
+    const wRes = await app.request('https://example.workers.dev/api/v1/wallets', {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal(wRes.status, 200);
+    const wData = await wRes.json<any>();
+    assert.equal(wData.length, 4);
+    assert.equal(wData[0].walletId, wLockedHigh.walletId); // 75M
+    assert.equal(wData[1].walletId, wSpendHigh.walletId);  // 25M
+    assert.equal(wData[2].walletId, wLockedLow.walletId);  // 10M
+    assert.equal(wData[3].walletId, wSpendLow.walletId);   // 2M
+
+    // 2.3 Verify MCP resource reedrich://wallets/list is also sorted
+    const resMcp = await readResource(server, 'reedrich://wallets/list');
+    const resWallets = JSON.parse(resMcp.contents[0].text);
+    assert.equal(resWallets[0].walletId, wLockedHigh.walletId);
+    assert.equal(resWallets[3].walletId, wSpendLow.walletId);
+
+    // 2.4 Mutate balance via transaction to flip ranking and verify re-ordering
+    await db.insert(schema.transactions).values({
+      transactionUserId: userId,
+      transactionWalletId: wSpendLow.walletId,
+      transactionAmount: 100000000,
+      transactionType: 'income',
+      transactionIsPlanned: 0,
+      transactionDate: '2026-10-01T10:00:00Z',
+    });
+    await db.update(schema.wallets)
+      .set({ walletBalance: sql`wallet_balance + 100000000` })
+      .where(eq(schema.wallets.walletId, wSpendLow.walletId));
+
+    const wResAfter = await app.request('https://example.workers.dev/api/v1/wallets', {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    const wDataAfter = await wResAfter.json<any>();
+    assert.equal(wDataAfter[0].walletId, wSpendLow.walletId); // Now 102M -> rank 1!
+    assert.equal(wDataAfter[1].walletId, wLockedHigh.walletId);
+  });
+});
+
+describe('Goal Current Amount Descending Sort Suite', () => {
+  async function setupGoalSortUser() {
+    const { d1 } = createTestDB();
+    const env = { DB: d1 as unknown as D1Database, JWT_SECRET: TEST_JWT_SECRET };
+    const db = drizzle(d1 as unknown as D1Database, { schema });
+    const userId = crypto.randomUUID();
+    const token = await generateUserToken({ userId }, TEST_JWT_SECRET);
+    const server = createMCPServer(db, userId, TEST_JWT_SECRET);
+
+    await db.insert(schema.users).values({
+      userId,
+      userFirstName: 'GoalSort',
+      userLastName: 'Tester',
+      userEmail: `goalsort_${userId}@example.com`,
+      userWhatsappNumber: '+6281234567777',
+      userApiKeyHash: `hash_${userId}`,
+    });
+
+    return { db, env, userId, token, server };
+  }
+
+  it('1. GET /api/v1/analytics/horizon sorts goals by currentAmount descending and reflects dynamic roll-forward inversion', async () => {
+    const { db, env, userId, token, server } = await setupGoalSortUser();
+
+    // Create 2 wallets
+    const [wLow] = await db.insert(schema.wallets).values({
+      walletUserId: userId,
+      walletName: 'Wallet Low',
+      walletBalance: 5000000,
+      walletCurrency: 'IDR',
+      walletIsLocked: 0,
+    }).returning();
+
+    const [wHigh] = await db.insert(schema.wallets).values({
+      walletUserId: userId,
+      walletName: 'Wallet High',
+      walletBalance: 20000000,
+      walletCurrency: 'IDR',
+      walletIsLocked: 0,
+    }).returning();
+
+    // Goal 1 linked to wLow (starts at 5M)
+    const [gLow] = await db.insert(schema.goals).values({
+      goalUserId: userId,
+      goalName: 'Goal Low Initial',
+      goalTargetAmount: 50000000,
+      goalCurrentAmount: 0,
+      goalCurrency: 'IDR',
+      goalStatus: 'in_progress',
+    }).returning();
+    await db.insert(schema.goalWallets).values({ goalId: gLow.goalId, walletId: wLow.walletId });
+
+    // Goal 2 linked to wHigh (starts at 20M)
+    const [gHigh] = await db.insert(schema.goals).values({
+      goalUserId: userId,
+      goalName: 'Goal High Initial',
+      goalTargetAmount: 50000000,
+      goalCurrentAmount: 0,
+      goalCurrency: 'IDR',
+      goalStatus: 'in_progress',
+    }).returning();
+    await db.insert(schema.goalWallets).values({ goalId: gHigh.goalId, walletId: wHigh.walletId });
+
+    // Schedule planned income of +40,000,000 into wLow in Period 2 (2026-11)
+    await db.insert(schema.transactions).values({
+      transactionUserId: userId,
+      transactionWalletId: wLow.walletId,
+      transactionAmount: 40000000,
+      transactionType: 'income',
+      transactionIsPlanned: 1,
+      transactionDate: '2026-11-10T10:00:00Z',
+    });
+
+    // 1.1 REST endpoint check
+    const res = await app.request('https://example.workers.dev/api/v1/analytics/horizon?periods=2026-10,2026-11&baseCurrency=IDR', {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal(res.status, 200);
+    const horizonData = await res.json<any>();
+
+    // Period 1: gHigh (20M) > gLow (5M)
+    const p1Goals = horizonData.periods[0].goals;
+    assert.equal(p1Goals.length, 2);
+    assert.equal(p1Goals[0].goalId, gHigh.goalId);
+    assert.equal(p1Goals[0].currentAmount, 20000000);
+    assert.equal(p1Goals[1].goalId, gLow.goalId);
+    assert.equal(p1Goals[1].currentAmount, 5000000);
+
+    // Period 2: wLow has 45M! gLow (45M) > gHigh (20M)
+    const p2Goals = horizonData.periods[1].goals;
+    assert.equal(p2Goals.length, 2);
+    assert.equal(p2Goals[0].goalId, gLow.goalId);
+    assert.equal(p2Goals[0].currentAmount, 45000000);
+    assert.equal(p2Goals[1].goalId, gHigh.goalId);
+    assert.equal(p2Goals[1].currentAmount, 20000000);
+
+    // 1.2 MCP tool check
+    const mcpRes = await callTool(server, 'get_horizon_projections', {
+      periods: '2026-10,2026-11',
+      baseCurrency: 'IDR',
+    });
+    const mcpData = JSON.parse(mcpRes.content[0].text);
+    assert.equal(mcpData.periods[0].goals[0].goalId, gHigh.goalId);
+    assert.equal(mcpData.periods[1].goals[0].goalId, gLow.goalId);
+  });
+
+  it('2. GET /api/v1/account-detail, GET /api/v1/summary, and GET /api/v1/goals sort goals by currentAmount descending', async () => {
+    const { db, env, userId, token, server } = await setupGoalSortUser();
+
+    // Create 3 wallets
+    const [w1] = await db.insert(schema.wallets).values({
+      walletUserId: userId,
+      walletName: 'Wallet 1',
+      walletBalance: 10000000, // 10M
+      walletCurrency: 'IDR',
+      walletIsLocked: 0,
+    }).returning();
+
+    const [w2] = await db.insert(schema.wallets).values({
+      walletUserId: userId,
+      walletName: 'Wallet 2',
+      walletBalance: 35000000, // 35M
+      walletCurrency: 'IDR',
+      walletIsLocked: 0,
+    }).returning();
+
+    const [w3] = await db.insert(schema.wallets).values({
+      walletUserId: userId,
+      walletName: 'Wallet 3',
+      walletBalance: 2000000, // 2M
+      walletCurrency: 'IDR',
+      walletIsLocked: 0,
+    }).returning();
+
+    // Goal A linked to w1 (10M)
+    const [gA] = await db.insert(schema.goals).values({
+      goalUserId: userId,
+      goalName: 'Goal A 10M',
+      goalTargetAmount: 50000000,
+      goalCurrentAmount: 0,
+      goalCurrency: 'IDR',
+      goalStatus: 'in_progress',
+    }).returning();
+    await db.insert(schema.goalWallets).values({ goalId: gA.goalId, walletId: w1.walletId });
+
+    // Goal B linked to w2 (35M)
+    const [gB] = await db.insert(schema.goals).values({
+      goalUserId: userId,
+      goalName: 'Goal B 35M',
+      goalTargetAmount: 50000000,
+      goalCurrentAmount: 0,
+      goalCurrency: 'IDR',
+      goalStatus: 'in_progress',
+    }).returning();
+    await db.insert(schema.goalWallets).values({ goalId: gB.goalId, walletId: w2.walletId });
+
+    // Goal C linked to w3 (2M)
+    const [gC] = await db.insert(schema.goals).values({
+      goalUserId: userId,
+      goalName: 'Goal C 2M',
+      goalTargetAmount: 50000000,
+      goalCurrentAmount: 0,
+      goalCurrency: 'IDR',
+      goalStatus: 'in_progress',
+    }).returning();
+    await db.insert(schema.goalWallets).values({ goalId: gC.goalId, walletId: w3.walletId });
+
+    // 2.1 Verify GET /api/v1/account-detail sorts goals: [gB (35M), gA (10M), gC (2M)]
+    const adRes = await app.request('https://example.workers.dev/api/v1/account-detail?baseCurrency=IDR', {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal(adRes.status, 200);
+    const adData = await adRes.json<any>();
+    assert.equal(adData.goals.length, 3);
+    assert.equal(adData.goals[0].goalId, gB.goalId);
+    assert.equal(adData.goals[1].goalId, gA.goalId);
+    assert.equal(adData.goals[2].goalId, gC.goalId);
+
+    // 2.2 Verify GET /api/v1/summary sorts activeGoals: [gB, gA, gC]
+    const sRes = await app.request('https://example.workers.dev/api/v1/summary?baseCurrency=IDR', {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal(sRes.status, 200);
+    const sData = await sRes.json<any>();
+    assert.equal(sData.activeGoals.length, 3);
+    assert.equal(sData.activeGoals[0].goalId, gB.goalId);
+    assert.equal(sData.activeGoals[1].goalId, gA.goalId);
+    assert.equal(sData.activeGoals[2].goalId, gC.goalId);
+
+    // 2.3 Verify GET /api/v1/goals sorts goals: [gB, gA, gC]
+    const gRes = await app.request('https://example.workers.dev/api/v1/goals', {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    assert.equal(gRes.status, 200);
+    const gData = await gRes.json<any>();
+    assert.equal(gData.length, 3);
+    assert.equal(gData[0].goalId, gB.goalId);
+    assert.equal(gData[1].goalId, gA.goalId);
+    assert.equal(gData[2].goalId, gC.goalId);
+
+    // 2.4 Verify MCP tool manage_goal list action
+    const mcpListRes = await callTool(server, 'manage_goal', { action: 'list' });
+    const mcpListData = JSON.parse(mcpListRes.content[0].text);
+    assert.equal(mcpListData[0].goalId, gB.goalId);
+    assert.equal(mcpListData[1].goalId, gA.goalId);
+    assert.equal(mcpListData[2].goalId, gC.goalId);
   });
 });

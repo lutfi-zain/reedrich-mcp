@@ -76,18 +76,18 @@ All REST endpoints return JSON with standard HTTP status codes. Common headers:
 ### 1. Analytics & Summary
 - **\`GET /api/v1/summary\`**
   - Query Params: \`startDate\`, \`endDate\`, \`baseCurrency\`.
-  - Returns: Consolidated net worth with live FX, breakdown by currency/institution, cashflows, active goals pacing, recurring cashflow projections.
+  - Returns: Consolidated net worth with live FX, breakdown by currency/institution, cashflows, active goals (sorted by currentAmount descending) with pacing, recurring cashflow projections.
 - **\`GET /api/v1/account-detail\`**
   - Query Params: \`startDate\`, \`endDate\`.
-  - Returns: Comprehensive financial snapshot in a single atomic call: multi-currency net worth, spendable vs locked wallets with latest transaction metadata, category cashflow, enriched budgets (period boundaries, categoryId, pacing status, daysRemaining, dailyAllowance), enriched goal pacing with milestone progress, and active debt/loan obligations.
+  - Returns: Comprehensive financial snapshot in a single atomic call: multi-currency net worth, spendable vs locked wallets sorted by balance descending with latest transaction metadata, category cashflow, enriched budgets (period boundaries, categoryId, pacing status, daysRemaining, dailyAllowance), enriched goal pacing (sorted by currentAmount descending) with milestone progress, and active debt/loan obligations.
 - **\`GET /api/v1/analytics/horizon\`** (and alias **\`GET /api/v1/horizon\`**)
   - Query / Body Params: \`months\` (1-24, default 6), \`periods\` (2D array of date intervals \`[[startDate, endDate], ...]\`, JSON string, or legacy \`YYYY-MM\`), \`filter\` (\`realized\` | \`planned\` | \`all\`, default \`all\`), \`baseCurrency\`.
-  - Returns: Multi-period horizon board projections simulating cashflows, roll-forward wallet balance accumulation, spendable vs locked net worth trajectory, and goal milestone achievements across custom or monthly intervals.
+  - Returns: Multi-period horizon board projections simulating cashflows, roll-forward wallet balance accumulation (sorted by balance descending per period), spendable vs locked net worth trajectory, and goal milestone achievements (sorted by currentAmount descending per period) across custom or monthly intervals.
 
 ### 2. Wallets
 - **\`GET /api/v1/wallets\`**
   - Query Params: \`startDate\`, \`endDate\`, \`filter\` (\`realized\` | \`planned\` | \`all\`), \`isLocked\`.
-  - Returns: Array of user wallets with latest transaction metadata, and structured point-in-time \`snapshot\` object (\`initialBalance\`, \`totalIn\`, \`totalOut\`, \`periodDelta\`, \`totalBalance\`) when date parameters are supplied.
+  - Returns: Array of user wallets ordered by balance descending with latest transaction metadata, and structured point-in-time \`snapshot\` object (\`initialBalance\`, \`totalIn\`, \`totalOut\`, \`periodDelta\`, \`totalBalance\`) when date parameters are supplied.
 - **\`GET /api/v1/wallets/:walletId\`** *(HTTP 200)*
   - Returns: Single wallet by UUID.
 - **\`POST /api/v1/wallets\`** *(HTTP 201)*
@@ -156,7 +156,7 @@ All REST endpoints return JSON with standard HTTP status codes. Common headers:
 
 ### 7. Goals
 - **\`GET /api/v1/goals\`**
-  - Returns: Array of goals with pacing data.
+  - Returns: Array of goals ordered by evaluated current amount descending with pacing data.
 - **\`GET /api/v1/goals/:goalId\`** *(HTTP 200)*
   - Returns: Single goal by UUID with derived linked wallet progress and pacing metrics.
 - **\`POST /api/v1/goals\`** *(HTTP 201)*
