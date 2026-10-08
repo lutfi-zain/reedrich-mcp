@@ -1,6 +1,7 @@
 /**
  * FX Engine with Real-Time Fetching, 3-Second Timeout, and Edge Fallback Baseline
  */
+import { tracedFetch, type WorkerTracer } from '../observability/tracer';
 
 export interface ExchangeRates {
   base: string;
@@ -40,16 +41,21 @@ export function normalizeCurrencyForFx(code: string): { code: string; usedPeg: b
 const FX_API_URL = 'https://open.er-api.com/v6/latest/USD';
 const FX_TIMEOUT_MS = 3000;
 
-export async function getExchangeRates(fetchFn: typeof fetch = fetch): Promise<ExchangeRates> {
+export async function getExchangeRates(
+  fetchFn: typeof fetch = fetch,
+  tracer?: WorkerTracer
+): Promise<ExchangeRates> {
+  const effectiveFetch = tracer
+    ? (input: string | URL | Request, init?: RequestInit) => tracedFetch(input, init, tracer)
+    : fetchFn;
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), FX_TIMEOUT_MS);
 
   try {
-    const response = await fetchFn(FX_API_URL, {
+    const response = await effectiveFetch(FX_API_URL, {
       signal: controller.signal,
       headers: { Accept: 'application/json' },
     });
-
     clearTimeout(timeoutId);
 
     if (response.ok) {

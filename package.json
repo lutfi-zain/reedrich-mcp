@@ -8,7 +8,7 @@
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit",
     "build": "wrangler deploy --dry-run",
-    "test": "tsx --test tests/mcp.test.ts && tsx --test tests/oauth.test.ts",
+    "test": "tsx --test tests/mcp.test.ts && tsx --test tests/oauth.test.ts && tsx --test tests/tracing.test.ts",
     "test:local": "bash scripts/run-local-integration.sh",
     "test:remote": "bash scripts/run-integration.sh",
     "test:integration": "bash scripts/run-integration.sh",
@@ -46,6 +46,7 @@
   "type": "commonjs",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
+    "@opentelemetry/otlp-transformer": "^0.223.0",
     "drizzle-orm": "^0.45.2",
     "hono": "^4.13.1",
     "postgres": "^3.4.9"

@@ -1,5 +1,7 @@
 import { Hono, type Context } from 'hono';
 import { observabilityMiddleware, type AppVariables } from './middleware/observability';
+import { tracingMiddleware } from './middleware/tracing';
+import { tracedFetch } from './observability/tracer';
 import api from './routes/index';
 import { resolveUserId, extractBearerToken } from './middleware/auth';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
@@ -38,6 +40,10 @@ export type Bindings = {
   JWT_SECRET: string;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
+  ENVIRONMENT?: string;
+  PHOENIX_ENDPOINT?: string;
+  PHOENIX_API_KEY?: string;
+  PHOENIX_PROJECT_NAME?: string;
 };
 
 type Variables = AppVariables;
@@ -45,9 +51,9 @@ export type AppEnv = { Bindings: Bindings; Variables: Variables };
 
 const app = new Hono<AppEnv>();
 
-// Top-level Observability Middleware (Request ID & Response Timing)
+// Top-level Tracing & Observability Middleware (W3C traceparent, Request ID & Response Timing)
+app.use('*', tracingMiddleware);
 app.use('*', observabilityMiddleware);
-
 // Global Security & CORS Headers
 app.use('*', async (c, next) => {
   const path = new URL(c.req.url).pathname;
@@ -57,9 +63,9 @@ app.use('*', async (c, next) => {
     c.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   } else {
     c.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
-    c.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-API-Key, mcp-api-key, mcp-session-id, MCP-Protocol-Version, X-Request-ID');
+    c.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-API-Key, mcp-api-key, mcp-session-id, MCP-Protocol-Version, X-Request-ID, traceparent, Traceparent, x-project-name, x-phoenix-project');
   }
-  c.header('Access-Control-Expose-Headers', 'X-Request-ID, X-Response-Time');
+  c.header('Access-Control-Expose-Headers', 'X-Request-ID, X-Response-Time, traceparent, X-Trace-Id');
   c.header('Access-Control-Max-Age', '86400');
   c.header('X-Content-Type-Options', 'nosniff');
   c.header('X-Frame-Options', 'DENY');
@@ -986,7 +992,7 @@ app.get('/oauth/authorize', async (c) => {
   }
 
   // Authenticate resource owner via existing Reedrich auth (Bearer rd_live_/JWT or ?token=)
-  const db = getDb(c.env);
+  const db = getDb(c.env, c.get('tracer'));
   const userId = await extractAuthenticatedUserId(c, db);
   if (!userId) {
     // Direct IdP routing (e.g. ?provider=google or ?idp=google)
@@ -1201,17 +1207,21 @@ app.get('/oauth/google/callback', async (c) => {
   // Exchange code for tokens with Google
   let tokenData: { access_token?: string; id_token?: string; error_description?: string } = {};
   try {
-    const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        code,
-        client_id: googleClientId,
-        client_secret: googleClientSecret,
-        redirect_uri: googleCallbackUrl,
-        grant_type: 'authorization_code',
-      }).toString(),
-    });
+    const tokenRes = await tracedFetch(
+      'https://oauth2.googleapis.com/token',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          code,
+          client_id: googleClientId,
+          client_secret: googleClientSecret,
+          redirect_uri: googleCallbackUrl,
+          grant_type: 'authorization_code',
+        }).toString(),
+      },
+      c.get('tracer')
+    );
     tokenData = (await tokenRes.json()) as { access_token?: string; id_token?: string; error_description?: string };
     if (!tokenRes.ok || !tokenData.access_token) {
       const redirectUrl = new URL(downstreamRedirectUri);
@@ -1241,9 +1251,13 @@ app.get('/oauth/google/callback', async (c) => {
   let name = '';
 
   try {
-    const userinfoRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
-      headers: { Authorization: `Bearer ${tokenData.access_token}` },
-    });
+    const userinfoRes = await tracedFetch(
+      'https://www.googleapis.com/oauth2/v3/userinfo',
+      {
+        headers: { Authorization: `Bearer ${tokenData.access_token}` },
+      },
+      c.get('tracer')
+    );
     if (userinfoRes.ok) {
       const userinfo = (await userinfoRes.json()) as { email?: string; given_name?: string; family_name?: string; name?: string };
       email = userinfo.email || '';
@@ -1291,7 +1305,7 @@ app.get('/oauth/google/callback', async (c) => {
   }
 
   // Database Upsert
-  const db = getDb(c.env);
+  const db = getDb(c.env, c.get('tracer'));
   const normalizedEmail = email.trim().toLowerCase();
   let userId: string;
 
@@ -1485,7 +1499,7 @@ app.post('/oauth/authorize', async (c) => {
   let userId: string | null = null;
   let authError: string | null = null;
   try {
-    const dbForBearer = getDb(c.env);
+    const dbForBearer = getDb(c.env, c.get('tracer'));
     const bearerUser = await extractAuthenticatedUserId(c, dbForBearer);
     if (bearerUser) userId = bearerUser;
   } catch {}
@@ -1494,7 +1508,7 @@ app.post('/oauth/authorize', async (c) => {
   if (!userId) {
     const authMethodRaw = (bodyParams.auth_method ?? bodyParams.authMethod ?? '').trim();
     const authMethod = authMethodRaw.toLowerCase();
-    const db = getDb(c.env);
+    const db = getDb(c.env, c.get('tracer'));
 
     if (authMethod === 'login') {
       const apiKey = (bodyParams.api_key ?? bodyParams.apiKey ?? bodyParams['apiKey'] ?? '').trim();
@@ -1907,7 +1921,7 @@ async function handleMcpRequest(c: Context<AppEnv>) {
 
   // Gate check: if not public body and not authenticated, return 401 with WWW-Authenticate
   const isPublic = isPublicMcpBody(parsedBody);
-  const db = getDb(c.env);
+  const db = getDb(c.env, c.get('tracer'));
 
   // We need to reconstruct request for auth extraction that uses c.req.* but our early read consumed body.
   // For auth extraction, we need candidate from headers/query, not body, so it's fine.

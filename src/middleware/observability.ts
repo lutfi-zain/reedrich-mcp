@@ -1,9 +1,11 @@
 import type { Context, Next } from 'hono';
 import { ServiceError } from '../services/errors';
+import type { WorkerTracer } from '../observability/tracer';
 
 export interface AppVariables {
   requestId: string;
   userId?: string;
+  tracer?: WorkerTracer;
 }
 
 export async function observabilityMiddleware(

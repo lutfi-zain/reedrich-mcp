@@ -23,7 +23,7 @@ const api = new Hono<AppEnv>();
 // Scoped Auth Middleware for REST API (/api/v1/*)
 api.use("*", async (c, next) => {
   const secret = c.env?.JWT_SECRET;
-  const db = getDb(c.env);
+  const db = getDb(c.env, c.get("tracer"));
   const authHeader = c.req.header("Authorization");
   const bearerToken =
     extractBearerToken(authHeader) ||

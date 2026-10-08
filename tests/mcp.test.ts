@@ -582,6 +582,8 @@ describe('Eve Finance MCP Server — Complete Test Suite', () => {
     }, env);
 
     assert.equal(createWalletRes.status, 200);
+    assert.ok(createWalletRes.headers.get('traceparent'), 'traceparent header should be present on MCP response');
+    assert.ok(createWalletRes.headers.get('X-Trace-Id'), 'X-Trace-Id header should be present on MCP response');
     const createdWallet = JSON.parse((await createWalletRes.json()).result.content[0].text);
     assert.equal(createdWallet.walletName, 'E2E Bank');
     assert.equal(createdWallet.walletBalance, 5000000);
@@ -1895,10 +1897,11 @@ describe('Eve Finance MCP Server — Complete Test Suite', () => {
     assert.equal(walletsData.length, 1);
     assert.equal(walletsData[0].walletName, 'Main Savings');
 
-    // Verify Observability Headers
+    // Verify Observability & Distributed Tracing Headers
     assert.ok(walletsRes.headers.get('X-Request-ID'), 'X-Request-ID header should be present');
     assert.ok(walletsRes.headers.get('X-Response-Time'), 'X-Response-Time header should be present');
-
+    assert.ok(walletsRes.headers.get('X-Trace-Id'), 'X-Trace-Id header should be present');
+    assert.ok(walletsRes.headers.get('traceparent'), 'traceparent header should be present');
     // 2. GET /api/v1/categories
     const catsRes = await app.request('https://example.workers.dev/api/v1/categories', {
       headers: { Authorization: `Bearer ${token}` },
