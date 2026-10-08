@@ -101,10 +101,13 @@ export function buildDbQueryAttributes(params: {
   const inferredOp = params.operation || statement.split(/\s+/)[0]?.toUpperCase() || 'QUERY';
   const sanitized = sanitizeTracePayload(statement);
   return {
+    'openinference.span.kind': 'TOOL',
+    'tool.name': `postgres.${inferredOp.toLowerCase()}`,
     'db.system': 'postgresql',
     'db.name': 'reedrich',
     'db.operation': inferredOp,
     'db.statement': sanitized,
+    'input.value': sanitized,
     ...(params.durationMs !== undefined ? { 'db.duration_ms': params.durationMs } : {}),
   };
 }
@@ -140,6 +143,9 @@ export class WorkerSpan {
 
     if (options.attributes) {
       this.setAttributes(options.attributes);
+    }
+    if (!this.attributes['openinference.span.kind']) {
+      this.attributes['openinference.span.kind'] = 'CHAIN';
     }
   }
 
@@ -185,6 +191,9 @@ export class WorkerSpan {
 
   end(endTimeMs?: number): this {
     if (this.isEnded) return this;
+    if (this.status.code === 0) {
+      this.status = { code: 1 };
+    }
     this.endTimeUnixNano = toUnixNano(endTimeMs ?? Date.now());
     this.isEnded = true;
     return this;

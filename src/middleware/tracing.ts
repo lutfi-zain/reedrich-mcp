@@ -1,6 +1,11 @@
 import type { MiddlewareHandler } from 'hono';
 import type { AppEnv } from '../index';
-import { WorkerTracer, parseTraceParent, formatTraceParent } from '../observability/tracer';
+import {
+  WorkerTracer,
+  parseTraceParent,
+  formatTraceParent,
+  sanitizeTracePayload,
+} from '../observability/tracer';
 
 export const tracingMiddleware: MiddlewareHandler<AppEnv> = async (c, next) => {
   const rawTraceParent = c.req.header('traceparent') || c.req.header('Traceparent');
@@ -26,13 +31,16 @@ export const tracingMiddleware: MiddlewareHandler<AppEnv> = async (c, next) => {
 
   c.set('tracer', tracer);
 
+  const urlObj = new URL(c.req.url);
   const rootSpan = tracer.startSpan(`HTTP ${c.req.method} ${c.req.path}`, {
     kind: 2, // SERVER
     attributes: {
+      'openinference.span.kind': 'CHAIN',
       'http.method': c.req.method,
       'http.url': c.req.url,
       'http.route': c.req.path,
       'http.user_agent': c.req.header('user-agent') || 'unknown',
+      'input.value': `${c.req.method} ${urlObj.pathname}${urlObj.search}`,
     },
   });
   tracer.rootSpan = rootSpan;
@@ -54,15 +62,45 @@ export const tracingMiddleware: MiddlewareHandler<AppEnv> = async (c, next) => {
     if (userId) {
       rootSpan.setAttribute('user.id', userId);
     }
-    rootSpan.end();
     c.res.headers.set('traceparent', formatTraceParent(tracer.traceId, rootSpan.spanId));
     c.res.headers.set('X-Trace-Id', tracer.traceId);
+    let resClone: Response | null = null;
+    const contentType = c.res.headers.get('content-type') || '';
+    if (contentType.includes('application/json')) {
+      try {
+        resClone = c.res.clone();
+      } catch {
+        resClone = null;
+      }
+    }
     let executionCtx: { waitUntil: (promise: Promise<unknown>) => void } | undefined = undefined;
     try {
       executionCtx = c.executionCtx;
     } catch {
       // Context has no ExecutionContext (e.g. in unit test or standalone runtime)
     }
-    tracer.flushWithWaitUntil(executionCtx);
+    const finalizeAndFlush = async () => {
+      if (resClone) {
+        try {
+          const rawText = await resClone.text();
+          if (rawText) {
+            rootSpan.setAttribute(
+              'output.value',
+              sanitizeTracePayload(rawText, { isOutput: true }).slice(0, 4000)
+            );
+            rootSpan.setAttribute('output.mime_type', 'application/json');
+          }
+        } catch {
+          /* ignore clone read error */
+        }
+      }
+      rootSpan.end();
+      await tracer.flush();
+    };
+    if (executionCtx && typeof executionCtx.waitUntil === 'function') {
+      executionCtx.waitUntil(finalizeAndFlush());
+    } else {
+      void finalizeAndFlush();
+    }
   }
 };
