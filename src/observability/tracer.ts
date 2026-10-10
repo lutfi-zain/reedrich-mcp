@@ -219,7 +219,7 @@ export class WorkerTracer {
     this.activeParentSpanId = config.parentSpanId;
     this.environment = config.environment || 'production';
     this.serviceName = config.serviceName || 'reedrich-mcp';
-    this.serviceVersion = config.serviceVersion || '1.17.0';
+    this.serviceVersion = config.serviceVersion || '1.18.0';
     this.projectName = config.projectName || `reedrich-mcp-${this.environment}`;
     this.endpoint = (config.endpoint || 'https://phoenix.membran.app/v1/traces').replace(/\/+$/, '');
     this.apiKey = config.apiKey || 'phx_adm_sec_e4b1c2d3f4a5b6c7_sec';

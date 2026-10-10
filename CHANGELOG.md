@@ -4,6 +4,20 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/): `Added`, `Changed`,
 `Deprecated`, `Removed`, `Fixed`, `Security` sections per release.
 
+## [1.18.0] — 2026-10-10
+
+### Added
+- **Self-Service API Key Rotation (`src/services/user.ts`, `src/routes/me.ts`, `src/mcp.ts`)**:
+  - Implemented transport-agnostic `rotateUserApiKey()` to generate new `rd_live_...` persistent API keys with instant database hash invalidation of previous keys.
+  - Added lockout prevention pre-flight guard requiring an active, valid registered email address on the account before allowing key rotation.
+  - Guarded rotation requests with mandatory boolean confirmation (`confirm: true`) to prevent unintended execution by autonomous AI agents.
+  - Exposed REST endpoints `POST /api/v1/me/api-key/rotate` and alias `POST /api/v1/user/profile/api-key/rotate`.
+  - Added MCP tool `rotate_api_key`.
+- **User Profile Email Updates & Parity (`src/services/user.ts`, `src/routes/me.ts`, `src/mcp.ts`)**:
+  - Enabled self-service email updates on user profiles via `PATCH /api/v1/me` and alias.
+  - Enforced lowercase normalization, RFC 5322 regex validation, and case-insensitive uniqueness checks returning HTTP 409 Conflict.
+  - Added MCP tool `update_user_profile` providing 1:1 parity with REST profile update capabilities.
+
 ## [1.17.0] — 2026-10-02
 
 ### Added

@@ -4197,21 +4197,24 @@ describe('REST API Write Endpoints Parity', () => {
   });
 });
 describe('User Profile & Identity Endpoint Parity', () => {
-  async function setupProfileUser() {
+  async function setupProfileUser(customEmail?: string) {
     const { d1 } = createTestDB();
     const env = { DB: d1 as unknown as D1Database, JWT_SECRET: TEST_JWT_SECRET };
     const db = drizzle(d1 as unknown as D1Database, { schema });
     const userId = crypto.randomUUID();
+    const rawApiKey = `rd_live_test_${userId.replace(/-/g, '').slice(0, 24)}`;
+    const keyHash = await hashApiKey(rawApiKey);
     const token = await generateUserToken({ userId }, TEST_JWT_SECRET);
+    const email = customEmail !== undefined ? customEmail : `lutfi_${userId}@example.com`;
     await db.insert(schema.users).values({
       userId,
       userFirstName: 'Lutfi',
       userLastName: 'Zain',
-      userEmail: `lutfi_${userId}@example.com`,
+      userEmail: email,
       userWhatsappNumber: '+6281234567899',
-      userApiKeyHash: `hash_secret_${userId}`,
+      userApiKeyHash: keyHash,
     });
-    return { d1, db, env, userId, token };
+    return { d1, db, env, userId, token, rawApiKey, keyHash, email };
   }
 
   it('1. GET /api/v1/me and GET /api/v1/user/profile return sanitized profile DTO', async () => {
@@ -4264,6 +4267,216 @@ describe('User Profile & Identity Endpoint Parity', () => {
     const resourceData = JSON.parse(resRead.contents[0].text);
     assert.equal(resourceData.userId, userId);
     assert.equal(resourceData.fullName, 'Lutfi Zain');
+  });
+
+  it('3. PATCH /api/v1/me and alias update profile with email and duplicate conflict', async () => {
+    const userA = await setupProfileUser();
+    const userB = await setupProfileUser();
+
+    // 3.1 Update email successfully
+    const resUpdate = await app.request('https://example.workers.dev/api/v1/me', {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${userA.token}`,
+      },
+      body: JSON.stringify({ email: `brand_new_${userA.userId}@example.com` }),
+    }, userA.env);
+    assert.equal(resUpdate.status, 200);
+    const updatedProfile = (await resUpdate.json()) as Record<string, unknown>;
+    assert.equal(updatedProfile.email, `brand_new_${userA.userId}@example.com`);
+
+    // 3.2 Reject invalid email format (400)
+    const resInvalid = await app.request('https://example.workers.dev/api/v1/me', {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${userA.token}`,
+      },
+      body: JSON.stringify({ email: 'not-an-email' }),
+    }, userA.env);
+    assert.equal(resInvalid.status, 400);
+    const errInvalid = (await resInvalid.json()) as Record<string, unknown>;
+    assert.equal(errInvalid.error, 'VALIDATION');
+    assert.equal(errInvalid.field, 'email');
+
+    // 3.3 Reject duplicate email collision (409)
+    const resDuplicate = await app.request('https://example.workers.dev/api/v1/me', {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${userA.token}`,
+      },
+      body: JSON.stringify({ email: userB.email }),
+    }, userA.env);
+    assert.equal(resDuplicate.status, 409);
+    const errDuplicate = (await resDuplicate.json()) as Record<string, unknown>;
+    assert.equal(errDuplicate.error, 'CONFLICT');
+
+    // 3.4 Alias PATCH /api/v1/user/profile works
+    const resAlias = await app.request('https://example.workers.dev/api/v1/user/profile', {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${userA.token}`,
+      },
+      body: JSON.stringify({ firstName: 'Lutfi Renamed' }),
+    }, userA.env);
+    assert.equal(resAlias.status, 200);
+    const aliasProfile = (await resAlias.json()) as Record<string, unknown>;
+    assert.equal(aliasProfile.firstName, 'Lutfi Renamed');
+  });
+
+  it('4. MCP tool update_user_profile with email and conflict handling', async () => {
+    const userA = await setupProfileUser();
+    const userB = await setupProfileUser();
+    const serverA = createMCPServer(userA.db, userA.userId, TEST_JWT_SECRET);
+
+    // 4.1 Update profile successfully via MCP
+    const toolRes = await callTool(serverA, 'update_user_profile', {
+      firstName: 'Habibi',
+      email: `mcp_${userA.userId}@example.com`,
+    });
+    assert.ok(toolRes.content?.[0]?.text);
+    const updated = JSON.parse(toolRes.content[0].text);
+    assert.equal(updated.firstName, 'Habibi');
+    assert.equal(updated.email, `mcp_${userA.userId}@example.com`);
+
+    // 4.2 Rejects invalid email
+    await assert.rejects(async () => {
+      await callTool(serverA, 'update_user_profile', { email: 'bad-email' });
+    }, /validation error/i);
+
+    // 4.3 Rejects collision with User B email
+    await assert.rejects(async () => {
+      await callTool(serverA, 'update_user_profile', { email: userB.email });
+    }, /already registered/i);
+  });
+
+  it('5. POST /api/v1/me/api-key/rotate and alias with confirmation and email requirement', async () => {
+    const userValid = await setupProfileUser();
+
+    // 5.1 Rejection without confirmation (400)
+    const resNoConfirm = await app.request('https://example.workers.dev/api/v1/me/api-key/rotate', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${userValid.token}`,
+      },
+      body: JSON.stringify({ confirm: false }),
+    }, userValid.env);
+    assert.equal(resNoConfirm.status, 400);
+    const errNoConfirm = (await resNoConfirm.json()) as Record<string, unknown>;
+    assert.equal(errNoConfirm.error, 'VALIDATION');
+    assert.equal(errNoConfirm.field, 'confirm');
+
+    // 5.2 Rejection without email on account (400)
+    const userNoEmail = await setupProfileUser('');
+    const resNoEmail = await app.request('https://example.workers.dev/api/v1/me/api-key/rotate', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${userNoEmail.token}`,
+      },
+      body: JSON.stringify({ confirm: true }),
+    }, userNoEmail.env);
+    assert.equal(resNoEmail.status, 400);
+    const errNoEmail = (await resNoEmail.json()) as Record<string, unknown>;
+    assert.equal(errNoEmail.error, 'VALIDATION');
+    assert.equal(errNoEmail.field, 'email');
+
+    // 5.3 Successful rotation via POST /api/v1/me/api-key/rotate
+    const resRotate = await app.request('https://example.workers.dev/api/v1/me/api-key/rotate', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${userValid.token}`,
+      },
+      body: JSON.stringify({ confirm: true }),
+    }, userValid.env);
+    assert.equal(resRotate.status, 200);
+    const rotateData = (await resRotate.json()) as Record<string, unknown>;
+    assert.ok(typeof rotateData.apiKey === 'string');
+    assert.ok((rotateData.apiKey as string).startsWith('rd_live_'));
+    assert.ok(typeof rotateData.message === 'string');
+    assert.ok(typeof rotateData.rotatedAt === 'string');
+
+    // 5.4 Successful rotation via alias POST /api/v1/user/profile/api-key/rotate
+    const userAlias = await setupProfileUser();
+    const resRotateAlias = await app.request('https://example.workers.dev/api/v1/user/profile/api-key/rotate', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${userAlias.token}`,
+      },
+      body: JSON.stringify({ confirm: true }),
+    }, userAlias.env);
+    assert.equal(resRotateAlias.status, 200);
+    const rotateAliasData = (await resRotateAlias.json()) as Record<string, unknown>;
+    assert.ok((rotateAliasData.apiKey as string).startsWith('rd_live_'));
+  });
+
+  it('6. Rotated API key invalidates previous key and authenticates successfully', async () => {
+    const user = await setupProfileUser();
+
+    // 6.1 Original API key works for authentication
+    const resAuthBefore = await app.request('https://example.workers.dev/api/v1/me', {
+      headers: { Authorization: `Bearer ${user.rawApiKey}` },
+    }, user.env);
+    assert.equal(resAuthBefore.status, 200);
+
+    // 6.2 Rotate API key
+    const resRotate = await app.request('https://example.workers.dev/api/v1/me/api-key/rotate', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${user.token}`,
+      },
+      body: JSON.stringify({ confirm: true }),
+    }, user.env);
+    assert.equal(resRotate.status, 200);
+    const { apiKey: newApiKey } = (await resRotate.json()) as { apiKey: string };
+    assert.notEqual(newApiKey, user.rawApiKey);
+
+    // 6.3 Previous API key is immediately revoked (401)
+    const resAuthAfterOld = await app.request('https://example.workers.dev/api/v1/me', {
+      headers: { Authorization: `Bearer ${user.rawApiKey}` },
+    }, user.env);
+    assert.equal(resAuthAfterOld.status, 401);
+
+    // 6.4 New API key authenticates successfully (200)
+    const resAuthAfterNew = await app.request('https://example.workers.dev/api/v1/me', {
+      headers: { Authorization: `Bearer ${newApiKey}` },
+    }, user.env);
+    assert.equal(resAuthAfterNew.status, 200);
+    const profileNew = (await resAuthAfterNew.json()) as Record<string, unknown>;
+    assert.equal(profileNew.userId, user.userId);
+  });
+
+  it('7. MCP tool rotate_api_key rotates key and enforces confirmation guard', async () => {
+    const user = await setupProfileUser();
+    const server = createMCPServer(user.db, user.userId, TEST_JWT_SECRET);
+
+    // 7.1 Reject without confirm
+    await assert.rejects(async () => {
+      await callTool(server, 'rotate_api_key', { confirm: false });
+    }, /confirmation/i);
+
+    // 7.2 Rotate successfully
+    const toolRes = await callTool(server, 'rotate_api_key', { confirm: true });
+    assert.ok(toolRes.content?.[0]?.text);
+    const toolData = JSON.parse(toolRes.content[0].text);
+    assert.ok(typeof toolData.apiKey === 'string');
+    assert.ok(toolData.apiKey.startsWith('rd_live_'));
+
+    // 7.3 Verify DB hash is updated
+    const [dbUser] = await user.db
+      .select()
+      .from(schema.users)
+      .where(eq(schema.users.userId, user.userId));
+    assert.notEqual(dbUser.userApiKeyHash, user.keyHash);
+    const expectedHash = await hashApiKey(toolData.apiKey);
+    assert.equal(dbUser.userApiKeyHash, expectedHash);
   });
 });
 describe('Delete Transaction & Balance Reversal Parity', () => {

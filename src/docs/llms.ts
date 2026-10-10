@@ -70,8 +70,12 @@ All REST endpoints return JSON with standard HTTP status codes. Common headers:
 - **\`GET /api/v1/me\`** (and alias **\`GET /api/v1/user/profile\`**)
   - Returns: Current authenticated user profile.
   - Fields: \`userId\`, \`firstName\`, \`lastName\`, \`fullName\`, \`email\`, \`whatsappNumber\`, \`createdAt\`.
-- **\`PATCH /api/v1/me\`** *(HTTP 200)*
-  - JSON Body: Any combination of \`firstName\`, \`lastName\`, \`whatsappNumber\`. Email is immutable.
+- **\`PATCH /api/v1/me\`** (and alias **\`PATCH /api/v1/user/profile\`**) *(HTTP 200)*
+  - JSON Body: Any combination of \`firstName\`, \`lastName\`, \`email\`, \`whatsappNumber\`. Email must be valid format and globally unique.
+- **\`POST /api/v1/me/api-key/rotate\`** (and alias **\`POST /api/v1/user/profile/api-key/rotate\`**) *(HTTP 200)*
+  - JSON Body: \`{ "confirm": true }\`
+  - Returns: \`{ "apiKey": "rd_live_...", "message": "...", "rotatedAt": "..." }\`
+  - Note: Requires active registered email on account to prevent permanent lockout. Immediately revokes previous key.
 
 ### 1. Analytics & Summary
 - **\`GET /api/v1/summary\`**
@@ -363,7 +367,7 @@ For autonomous coding agents (Claude Desktop, OpenCode, Pi, OMP):
 - **Remote Streamable HTTP URL**: \`${origin}/mcp\`
 - **SSE Fallback URL**: \`${origin}/sse\`
 - **Tools Reference**:
-  * \`get_user_profile\` (Current User Profile: name, email, WhatsApp, createdAt)
+  * \`get_user_profile\` (Current User Profile: name, email, WhatsApp, createdAt), \`update_user_profile\` (Update profile: name, email, WhatsApp), \`rotate_api_key\` (Rotate persistent API key with lockout protection)
   * \`register_user\`, \`login_user\` (Auth & Onboarding)
   * \`manage_wallet\` (create, list, update, delete), \`manage_category\` (create, list, seed, update, delete), \`manage_budget\` (create, list, status, update, delete), \`manage_debt_loan\` (create, list, repay, update, delete), \`manage_goal\` (create, list, update, link, unlink, delete), \`manage_recurring_template\` (create, list, update, delete), \`apply_recurring_template\` (Realize planned occurrence)
   * \`record_transaction\`, \`transfer_funds\`, \`update_transaction\`, \`delete_transaction\`, \`list_transactions\` (Financial Transactions)

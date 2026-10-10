@@ -24,7 +24,7 @@ export const tracingMiddleware: MiddlewareHandler<AppEnv> = async (c, next) => {
     environment,
     projectName,
     serviceName: 'reedrich-mcp',
-    serviceVersion: '1.17.0',
+    serviceVersion: '1.18.0',
     traceId: parsed?.traceId,
     parentSpanId: parsed?.parentSpanId,
   });

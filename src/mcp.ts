@@ -14,7 +14,7 @@ import { eq, and, desc, asc, gte, lte, sql } from "drizzle-orm";
 import { currentIsoTimestamp } from "./utils/date";
 import { resolveUserId } from "./middleware/auth";
 import { registerUser, loginUser, evaluateOnboarding } from "./services/auth";
-import { getUserProfile } from "./services/user";
+import { getUserProfile, updateUserProfile, rotateUserApiKey } from "./services/user";
 import { submitFeedback } from "./services/feedback";
 import { listWallets, createWallet, updateWallet, deleteWallet } from "./services/wallet";
 import {
@@ -591,6 +591,35 @@ Authentication Note: You are already authenticated via OAuth / Bearer token. Nev
           }
         }
       },
+      {
+        name: "update_user_profile",
+        description: "Update the authenticated user's profile details (first name, last name, email, or WhatsApp number).",
+        inputSchema: {
+          type: "object",
+          properties: {
+            firstName: { type: "string", description: "Optional: New first name (1-100 characters)" },
+            lastName: { type: "string", description: "Optional: New last name (1-100 characters)" },
+            email: { type: "string", description: "Optional: New email address (must be valid format and not already registered)" },
+            whatsappNumber: { type: "string", description: "Optional: New WhatsApp number in international format (e.g. +6281234567890)" },
+            apiKey: { type: "string", description: "Optional: Your persistent API Key (rd_live_...) if not set in headers" }
+          }
+        }
+      },
+      {
+        name: "rotate_api_key",
+        description: "Rotate and regenerate the persistent API key (rd_live_...) for the authenticated user. Requires a valid email connected to the account. NOTE: The previous API key will immediately become invalid. Save the newly returned key safely.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            confirm: {
+              type: "boolean",
+              description: "Must be set to true to explicitly confirm old key invalidation and new key issuance."
+            },
+            apiKey: { type: "string", description: "Optional: Your current persistent API Key (rd_live_...) if not set in headers" }
+          },
+          required: ["confirm"]
+        }
+      },
       // Feedback & Support Tool
       {
         name: "submit_feedback",
@@ -934,6 +963,25 @@ Authentication Note: You are already authenticated via OAuth / Bearer token. Nev
     // --- Tool: get_user_profile ---
     if (name === "get_user_profile") {
       const result = await getUserProfile(db, effectiveUserId);
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    }
+
+    // --- Tool: update_user_profile ---
+    if (name === "update_user_profile") {
+      const toolArgs = (args || {}) as Record<string, unknown>;
+      const result = await updateUserProfile(db, effectiveUserId, {
+        firstName: toolArgs.firstName,
+        lastName: toolArgs.lastName,
+        email: toolArgs.email,
+        whatsappNumber: toolArgs.whatsappNumber,
+      });
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    }
+
+    // --- Tool: rotate_api_key ---
+    if (name === "rotate_api_key") {
+      const toolArgs = (args || {}) as Record<string, unknown>;
+      const result = await rotateUserApiKey(db, effectiveUserId, toolArgs.confirm);
       return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
     }
 

@@ -819,7 +819,7 @@ export function generateOpenApiSpec(origin: string): Record<string, unknown> {
         patch: {
           tags: ["User Profile"],
           summary: "Update Current User Profile",
-          description: "Updates the authenticated user's first name, last name, or WhatsApp contact number. Email is immutable.",
+          description: "Updates the authenticated user's first name, last name, email, or WhatsApp contact number. Email must be a valid format and unique.",
           operationId: "updateCurrentUserProfile",
           security: [{ bearerAuth: [] }, { apiKeyHeader: [] }],
           requestBody: {
@@ -831,6 +831,7 @@ export function generateOpenApiSpec(origin: string): Record<string, unknown> {
                   properties: {
                     firstName: { type: "string", description: "First name (1-100 chars)" },
                     lastName: { type: "string", description: "Last name (1-100 chars)" },
+                    email: { type: "string", format: "email", description: "Valid email address (unique across users)" },
                     whatsappNumber: { type: "string", description: "WhatsApp number with country code (e.g. +6281234567890)" },
                   },
                 },
@@ -848,6 +849,10 @@ export function generateOpenApiSpec(origin: string): Record<string, unknown> {
             },
             "401": {
               description: "Authentication required",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+            "409": {
+              description: "Email already taken by another user",
               content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
             },
           },
@@ -878,7 +883,7 @@ export function generateOpenApiSpec(origin: string): Record<string, unknown> {
         patch: {
           tags: ["User Profile"],
           summary: "Update Current User Profile (Alias)",
-          description: "Semantic resource alias for PATCH /api/v1/me. Updates first name, last name, or WhatsApp number.",
+          description: "Semantic resource alias for PATCH /api/v1/me. Updates first name, last name, email, or WhatsApp number.",
           operationId: "updateUserProfileAlias",
           security: [{ bearerAuth: [] }, { apiKeyHeader: [] }],
           requestBody: {
@@ -890,6 +895,7 @@ export function generateOpenApiSpec(origin: string): Record<string, unknown> {
                   properties: {
                     firstName: { type: "string", description: "First name (1-100 chars)" },
                     lastName: { type: "string", description: "Last name (1-100 chars)" },
+                    email: { type: "string", format: "email", description: "Valid email address (unique across users)" },
                     whatsappNumber: { type: "string", description: "WhatsApp number with country code (e.g. +6281234567890)" },
                   },
                 },
@@ -900,6 +906,108 @@ export function generateOpenApiSpec(origin: string): Record<string, unknown> {
             "200": {
               description: "Updated user profile",
               content: { "application/json": { schema: { $ref: "#/components/schemas/UserProfile" } } },
+            },
+            "400": {
+              description: "Validation error",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+            "401": {
+              description: "Authentication required",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+            "409": {
+              description: "Email already taken by another user",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+          },
+        },
+      },
+      "/api/v1/me/api-key/rotate": {
+        post: {
+          tags: ["User Profile", "Authentication"],
+          summary: "Rotate Persistent API Key",
+          description: "Rotates and regenerates the persistent API key (rd_live_...) for the authenticated user. Requires explicit confirmation (confirm: true) and a valid email address on the account. The previous API key becomes immediately invalid.",
+          operationId: "rotateApiKey",
+          security: [{ bearerAuth: [] }, { apiKeyHeader: [] }],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    confirm: { type: "boolean", description: "Must be true to confirm key rotation and previous key invalidation" },
+                  },
+                  required: ["confirm"],
+                },
+              },
+            },
+          },
+          responses: {
+            "200": {
+              description: "API key successfully rotated",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      apiKey: { type: "string", example: "rd_live_0123456789abcdef0123456789abcdef" },
+                      message: { type: "string" },
+                      rotatedAt: { type: "string", format: "date-time" },
+                    },
+                    required: ["apiKey", "message", "rotatedAt"],
+                  },
+                },
+              },
+            },
+            "400": {
+              description: "Validation error (missing confirmation or no registered email)",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+            "401": {
+              description: "Authentication required",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
+            },
+          },
+        },
+      },
+      "/api/v1/user/profile/api-key/rotate": {
+        post: {
+          tags: ["User Profile", "Authentication"],
+          summary: "Rotate Persistent API Key (Alias)",
+          description: "Semantic alias for POST /api/v1/me/api-key/rotate.",
+          operationId: "rotateApiKeyAlias",
+          security: [{ bearerAuth: [] }, { apiKeyHeader: [] }],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    confirm: { type: "boolean", description: "Must be true to confirm key rotation" },
+                  },
+                  required: ["confirm"],
+                },
+              },
+            },
+          },
+          responses: {
+            "200": {
+              description: "API key successfully rotated",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      apiKey: { type: "string" },
+                      message: { type: "string" },
+                      rotatedAt: { type: "string", format: "date-time" },
+                    },
+                    required: ["apiKey", "message", "rotatedAt"],
+                  },
+                },
+              },
             },
             "400": {
               description: "Validation error",
