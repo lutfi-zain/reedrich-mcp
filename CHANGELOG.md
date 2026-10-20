@@ -4,6 +4,16 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/): `Added`, `Changed`,
 `Deprecated`, `Removed`, `Fixed`, `Security` sections per release.
 
+## [1.19.0] — 2026-10-20
+
+### Fixed
+- **Domain-Only Origin Invariant & Cloudflare Hyperdrive Connectivity**:
+  - Reconfigured Cloudflare Hyperdrive binding origin (`vps-pg`, `246e815964a44eed9464752afe346134`) to FQDN domain origin `--host 43-133-148-181.sslip.io` targeting database `reedrich`, completely banning raw IP addressing from edge configurations.
+  - Rebound PgBouncer to `0.0.0.0:6432` with mandatory TLS (`CLIENT_TLS_SSLMODE=require`) and SCRAM-SHA-256 authentication while keeping PostgreSQL port 5432 strictly on `127.0.0.1`.
+  - Hardened host firewall (UFW) to allow port 6432 strictly from Cloudflare Edge IP subnets (both IPv4 and IPv6), rejecting all unauthorized public traffic.
+  - Resolved 30-second edge connection timeouts and HTTP 500 `Failed query` exceptions across Google OAuth callbacks and MCP tools.
+  - Restored edge database query latency to under 500ms (~440ms verified via live probe).
+
 ## [1.18.0] — 2026-10-10
 
 ### Added

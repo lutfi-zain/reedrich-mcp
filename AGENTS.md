@@ -89,6 +89,7 @@ For the canonical implementation patterns, refer to these Gold Standard files:
 - **Edge Runtime Only:** NEVER use Node.js native bindings (`fs`, native C++ addons). Use Web Standard APIs exclusively: `fetch`, `crypto.subtle`, `Headers`, `Request`, `Response`, `URL`.
 - **Planned Transactions:** `isPlanned = 1` transactions MUST NOT modify wallet balances. This invariant must be enforced in all transaction recording paths.
 - **Atomic Balance Reconciliation:** All balance mutations MUST use `sql\`wallet_balance + ${delta}\`` (atomic increment/decrement via D1 SQL expression). Never read-then-write balance.
+- **Domain-Only Origin Invariant (ABSOLUTE):** Cloudflare Hyperdrive origins MUST use domain hostnames (FQDN). NEVER configure Hyperdrive with raw public IP addresses. Host firewall policy enforces `default deny incoming` with port 6432 accessible strictly via Cloudflare edge IP subnets.
 
 ---
 

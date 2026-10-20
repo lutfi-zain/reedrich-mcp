@@ -558,16 +558,19 @@ npm run dev
 
 ---
 
-## 🚢 Production Deployment
+## 🚢 Production Deployment & Hyperdrive Domain Origin
+
+Database connections from Cloudflare Workers edge run through **Cloudflare Hyperdrive** to PostgreSQL via PgBouncer with **Domain-Only Origin** routing:
 
 ```bash
-# 1. Set your production JWT secret (if not set)
-npx wrangler secret put JWT_SECRET
+# 1. Verify Hyperdrive origin uses domain hostname (zero raw IPs)
+npx wrangler hyperdrive get 246e815964a44eed9464752afe346134
 
-# 2. Apply migrations to remote D1 database
-npx wrangler d1 execute finance_db --remote --file=./drizzle/0003_add_debts_loans.sql
+# 2. Set your production JWT secret (if not set)
+npx wrangler secret put JWT_SECRET
 
 # 3. Deploy worker
 npm run deploy
 ```
 
+> 🛡️ **Zero-Raw-IP Invariant**: Direct IP origins are banned in Hyperdrive configurations. Origin routing MUST strictly resolve through FQDN domain hostnames. Host firewall (UFW) restricts port 6432 strictly to Cloudflare edge network IP ranges.
